@@ -8,9 +8,9 @@
 
 ## What it is
 
-Vestibule is an open-source [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives any AI coding agent — Claude Code, Claude Desktop, Cursor, or anything that speaks MCP — a `run_code` tool that executes the model's generated code inside an isolated sandbox instead of on your actual machine: no network egress by default, resource limits, a filesystem the guest can't see out of, and honest reporting of what protection was actually applied.
+Vestibule is an open-source [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives any AI coding agent — Claude Code, Claude Desktop, Cursor, or anything that speaks MCP — a `run_code` tool that executes the model's generated code inside an isolated sandbox instead of on your actual machine: no network access by default, resource limits, a filesystem the guest can't see out of, and honest reporting of what protection was actually applied.
 
-The threat model is AI-specific. Agents now write and autonomously execute code, which means prompt injection can make an agent try to exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`) or run destructive commands, and hallucinated tool arguments can do real damage. Existing answers are either "run it on the host and hope" or a paid cloud sandbox (E2B, Daytona). Vestibule's angle is **local, free, and real kernel-level isolation on your own machine** — on Linux via user/mount/pid/net namespaces, cgroups v2, and seccomp; on macOS/Windows via a locked-down container backend.
+The threat model is AI-specific. Agents now write and autonomously execute code, which means prompt injection can make an agent try to exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`) or run destructive commands, and hallucinated tool arguments can do real damage. Existing answers are either "run it on the host and hope" or a paid cloud sandbox (E2B, Daytona). Vestibule's angle is **local, free, and real kernel-level isolation on your own machine**.
 
 ## Status
 
