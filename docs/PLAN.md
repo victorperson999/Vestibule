@@ -46,6 +46,8 @@ Make it *usable by ~80% of the audience* on day one.
 
 **Acceptance:** on macOS/Windows (with Docker) an agent runs code that is genuinely network-isolated and memory-capped; a fork bomb and a memory bomb are both contained; `read_workspace` cannot read outside the workspace. Result reports `isolation: container`.
 
+**Detailed contract:** `docs/plans/M1-container-backend.md` — written after the pre-implementation adversarial review (`docs/reviews/M1-codex-adversarial-review.md`); its sharpened acceptance criteria supersede the list above.
+
 ### Milestone 2 — Native Linux isolation core · ~weeks 2–3 · **the differentiator**
 The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage lifecycle.
 - `unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWUTS|NEWIPC)` → uid/gid map → `fork()` (child = PID 1).

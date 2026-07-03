@@ -78,3 +78,18 @@ vestibule/
 ## Security posture (summary; full version → `SECURITY.md`)
 
 Vestibule provides strong isolation comparable in *mechanism* to rootless containers: no host filesystem visibility (only a bind-mounted workspace + tmpfs), no network egress (empty network namespace), resource caps (cgroups), and a syscall allowlist (seccomp). It is **not** a VM boundary — it shares the host kernel, so a kernel privilege-escalation exploit could in principle escape. State this plainly. The goal is to make the *common, realistic* agent risks (prompt-injected exfiltration, destructive commands, resource exhaustion) structurally impossible, not to defend against a nation-state kernel 0-day.
+
+## Workflow Rules
+
+- **Plan before code**: For every coding task, present a written plan (files to change, approach, edge cases) and wait for explicit user approval before writing any code.
+- **Show your changes**: After writing code, summarize every file that was modified and what changed in each.
+- **Log this session**: When the user says "log this session", append a new dated entry to the top of the `## Changelog` section below, summarizing what was implemented in the session as bullet points per file changed (matching the existing entry format). This builds a running reference of prior work for future sessions.
+
+## Changelog
+
+### 2026-07-02 — M0 accepted; M1 adversarially reviewed and planned
+- (no code) M0 live-agent acceptance passed: fresh session ran `print("hi from vestibule")` via `run_code` over real MCP stdio — `exit_code: 0`, `isolation: none`. M0 formally done.
+- `docs/reviews/M1-codex-adversarial-review.md`: new — Codex adversarial review of the M1 design (20 ranked findings; verdict: sound with amendments, no structural rework).
+- `docs/plans/M1-container-backend.md`: new — full M1 contract (exact container profile, run lifecycle, capability probing, `read_workspace` jail, 14 acceptance criteria, 7-step implementation order). Decisions D1–D4 marked provisional pending user sign-off.
+- `docs/PLAN.md`: Milestone 1 section now points to the M1 contract; its acceptance criteria supersede the original list.
+- `CLAUDE.md`: added Workflow Rules and this Changelog section.
