@@ -6,52 +6,42 @@
 
 ---
 
-## The pitch (this is the README hero + résumé line)
+## What it is
 
-**What we're building:** An open-source [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives any AI coding agent — Claude Code, Claude Desktop, Cursor, or anything that speaks MCP — a `run_code` tool that executes the model's generated code inside a real, kernel-level isolated sandbox (Linux namespaces + cgroups v2 + seccomp + a filesystem jail), instead of letting it run on the user's actual machine.
+Vestibule is an open-source [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives any AI coding agent — Claude Code, Claude Desktop, Cursor, or anything that speaks MCP — a `run_code` tool that executes the model's generated code inside an isolated sandbox instead of on your actual machine: no network egress by default, resource limits, a filesystem the guest can't see out of, and honest reporting of what protection was actually applied.
 
-**What we hope to achieve:** Make "let my agent run code" *safe*, *free*, and *local* — closing the gap between recklessly running agent output on your host and paying a cloud service (E2B, Daytona) for sandboxing — so a developer can `pipx install` one tool and immediately let their agents execute untrusted code with resource limits, no network egress by default, and a full audit log.
-
-**Why this is an AI project, not just a systems project:** the sandbox exists *because* LLM agents now write and autonomously execute code. The threat model is AI-specific — prompt injection can make an agent try to exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`) or run destructive commands, and hallucinated tool arguments can do real damage. Vestibule is the safety layer that makes agentic code execution trustworthy.
-
----
+The threat model is AI-specific. Agents now write and autonomously execute code, which means prompt injection can make an agent try to exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`) or run destructive commands, and hallucinated tool arguments can do real damage. Existing answers are either "run it on the host and hope" or a paid cloud sandbox (E2B, Daytona). Vestibule's angle is **local, free, and real kernel-level isolation on your own machine** — on Linux via user/mount/pid/net namespaces, cgroups v2, and seccomp; on macOS/Windows via a locked-down container backend.
 
 ## Status
 
-**Pre-code. Planning complete.** This repo currently contains the full design. The next step is scaffolding Milestone 0 (see `docs/GETTING_STARTED.md`) and building against a live agent.
+> ⚠️ **Early development — do not use this to run untrusted code yet.**
+> The only backend that exists today applies **no isolation** (and says so in every result: `isolation: none`). The isolation layers are designed and are being built next. Not yet published to PyPI.
 
-## Locked decisions (quick reference)
+| Milestone | What | Status |
+|---|---|---|
+| M0 | MCP server + `run_code` end-to-end (naive backend, **no isolation**) | ✅ done |
+| M1 | Container backend (Docker/Podman) — the cross-platform isolation floor, + `read_workspace` | 🔜 designed, next up — see [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
+| M2 | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required) | planned |
+| M3 | Audit log + resource reporting | planned |
+| M4 | Install/onboarding polish, `SECURITY.md` threat model | planned |
 
-| Decision | Choice |
-|---|---|
-| Product name | **Vestibule** (`vestibule-mcp` on PyPI) |
-| MCP server language | **Python** (official `mcp` SDK) |
-| Warden (isolation core) language | **Python + ctypes** (direct syscalls) |
-| seccomp layer | **Optional / degradable** (via `pyseccomp` if present) |
-| Ownership | **Solo** |
+## How it works (design)
 
-## Repo map
+Two halves: the **MCP server** decides *whether/what* (validation, limits, schemas, audit), and a **warden** backend decides *how* to isolate and run. Every result carries an `isolation:` field stating what actually protected the run — `native`, `container`, or `none` — and the tool never claims protection that wasn't applied.
+
+Honest scope, stated up front: this is namespace/container isolation sharing the host kernel, **not** a hardened VM boundary. The goal is to make the common, realistic agent risks — prompt-injected exfiltration, destructive commands, resource exhaustion — structurally impossible, not to defend against kernel 0-days. The full threat model ships as `SECURITY.md` in M4.
+
+## Documentation
 
 | File | What's in it |
 |---|---|
-| `README.md` | This file — pitch, status, orientation. |
-| `CLAUDE.md` | **Operational rules for Claude Code.** Invariants that must never break, conventions, what not to do. Read this first when coding. |
-| `docs/PLAN.md` | The concrete plan: rationale, milestones 0–4 with acceptance criteria, adoption playbook, résumé bullets. |
-| `docs/ARCHITECTURE.md` | Deep technical design: the warden lifecycle (16-stage sequence), layered isolation, MCP server design. |
-| `docs/GETTING_STARTED.md` | Prerequisites, scaffold commands, **all Milestone-0 starter code inline**, how to register with Claude Code, first-run test, and the exact first prompt to hand Claude Code. |
-
-## Start here
-
-1. Read `CLAUDE.md` (the rules) and `docs/PLAN.md` (the roadmap).
-2. Follow `docs/GETTING_STARTED.md` to scaffold and run Milestone 0.
-3. Once `run_code` executes `print("hi")` from a live agent, start Milestone 1.
-
-## Before public launch (manual checks)
-
-- Confirm `pypi.org/project/vestibule` (or `vestibule-mcp`) is free — load the page, check it 404s.
-- Confirm the GitHub repo name, or just use `<your-handle>/vestibule`.
-- Grab a domain if you want one.
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Deep technical design: the warden lifecycle, layered isolation, MCP server design. |
+| [`docs/PLAN.md`](docs/PLAN.md) | Roadmap: milestones 0–4 with acceptance criteria. |
+| [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) | The detailed M1 contract (container profile, `read_workspace` jail, acceptance criteria). |
+| [`docs/reviews/`](docs/reviews/) | Pre-implementation adversarial design reviews. |
+| [`CLAUDE.md`](CLAUDE.md) | Invariants and operating rules for AI-assisted development of this repo. |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Dev setup and the original M0 scaffold walkthrough. |
 
 ## License
 
-MIT (recommended for maximum adoption).
+[MIT](LICENSE)
