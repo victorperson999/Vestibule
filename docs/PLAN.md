@@ -24,6 +24,17 @@ Several "agent sandbox / MCP gateway" projects exist (some even named "Airlock")
 
 ---
 
+## Locked decisions (quick reference)
+
+| Decision | Choice |
+|---|---|
+| Product name | **Vestibule** (`vestibule-mcp` on PyPI) |
+| MCP server language | **Python** (official `mcp` SDK) |
+| Warden (isolation core) language | **Python + ctypes** (direct syscalls) |
+| seccomp layer | **Optional / degradable** (via `pyseccomp` if present) |
+| License | **MIT** |
+| Ownership | **Solo** |
+
 ## Milestones
 
 Build in this order. The ordering is deliberate — do not build the native warden before the container backend.
