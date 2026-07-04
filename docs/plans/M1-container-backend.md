@@ -1,6 +1,6 @@
 # M1 contract — ContainerBackend + `read_workspace`
 
-Status: **draft, pending user sign-off on the four provisional decisions (§2).**
+Status: **signed off — D1–D4 all approved by the user 2026-07-03 (see `docs/HISTORY.md`). This contract is now binding for M1 implementation.**
 Inputs: `docs/PLAN.md` §Milestone 1, `docs/ARCHITECTURE.md`, `CLAUDE.md`, and the Codex adversarial review (`docs/reviews/M1-codex-adversarial-review.md`, 2026-07-02) whose 20 findings this contract incorporates. Finding numbers below refer to that document.
 
 ---

@@ -13,6 +13,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
+from vestibule import workspace
 from vestibule.backends.base import RunResult, Warden
 from vestibule.backends.naive import NaiveBackend
 from vestibule.config import ALLOWED_LANGUAGES, Limits
@@ -41,8 +42,10 @@ async def list_tools() -> list[Tool]:
             name="run_code",
             description=(
                 "Execute code in an isolated sandbox and return its output. "
-                "The sandbox has NO network access and an ephemeral filesystem "
-                "(only the workspace directory persists). It is resource-limited: "
+                "The sandbox has NO network access. The directory /workspace is the "
+                "persistent workspace: files written there survive the run, and code "
+                "may create, modify, or delete files in it. Everything else is "
+                "ephemeral and discarded after the run. It is resource-limited: "
                 "code exceeding the memory/CPU/time limits is terminated. "
                 "Use this to run and test code safely; do not expect internet access."
             ),
@@ -69,35 +72,66 @@ async def list_tools() -> list[Tool]:
                 "required": ["language", "code"],
             },
         ),
+        Tool(
+            name="read_workspace",
+            description=(
+                "Read a file or list a directory inside the persistent workspace — the "
+                "same directory that run_code mounts at /workspace. Paths are relative "
+                "to the workspace root; '.' (the default) lists the root. Paths outside "
+                "the workspace are refused, and symlinks are refused rather than "
+                "followed. Note: while guest code is running it can modify the "
+                "workspace concurrently with this tool."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "default": ".",
+                        "description": "Workspace-relative path of a file or directory.",
+                    },
+                },
+                "required": [],
+            },
+        ),
     ]
 
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
+        args = arguments or {}
         if name == "run_code":
-            return await _handle_run_code(arguments)
+            return await _handle_run_code(args)
+        if name == "read_workspace":
+            return await _handle_read_workspace(args)
         return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as e:  # never let an exception kill the session
         log.exception("tool handler crashed")
         return [TextContent(type="text", text=f"Internal error: {e}")]
 
 
+def _blocked(msg: str) -> list[TextContent]:
+    return [TextContent(type="text", text=f"Blocked: {msg}")]
+
+
 async def _handle_run_code(args: dict) -> list[TextContent]:
+    # Validation is total (M1 finding 18): every argument is type-checked here, in
+    # the clean server process, before any subprocess can exist. Out-of-type input
+    # gets a legible Blocked message, never an exception.
     language = args.get("language")
-    code = args.get("code", "")
+    code = args.get("code")
+    timeout_raw = args.get("timeout_seconds", LIMITS.default_timeout_s)
 
-    if language not in ALLOWED_LANGUAGES:
-        return [TextContent(type="text",
-                            text=f"Blocked: language must be one of {ALLOWED_LANGUAGES}.")]
+    if not isinstance(language, str) or language not in ALLOWED_LANGUAGES:
+        return _blocked(f"language must be one of {ALLOWED_LANGUAGES}.")
     if not isinstance(code, str) or not code.strip():
-        return [TextContent(type="text", text="Blocked: 'code' is empty.")]
+        return _blocked("'code' must be a non-empty string.")
     if len(code.encode()) > LIMITS.max_code_bytes:
-        return [TextContent(type="text",
-                            text=f"Blocked: code exceeds {LIMITS.max_code_bytes} bytes.")]
-
-    timeout_s = int(args.get("timeout_seconds", LIMITS.default_timeout_s))
-    timeout_s = max(1, min(timeout_s, LIMITS.max_timeout_s))
+        return _blocked(f"code exceeds {LIMITS.max_code_bytes} bytes.")
+    if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int):
+        return _blocked(f"timeout_seconds must be an integer from 1 to {LIMITS.max_timeout_s}.")
+    timeout_s = max(1, min(timeout_raw, LIMITS.max_timeout_s))
 
     log.info("run_code lang=%s bytes=%d timeout=%ds",
              language, len(code.encode()), timeout_s)
@@ -106,7 +140,9 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     try:
         result = await asyncio.wait_for(
             warden.run(language, code, timeout_s, LIMITS),
-            timeout=timeout_s + 5,  # outer deadline in case the warden itself hangs
+            # Outer deadline in case the warden itself hangs; +20 leaves room for the
+            # container backend's kill/cleanup budget of timeout_s + 15 (M1 §4).
+            timeout=timeout_s + 20,
         )
     except asyncio.TimeoutError:
         log.error("warden exceeded outer deadline")
@@ -116,6 +152,27 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     log.info("run_code done exit=%s timed_out=%s isolation=%s",
              result.exit_code, result.timed_out, result.isolation)
     return [TextContent(type="text", text=_format_result(result))]
+
+
+async def _handle_read_workspace(args: dict) -> list[TextContent]:
+    path = args.get("path", ".")
+    if not isinstance(path, str):
+        return _blocked("'path' must be a string.")
+
+    ws = LIMITS.workspace_path
+    try:
+        ws.mkdir(parents=True, exist_ok=True)  # D1: created on first use
+        # Filesystem work is blocking -> thread, never the event loop.
+        text = await asyncio.to_thread(
+            workspace.read_workspace_entry, ws, path, LIMITS.max_output_bytes
+        )
+    except workspace.WorkspacePathError as e:
+        log.info("read_workspace refused path=%r: %s", path, e)
+        return _blocked(str(e))
+    except OSError as e:
+        log.error("read_workspace failed path=%r: %s", path, e)
+        return [TextContent(type="text", text=f"Error reading workspace: {e}")]
+    return [TextContent(type="text", text=text)]
 
 
 def _format_result(r: RunResult) -> str:
@@ -136,7 +193,10 @@ def _format_result(r: RunResult) -> str:
         parts.append("usage: " + ", ".join(usage))
     if r.denied_syscalls:
         parts.append("blocked syscalls: " + ", ".join(r.denied_syscalls))
-    parts.append(f"isolation: {r.isolation}")
+    isolation = f"isolation: {r.isolation}"
+    if r.isolation_detail:
+        isolation += f" ({r.isolation_detail})"
+    parts.append(isolation)
     return "\n".join(parts)
 
 

@@ -87,6 +87,21 @@ Vestibule provides strong isolation comparable in *mechanism* to rootless contai
 
 ## Changelog
 
+### 2026-07-03 — README value-prop rework; M1 D1–D4 signed off; M1 steps 1–3 built
+- `README.md`: new lead ("Run untrusted AI-agent code safely — on your own machine, for free, with nothing sent to a cloud") + new `## Why this exists` section (problem → cloud alternatives → local/free/no-cloud bullets), placed before "What it is"; old threat-model paragraph absorbed into it.
+- `docs/HISTORY.md`: new — plain-language running build log (user-requested process rule: append one bullet per decision sign-off and per completed build step, under each milestone). M0, D1–D4, and steps 1–3 logged.
+- `docs/plans/M1-container-backend.md`: status draft → **signed off**; D1–D4 all approved by the user 2026-07-03 (D1 writable workspace, D2 pinned official images/no auto-pull, D3 hard/soft degradation tiers, D4 Docker-first runtime-agnostic).
+- `src/vestibule/config.py`: M1 step 1 — new env-overridable `Limits` fields (workspace dir/RO, runtime, backend, image refs [digests pinned in step 6], max_concurrent, tmpfs_mb) + `workspace_path` property + `_s`/`_b` env getters.
+- `src/vestibule/workspace.py`: new (step 1) — `read_workspace` path jail: lexical rejection (`..`, absolute, `:`/ADS/drive letters, UNC/device prefixes, NUL, reserved device names, trailing dots/spaces) before any filesystem access, then a component walk refusing symlinks/reparse points, `commonpath` containment, `O_NOFOLLOW` opens; dir listing (200-entry cap) + file read (byte-capped) + `Not found` as content.
+- `src/vestibule/backends/base.py`: step 2 — `RunResult.isolation_detail` added; isolation enum comment gains `container-degraded`.
+- `src/vestibule/server.py`: step 2 — validation made total (type-checked `language`/`code`/`timeout_seconds`, bool excluded, `Blocked:` never exceptions); `read_workspace` tool wired (jail-backed, `asyncio.to_thread`); outer deadline `timeout_s + 20`; `run_code` description states the workspace is writable; `_format_result` renders `isolation_detail`; `call_tool` tolerates `None` arguments.
+- `src/vestibule/backends/container.py`: new (step 3) — `ContainerBackend` happy path: full §3 profile (`--network none`, `--cap-drop ALL`, no-new-privileges, `--read-only`, non-root user, mem=swap, cpus, pids-limit, capped tmpfs, no env inheritance, `--rm --init`, labels), D9 read-only `/sandbox` script mount, D10 DEVNULL stdin, streaming collection capped at 2× display limit with early container kill, timeout kills the container (then `rm -f`), never just the CLI. Full §4 lifecycle (shielded cleanup, orphan reaping, semaphore) deferred to step 4.
+- `tests/test_workspace.py`: new — 24-case jail suite incl. live symlink attacks (symlinks work on this host).
+- `tests/test_validation.py`: new — malformed-arg suite (criterion 13) + `read_workspace` handler tests via monkeypatched `LIMITS`.
+- `tests/test_container.py`: new — 9 Docker-marked tests, all ran against the real daemon (3-language hello, workspace persistence, network gone, rootfs read-only, timeout leaves no survivor, output flood capped); auto-skip without a daemon.
+- `pyproject.toml`: registered the `docker` pytest marker.
+- (env) Docker daemon verified 28.5.1; `python:3.12-slim` + `node:22-slim` pulled locally. Session end state: 58 tests pass, `ruff check` + `mypy` clean (note: `ruff format` was never adopted repo-wide; the gate is `ruff check`). Next: step 4 (timeout/cleanup lifecycle, orphan reaping, semaphore).
+
 ### 2026-07-02 — M0 accepted; M1 adversarially reviewed and planned
 - (no code) M0 live-agent acceptance passed: fresh session ran `print("hi from vestibule")` via `run_code` over real MCP stdio — `exit_code: 0`, `isolation: none`. M0 formally done.
 - `docs/reviews/M1-codex-adversarial-review.md`: new — Codex adversarial review of the M1 design (20 ranked findings; verdict: sound with amendments, no structural rework).

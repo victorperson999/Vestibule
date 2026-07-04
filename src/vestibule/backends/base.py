@@ -16,7 +16,10 @@ class RunResult:
     cpu_ms: int | None = None
     mem_peak_mb: int | None = None
     denied_syscalls: list[str] = field(default_factory=list)
-    isolation: str = "none"           # "none" | "container" | "namespaces-only" | "native"
+    # "none" | "container" | "container-degraded" | "namespaces-only" | "native"
+    isolation: str = "none"
+    # per-control status when degraded, e.g. "limits not applied: memory, pids"
+    isolation_detail: str | None = None
 
 
 class Warden(ABC):
