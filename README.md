@@ -31,13 +31,13 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 > ⚠️ **Early development — do not use this to run untrusted code yet.**
 > The only backend that exists today applies **no isolation** (and says so in every result: `isolation: none`). The isolation layers are designed and are being built next. Not yet published to PyPI.
 
-| Milestone | What | Status |
-|---|---|---|
-| M0 | MCP server + `run_code` end-to-end (naive backend, **no isolation**) | ✅ done |
-| M1 | Container backend (Docker/Podman) — the cross-platform isolation floor, + `read_workspace` | 🔜 designed, next up — see [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
-| M2 | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required) | planned |
-| M3 | Audit log + resource reporting | planned |
-| M4 | Install/onboarding polish, `SECURITY.md` threat model | planned |
+| Milestone | What                                                                                         | Status                                                                                                 |
+| --------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                |
+| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔜 designed, next up — see[`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
+| M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                |
+| M3        | Audit log + resource reporting                                                               | planned                                                                                                |
+| M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                |
 
 ## How it works (design)
 
@@ -47,14 +47,14 @@ Honest scope, stated up front: this is namespace/container isolation sharing the
 
 ## Documentation
 
-| File | What's in it |
-|---|---|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Deep technical design: the warden lifecycle, layered isolation, MCP server design. |
-| [`docs/PLAN.md`](docs/PLAN.md) | Roadmap: milestones 0–4 with acceptance criteria. |
-| [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) | The detailed M1 contract (container profile, `read_workspace` jail, acceptance criteria). |
-| [`docs/reviews/`](docs/reviews/) | Pre-implementation adversarial design reviews. |
-| [`CLAUDE.md`](CLAUDE.md) | Invariants and operating rules for AI-assisted development of this repo. |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Dev setup and the original M0 scaffold walkthrough. |
+| File                                                                        | What's in it                                                                               |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                             | Deep technical design: the warden lifecycle, layered isolation, MCP server design.         |
+| [`docs/PLAN.md`](docs/PLAN.md)                                             | Roadmap: milestones 0–4 with acceptance criteria.                                         |
+| [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) | The detailed M1 contract (container profile,`read_workspace` jail, acceptance criteria). |
+| [`docs/reviews/`](docs/reviews/)                                           | Pre-implementation adversarial design reviews.                                             |
+| [`CLAUDE.md`](CLAUDE.md)                                                   | Invariants and operating rules for AI-assisted development of this repo.                   |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                       | Dev setup and the original M0 scaffold walkthrough.                                        |
 
 ## License
 
