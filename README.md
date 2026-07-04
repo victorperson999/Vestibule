@@ -1,16 +1,30 @@
 # Vestibule
 
-**A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server.**
+**Run untrusted AI-agent code safely — on your own machine, for free, with nothing sent to a cloud.**
+
+A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server.
 
 > A *vestibule* is the small sealed entry chamber you pass through between outside and inside. Vestibule sits between an AI agent and your host machine: the agent's generated code runs *inside* the chamber, never touching the real system.
 
 ---
 
+## Why this exists
+
+**The problem.** Agents no longer just suggest code — they write it and execute it, autonomously, in a loop. Running model-generated code on your real machine is the dangerous part: a prompt-injected instruction can exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`), a hallucinated argument can delete the wrong directory, a runaway loop can eat the machine. That's the *what*: untrusted agent code needs somewhere safe to run.
+
+**The existing answer.** Safe execution is already a product category — hosted sandboxes like E2B and Daytona solve it well, but on their terms: you pay per usage, every execution adds a network round-trip to the agent loop, and every line of generated code (plus whatever data it reads) ships to a third party's infrastructure.
+
+**Vestibule's reason to exist** is refusing all three of those costs at once:
+
+- **Local** — execution is a process spawn, not an HTTP call. No round-trip in the agent loop; works offline, on a plane, behind a corporate firewall.
+- **Free** — open source (MIT), no account, no metering, no per-second bill deciding how often your agent gets to run code.
+- **No cloud** — your agent's code and the data it touches never leave your machine. There is no third party to trust, to breach, or to leak.
+
+The isolation underneath is real kernel-level machinery — Linux namespaces, cgroups v2, seccomp, the same mechanisms rootless containers are built on — not a best-effort wrapper. (See **Status** below for what exists today.)
+
 ## What it is
 
 Vestibule is an open-source [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server that gives any AI coding agent — Claude Code, Claude Desktop, Cursor, or anything that speaks MCP — a `run_code` tool that executes the model's generated code inside an isolated sandbox instead of on your actual machine: no network access by default, resource limits, a filesystem the guest can't see out of, and honest reporting of what protection was actually applied.
-
-The threat model is AI-specific. Agents now write and autonomously execute code, which means prompt injection can make an agent try to exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`) or run destructive commands, and hallucinated tool arguments can do real damage. Existing answers are either "run it on the host and hope" or a paid cloud sandbox (E2B, Daytona). Vestibule's angle is **local, free, and real kernel-level isolation on your own machine**.
 
 ## Status
 
