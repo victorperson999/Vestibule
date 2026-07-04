@@ -8,7 +8,7 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 ---
 
-## Why this exists
+## Why use Vestibule?
 
 **The problem.** Agents no longer just suggest code — they write it and execute it, autonomously, in a loop. Running model-generated code on your real machine is the dangerous part: a prompt-injected instruction can exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`), a hallucinated argument can delete the wrong directory, a runaway loop can eat the machine. That's the *what*: untrusted agent code needs somewhere safe to run.
 
