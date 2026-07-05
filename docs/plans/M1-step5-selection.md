@@ -1,13 +1,20 @@
 # M1 step 5 plan — backend selection & capability probing
 
-Status: **draft — S5-D1 / S5-D2 / S5-D3 need sign-off.**
+Status: **signed off & built 2026-07-05** (S5-D1/D2/D3 approved as recommended; see
+`docs/HISTORY.md`).
 Parent contract: `docs/plans/M1-container-backend.md` §5 (binding; S5-D1/S5-D3 amend it slightly).
 Review history: Codex adversarial review 2026-07-05 — two high findings. (1) The step-4
 timeout path could still eat the whole outer deadline; fixed in code the same day (see the
 step-4 plan's 2026-07-05 amendment). (2) The original S5-D3 deferred image preflight to
 step 6, leaving a first node run able to trigger a silent `docker run` auto-pull inside a
 tool call — a D2 violation. S5-D3 below is the **revised** version: preflight +
-`--pull=never` land in this step.
+`--pull=never` land in this step. A final pre-build logic check then caught a third gap:
+this plan's edge-case list claimed step 4's S4-D2 covers "daemon dies after a good probe" —
+it does not (S4-D2 only fires when the docker *binary* is missing; a dead daemon makes
+`docker run` exit **125** with the container never started). As built: exit 125 reports
+`isolation: none` + "nothing was executed", and the server drops the cached selection so the
+next call re-probes. A guest deliberately calling `exit(125)` is indistinguishable at the
+CLI level and gets underclaimed isolation plus one cheap re-probe — the safe direction.
 
 ---
 
@@ -108,8 +115,8 @@ in step 6:
 | File | Change |
 |---|---|
 | `src/vestibule/backends/select.py` | **New.** `select_backend(limits)` — the §2 checklist; cached verdict + 30 s failure cooldown; probe helper. |
-| `src/vestibule/backends/container.py` | Constructor gains `soft_disabled` (frozenset). `_build_command` skips those flags (tmpfs stays, only its `size=` cap drops) and adds `--pull=never`. Per-run image preflight with per-image positive cache (S5-D3); cache entry dropped on a "no such image" spawn failure. Results report `container-degraded` + detail when any soft limits are off. |
-| `src/vestibule/server.py` | `get_warden()` → async, returns the cached selection; selection failure raises `RunRefusedError` (built in step 4 for exactly this) → existing `Blocked:` path. Called *outside* the outer deadline. Outer deadline `timeout+20` → `timeout+30` (§2 budget). |
+| `src/vestibule/backends/container.py` | Constructor gains `soft_disabled` (frozenset). `_build_command` skips those flags (tmpfs stays, only its `size=` cap drops) and adds `--pull never`. Per-run image preflight with per-image positive cache (S5-D3). Exit 125 → `isolation: none` ("nothing was executed"). Results report `container-degraded` + detail when any soft limits are off. |
+| `src/vestibule/server.py` | `get_warden()` → async, returns the cached selection; selection failure raises `RunRefusedError` (built in step 4 for exactly this) → existing `Blocked:` path. Called *outside* the outer deadline. Outer deadline `timeout+20` → `timeout+30` (§2 budget). `note_result` hook: a container-tier run reporting `isolation: none` drops the cached selection (fresh backend + empty image cache on the next call). |
 | `tests/test_select.py` | **New** — Docker-free suite (§6). |
 | `tests/test_container.py` | +2 Docker-marked selection tests. |
 | `docs/plans/M1-container-backend.md` | §5 annotated as amended by this doc. |
@@ -120,9 +127,13 @@ No new config knobs. New module constants: probe timeout 10 s, failure cooldown 
 ## 5. What can go wrong (and what happens)
 
 - **Daemon down** → Blocked "start Docker Desktop"; re-checked after 30 s (S5-D1).
-- **Docker dies *after* a good probe** → the run comes back "runtime unavailable"
-  (step 4's S4-D2 honesty path); that result also drops the cached selection, so the next
-  call re-probes and gives the actionable message instead of failing forever.
+- **Docker dies *after* a good probe** → two flavors, both honest (final logic check):
+  binary gone → S4-D2 path (`isolation: none`, "runtime unavailable"); daemon gone with the
+  binary still present → `docker run` exits **125** with the container never started →
+  `isolation: none`, "nothing was executed". Either way the server drops the cached
+  selection, so the next call re-probes and returns the actionable message instead of
+  failing forever. (A guest deliberately exiting 125 gets underclaimed isolation + one
+  cheap re-probe — underclaiming is the safe side of golden rule 5.)
 - **`VESTIBULE_RUNTIME=garbage`** → Blocked "unknown runtime; use auto, docker, or podman."
 - **Probe times out on a cold Docker Desktop VM** → Blocked once; cooldown retry passes
   (VM is warm by then).
@@ -153,12 +164,16 @@ Docker-free (monkeypatched CLI/probe — run everywhere):
    `isolation: container-degraded (limits not applied: …)` (criterion 11).
 9. Missing image → run refused with the exact pull command **and no `docker run` is ever
    spawned** (S5-D3); preflight result cached (second run: no second `image inspect`).
-10. `_build_command` contains `--pull=never`; a "no such image" spawn failure drops the
-    cached preflight entry.
+10. `_build_command` contains `--pull never`; soft-disabled commands drop exactly the four
+    soft flags (tmpfs itself survives; hard tier untouched).
+11. Exit 125 reports `isolation: none` + "nothing was executed"; the server's
+    `note_result` hook drops the cached selection on it (and never on naive selections).
 
 Docker-marked (this machine):
-11. Real selection picks Docker → end-to-end hello reports `isolation: container`.
-12. After selection, no probe container survives and no probe file is left in the workspace.
+12. Real selection picks Docker → verdict `container`; post-probe hello reports
+    `isolation: container`.
+13. After selection, no probe container survives and no probe file is left in the workspace.
+14. Read-only-workspace mode: the probe demands reads work AND writes fail → still `container`.
 
 Gate: all 76 existing tests stay green; `ruff check` + `mypy` clean.
 

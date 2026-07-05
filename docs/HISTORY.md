@@ -143,14 +143,39 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   detached reaper collects the CLI process. Bonus honesty fix the same lines hid: a CLI that
   wedges *after* the guest finished is now reported as a runtime failure ("exit code
   unknown"), not a fake guest timeout. +2 regression tests ⇒ 78 total, ruff + mypy clean.
-- **Step 5 — planned 2026-07-05, pending sign-off.** Capability probing and honest backend
-  selection (`container` / `container-degraded` / blocked with an actionable message).
-  Plan: `docs/plans/M1-step5-selection.md`, adversarially reviewed by Codex the same day.
-  The review's second high finding revised S5-D3: per-run image preflight + `--pull=never`
-  move INTO step 5 — deferring them left a first node run able to silently auto-pull inside
-  a tool call (D2 violation). Decisions S5-D1 (30 s failure-retry cooldown), S5-D2 (degraded
-  = all soft limits off), S5-D3 (revised) await user sign-off.
+- **S5-D1 / S5-D2 / S5-D3 — approved 2026-07-05** (all as recommended, after a Codex
+  adversarial review of the plan and a final logic check). S5-D1: a failed backend selection
+  is cached only 30 s, then re-checked — "start Docker Desktop, then retry" works without
+  restarting the MCP session; success caches for the process lifetime. S5-D2: when the full
+  profile fails but hard isolation works, one retry runs with all four soft limits (memory,
+  cpu, pids, tmpfs-size) off, and such runs honestly report `container-degraded` + the exact
+  list; per-limit add-back rejected (unbounded first-call latency) unless real degraded
+  environments show up. S5-D3 (revised by the Codex review): per-run image preflight +
+  `--pull never` land in step 5 itself — `docker run`'s default auto-pull would otherwise
+  let a first node run start a multi-minute network pull inside a tool call (D2 violation);
+  selection still needs only the python image. Docker CLI ≥ 20.10 becomes the documented
+  floor.
+- **Step 5 — done 2026-07-05.** Backend selection & capability probing built
+  (`src/vestibule/backends/select.py` + wiring). On the first tool call the selector finds a
+  runtime (`auto` prefers Docker, D4), then test-drives the FULL locked-down profile as a
+  real run through the normal run path — a bash workspace round-trip in `python:3.12-slim`
+  (read-only mode instead demands that reads work and writes *fail*) — and commits:
+  `container`, `container-degraded` (soft-off retry passed), or every `run_code` Blocked
+  with the exact fix. Naive is reachable only via explicit `VESTIBULE_BACKEND=naive`;
+  unknown backend/runtime values are legible refusals. The final pre-build logic check
+  caught a plan gap: "daemon dies after a good probe" was NOT covered by S4-D2 (that only
+  fires when the docker *binary* is gone) — a dead daemon makes `docker run` exit 125 with
+  the container never started, which would have reported `isolation: container` for a
+  non-run. As built, exit 125 reports `isolation: none` ("nothing was executed") and the
+  server's `note_result` hook drops the cached selection so the next call re-probes. Probe
+  stderr is scanned for runtime WARNING lines (silently-dropped limits) and logged loudly.
+  Server outer deadline `timeout+20` → `timeout+30` to fund the preflight's bounded worst
+  case. Also tidied: the overflow-killer's container kill is now finisher-tracked/shielded
+  so a run ending mid-kill can't strand the kill's CLI subprocess. +17 tests (14 Docker-free
+  selection/preflight/honesty, 3 Docker-marked: real selection verdict, probe leaves no
+  trace, RO-workspace selection) ⇒ 95 total, ruff + mypy clean.
 - **Step 6 — pending.** Digest pinning captured from a real `docker pull`, setup-UX
-  messages (per-run image preflight moved to step 5 by the revised S5-D3).
+  message polish (per-run image preflight + `--pull never` landed in step 5 via the
+  revised S5-D3).
 - **Step 7 — pending.** Docker-marked acceptance suite (14 criteria) + README/docs
   update.
