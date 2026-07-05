@@ -14,7 +14,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from vestibule import workspace
-from vestibule.backends.base import RunResult, Warden
+from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.naive import NaiveBackend
 from vestibule.config import ALLOWED_LANGUAGES, Limits
 
@@ -144,6 +144,11 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
             # container backend's kill/cleanup budget of timeout_s + 15 (M1 §4).
             timeout=timeout_s + 20,
         )
+    except RunRefusedError as e:
+        # Refused before anything executed (e.g. concurrency limit, S4-D1) — a
+        # legible Blocked message the model can adapt to, never an exception.
+        log.info("run_code refused: %s", e)
+        return _blocked(str(e))
     except asyncio.TimeoutError:
         log.error("warden exceeded outer deadline")
         return [TextContent(type="text",

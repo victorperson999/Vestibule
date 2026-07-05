@@ -66,6 +66,25 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   (auto prefers Docker); only Docker is tested and supported in M1, and Podman is
   documented as experimental until a dedicated validation pass.
 
+- **S4-D1 — approved 2026-07-04.** A 5th concurrent `run_code` call waits up to 5 s for a
+  slot, then gets a legible `Blocked: too many concurrent runs (max N); retry shortly`
+  instead of queueing into the outer deadline's generic failure. Carried by a new typed
+  `RunRefusedError` (backends → server), which step 5 will reuse for probe failures.
+- **S4-D2 — approved 2026-07-04.** Missing-runtime honesty fix: a run that never spawned
+  now reports `isolation: none` ("runtime unavailable; nothing was executed"), never
+  `container`.
+- **S4-D3 — approved 2026-07-04.** Deadline-label reaping, replacing the planned age
+  heuristic after a Codex adversarial review of the step-4 plan (finding: a reaper using
+  *local* timeout config can kill live runs of another Vestibule server configured with a
+  longer timeout). Every container is stamped at spawn by its owner with
+  `vestibule.deadline=<unix epoch>` (spawn + its own timeout + 90 s); any reaper removes a
+  labeled container — in any state — only when now > deadline + 60 s, skipping its own
+  in-flight runs. Also fixes two v1-plan bugs the review surfaced: the created-state race
+  (reaping a container in the create→start window) and Docker Desktop VM clock drift
+  (no daemon timestamps are consulted at all). Missing/garbled deadline ⇒ skipped loudly,
+  never removed — note: containers from before step 4 carry no deadline label, so any dev
+  leftovers need a one-time manual `docker rm`.
+
 ### Build steps (7 planned)
 
 - **Step 1 — done 2026-07-03.** Config + path jail. `config.py` gained the M1 settings
@@ -97,8 +116,23 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   rootfs read-only, timeout leaves no survivor, flood capped) — 58 total tests pass,
   ruff + mypy clean. Deferred to step 4 by design: cancellation-shielded cleanup,
   orphan reaping, concurrency semaphore.
-- **Step 4 — pending.** Timeout kill + cancellation-resistant cleanup, orphaned-container
-  reaping, concurrency semaphore.
+- **Step 4 — done 2026-07-04.** Run lifecycle hardening (plan:
+  `docs/plans/M1-step4-lifecycle.md`, adversarially reviewed by Codex before
+  implementation). Cleanup (container kill/rm + temp dir) now runs as an *independent*
+  shielded task, so a cancelled request — outer deadline or MCP client cancel — can never
+  orphan a container or leak a temp dir. Orphan reaping per S4-D3: a detached,
+  deduplicated pass on first use and after each run (two bounded CLI calls + one batched
+  `rm -f`), with the keep/remove rule a pure unit-tested function. Concurrency capped by a
+  lazy semaphore (`max_concurrent`, default 4) with the S4-D1 bounded-wait refusal; S4-D2
+  honesty fix landed. 17 new tests (12 Docker-free: semaphore cap, busy refusal + server
+  rendering, 7-case reap-decision table, cancellation hygiene, label emission; 5
+  Docker-marked: cancel mid-run leaves nothing behind, epoch-1970 deadline reaped while
+  *running*, future deadline spared, unlabeled spared + warned, 4 simultaneous runs) —
+  75 total pass, ruff + mypy clean. Post-implementation Codex review (P2): the shield-awaited
+  cleanup could push a timed-out run past the server's outer deadline on a slow daemon,
+  swallowing the honest result — fixed by fully detaching cleanup (result returns
+  immediately; the finisher task holds the concurrency slot until the container is really
+  gone). +1 regression test ⇒ 76 total.
 - **Step 5 — pending.** Capability probing and honest backend selection
   (`container` / `container-degraded` / blocked with an actionable message).
 - **Step 6 — pending.** Digest pinning captured from a real `docker pull`, image

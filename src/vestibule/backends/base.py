@@ -7,6 +7,15 @@ from dataclasses import dataclass, field
 from vestibule.config import Limits
 
 
+class RunRefusedError(Exception):
+    """Run refused before any code executed (e.g. concurrency limit reached).
+
+    Nothing ran, so there is no RunResult to fabricate; the server catches this
+    and returns the message as `Blocked:` content (handlers never raise).
+    Step 5 reuses it for hard-tier capability failures.
+    """
+
+
 @dataclass
 class RunResult:
     stdout: str

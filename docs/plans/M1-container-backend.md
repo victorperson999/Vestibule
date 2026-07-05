@@ -57,6 +57,7 @@ Backend code is runtime-agnostic (capability probes, not binary-name checks); `V
 <runtime> run
   --name vestibule-<runid>
   --label vestibule.run=1 --label vestibule.run_id=<runid>
+  --label vestibule.deadline=<epoch> --label vestibule.owner=<token>   # step-4 amendment (S4-D3)
   --rm --init                                   # --init: PID-1 zombie reaping (finding 7)
   --network none
   --cap-drop ALL
@@ -80,6 +81,14 @@ Never present: `--privileged`, `--device`, host PID/IPC/UTS/user namespaces, any
 Windows host note: the workspace path is passed as a native `C:\...` path (Docker Desktop translates); the fixed in-container path is always `/workspace` (finding 10).
 
 ## 4. Run lifecycle
+
+> **Amended by `docs/plans/M1-step4-lifecycle.md` (2026-07-04):** step 1's semaphore acquire is a
+> *bounded* wait (5 s) ending in a legible `RunRefusedError` ⇒ `Blocked:` message (S4-D1), and
+> step 6's age-based orphan reaping is replaced by owner-stamped `vestibule.deadline` labels
+> after a Codex adversarial review found the age heuristic could kill live runs of servers with
+> different timeout configs (S4-D3). Step 5's shielded cleanup is further amended (Codex P2,
+> post-implementation): cleanup is fully detached and never delays the result; the concurrency
+> slot is released only when cleanup completes.
 
 1. Acquire semaphore. Generate run ID; write script to per-run temp dir.
 2. Spawn `docker run …` (D10 stdio rules).
