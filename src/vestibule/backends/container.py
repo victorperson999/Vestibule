@@ -77,13 +77,8 @@ class ContainerBackend(Warden):
         return limits.image_node if language == "node" else limits.image_python
 
     def _build_command(
-        self,
-        run_id: str,
-        language: str,
-        limits: Limits,
-        sandbox_host: str,
-        workspace_host: str,
-        deadline_epoch: int,
+        self, run_id: str, language: str, limits: Limits,
+        sandbox_host: str, workspace_host: str, deadline_epoch: int,
     ) -> list[str]:
         """The exact §3 execution profile. Never add --privileged/--device/host
         namespaces/socket mounts/-i/-t here; the environment is only what we pass."""
@@ -161,16 +156,8 @@ class ContainerBackend(Warden):
             if not slot_handed_off:  # e.g. mkdtemp failed; nothing to clean up
                 sem.release()
 
-    async def _execute(
-        self,
-        run_id: str,
-        name: str,
-        language: str,
-        code: str,
-        timeout_s: int,
-        limits: Limits,
-        tmpdir: str,
-        deadline_epoch: int,
+    async def _execute(self, run_id: str, name: str, language: str,
+                       code: str, timeout_s: int, limits: Limits, tmpdir: str, deadline_epoch: int,
     ) -> RunResult:
         (Path(tmpdir) / f"main{_EXT[language]}").write_text(code, encoding="utf-8")
         workspace = limits.workspace_path
