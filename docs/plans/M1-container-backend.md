@@ -88,7 +88,10 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 > after a Codex adversarial review found the age heuristic could kill live runs of servers with
 > different timeout configs (S4-D3). Step 5's shielded cleanup is further amended (Codex P2,
 > post-implementation): cleanup is fully detached and never delays the result; the concurrency
-> slot is released only when cleanup completes.
+> slot is released only when cleanup completes. Step 4.4's on-expiry kill/rm is likewise fully
+> detached (Codex adversarial follow-up 2026-07-05 — the serialized kill could still consume
+> the whole outer budget on a wedged daemon): the timed-out result returns immediately and the
+> finisher performs the kill; timed-out runs report `exit_code: -1`.
 
 1. Acquire semaphore. Generate run ID; write script to per-run temp dir.
 2. Spawn `docker run …` (D10 stdio rules).

@@ -133,9 +133,24 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   swallowing the honest result — fixed by fully detaching cleanup (result returns
   immediately; the finisher task holds the concurrency slot until the container is really
   gone). +1 regression test ⇒ 76 total.
-- **Step 5 — pending.** Capability probing and honest backend selection
-  (`container` / `container-degraded` / blocked with an actionable message).
-- **Step 6 — pending.** Digest pinning captured from a real `docker pull`, image
-  preflight, setup-UX messages.
+- **Step 4 follow-up — fixed 2026-07-05.** The Codex adversarial review of the step-5
+  *plan* re-audited the step-4 code and found the guest-timeout path could still consume
+  the entire `timeout_s + 20` outer deadline on a wedged daemon (kill 5 s + rm 5 s + CLI
+  wait 5 s serialized after `timeout_s + 5` of collection) — the same failure mode as P2,
+  one path over: the honest timed-out result would be replaced by the generic outer-deadline
+  message. Fixed by detaching the timeout kill entirely: the timed-out result returns at
+  `timeout_s + 5` (now always `exit_code: -1`), the finisher kills the container, and a
+  detached reaper collects the CLI process. Bonus honesty fix the same lines hid: a CLI that
+  wedges *after* the guest finished is now reported as a runtime failure ("exit code
+  unknown"), not a fake guest timeout. +2 regression tests ⇒ 78 total, ruff + mypy clean.
+- **Step 5 — planned 2026-07-05, pending sign-off.** Capability probing and honest backend
+  selection (`container` / `container-degraded` / blocked with an actionable message).
+  Plan: `docs/plans/M1-step5-selection.md`, adversarially reviewed by Codex the same day.
+  The review's second high finding revised S5-D3: per-run image preflight + `--pull=never`
+  move INTO step 5 — deferring them left a first node run able to silently auto-pull inside
+  a tool call (D2 violation). Decisions S5-D1 (30 s failure-retry cooldown), S5-D2 (degraded
+  = all soft limits off), S5-D3 (revised) await user sign-off.
+- **Step 6 — pending.** Digest pinning captured from a real `docker pull`, setup-UX
+  messages (per-run image preflight moved to step 5 by the revised S5-D3).
 - **Step 7 — pending.** Docker-marked acceptance suite (14 criteria) + README/docs
   update.

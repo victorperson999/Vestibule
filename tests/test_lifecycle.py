@@ -183,3 +183,100 @@ def test_build_command_stamps_deadline_and_owner():
     assert cmd[cmd.index("--network") + 1] == "none"
     assert "-i" not in cmd
     assert "-t" not in cmd
+
+
+# ------------------------------------------------- Codex budget finding (2026-07-05)
+
+
+class FakeCliProc:
+    """A stand-in `docker run` CLI: streams we control, a wait() we control."""
+
+    def __init__(self, stdout: bytes = b"", eof: bool = False):
+        self.stdout = asyncio.StreamReader()
+        self.stderr = asyncio.StreamReader()
+        if stdout:
+            self.stdout.feed_data(stdout)
+        if eof:
+            self.stdout.feed_eof()
+            self.stderr.feed_eof()
+        self.returncode = None
+        self.killed = False
+        self._done = asyncio.Event()
+
+    async def wait(self):
+        await self._done.wait()
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+        self.stdout.feed_eof()
+        self.stderr.feed_eof()
+        self._done.set()
+
+
+async def test_timed_out_result_returns_before_any_kill(monkeypatch, tmp_path):
+    """Codex budget regression (2026-07-05): on guest timeout the honest timed-out
+    result returns immediately — kill/rm never serialize into the result path, so a
+    wedged daemon can no longer push the backend past the server's outer deadline."""
+    b = ContainerBackend()
+    limits = Limits(max_concurrent=1, workspace_dir=str(tmp_path / "ws"))
+    monkeypatch.setattr(container_mod, "_STARTUP_GRACE_S", 0.2)
+    monkeypatch.setattr(container_mod, "_CLEANUP_STEP_S", 0.2)
+    monkeypatch.setattr(b, "_schedule_reap", lambda: None)
+
+    proc = FakeCliProc()  # never EOFs, never exits: the guest loops forever
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    cleanup_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def wedged_cleanup(name, tmpdir):
+        cleanup_started.set()
+        await release.wait()  # a daemon that never answers
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    monkeypatch.setattr(b, "_cleanup", wedged_cleanup)
+
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    r = await b.run("python", "while True: pass", 1, limits)
+    elapsed = loop.time() - t0
+
+    assert r.timed_out is True
+    assert elapsed < 2.0  # ~timeout(1) + grace(0.2); the kill cost the result nothing
+    assert not cleanup_started.is_set()  # the result preceded any cleanup work
+
+    release.set()
+    await asyncio.gather(*list(b._finishers), return_exceptions=True)
+    assert proc.killed  # the detached reaper collected the wedged CLI as last resort
+
+
+async def test_cli_wedge_after_guest_finished_is_not_a_timeout(
+    quiet_backend, monkeypatch, tmp_path
+):
+    """Output hit EOF (the guest is done) but the CLI never exits: reported honestly
+    as a runtime failure — exit code unknown — never as a guest timeout."""
+    b = quiet_backend
+    limits = Limits(max_concurrent=1, workspace_dir=str(tmp_path / "ws"))
+    monkeypatch.setattr(container_mod, "_CLEANUP_STEP_S", 0.2)
+
+    proc = FakeCliProc(stdout=b"done\n", eof=True)  # output complete, CLI wedged
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    r = await b.run("python", "print('done')", 5, limits)
+    assert r.timed_out is False
+    assert r.exit_code == -1
+    assert "did not report an exit code" in r.stderr
+    assert "done" in r.stdout
+
+    await asyncio.gather(*list(b._finishers), return_exceptions=True)
+    assert proc.killed

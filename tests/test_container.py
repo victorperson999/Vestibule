@@ -154,7 +154,14 @@ async def test_rootfs_is_read_only(backend, limits):
 async def test_timeout_kills_container(backend, limits):
     r = await backend.run("python", "import time; time.sleep(300)", 3, limits)
     assert r.timed_out is True
+    # The kill is detached (Codex budget fix 2026-07-05): the result returns first,
+    # the finisher removes the container right after — poll until it settles.
     # No survivor from THIS backend (label-global emptiness would race other tests).
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if _ps_names(f"label=vestibule.owner={backend._owner}") == "":
+            break
+        await asyncio.sleep(0.5)
     assert _ps_names(f"label=vestibule.owner={backend._owner}") == ""
 
 

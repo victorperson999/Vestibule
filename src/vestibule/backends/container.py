@@ -7,7 +7,9 @@ driven via asyncio.create_subprocess_exec — async-safe, no blocking of the eve
 
 Step-4 lifecycle guarantees:
 - Cleanup (container kill/rm + temp dir) runs as an independent task, so it survives
-  cancellation of the request that started the run (§4.5).
+  cancellation of the request that started the run and never delays the result —
+  including on guest timeout, where the kill is fully detached (§4.5, amended by the
+  Codex budget finding 2026-07-05).
 - Every container is stamped by its owner with `vestibule.deadline=<unix epoch>`; the
   reaper removes only containers past their own deadline (+margin) — never judging a
   run by this process's config, never touching this process's live runs (S4-D3).
@@ -194,21 +196,29 @@ class ContainerBackend(Warden):
         )
         killer = asyncio.create_task(self._kill_on_overflow(overflow, name, run_id))
 
+        # Codex budget finding (2026-07-05): nothing here may await the daemon on the
+        # result path — on a wedged daemon the old serialized kill/rm/wait consumed the
+        # server's whole outer deadline and the honest result was lost. On timeout the
+        # result returns immediately; the detached finisher still kills the container
+        # via the runtime (§4.4/§4.5), and a detached reaper collects the CLI process.
         timed_out = False
+        cli_wedged = False
         try:
             await asyncio.wait_for(collectors, timeout=timeout_s + _STARTUP_GRACE_S)
-            await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_STEP_S)
-        except asyncio.TimeoutError:
-            timed_out = True
-            log.warning("run %s: timeout after %ds, killing container", run_id, timeout_s)
-            # §4.4: kill the CONTAINER via the runtime, never just the CLI process.
-            await self._force_remove(name)
-            collectors.cancel()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_STEP_S)
             except asyncio.TimeoutError:
-                proc.kill()  # last resort: the CLI itself is wedged
-                await proc.wait()
+                # Streams hit EOF (the guest is done) but the CLI won't exit: a wedged
+                # daemon, not a guest timeout — don't mislabel it as one.
+                cli_wedged = True
+                log.error("run %s: output complete but the %s CLI did not exit; detaching",
+                          run_id, self._runtime)
+                self._detach_cli_reap(proc, run_id)
+        except asyncio.TimeoutError:
+            timed_out = True
+            log.warning("run %s: timeout after %ds; container kill detached", run_id, timeout_s)
+            collectors.cancel()
+            self._detach_cli_reap(proc, run_id)
         finally:
             killer.cancel()
             try:
@@ -221,6 +231,8 @@ class ContainerBackend(Warden):
         stderr_text = err_buf.decode(errors="replace")
         if truncated and not timed_out:
             stderr_text += "\n[output exceeded collection cap; container was terminated]"
+        if cli_wedged:
+            stderr_text += "\n[run finished but the runtime did not report an exit code]"
 
         log.info("run %s: done exit=%s timed_out=%s", run_id, exit_code, timed_out)
         return RunResult(
@@ -250,6 +262,33 @@ class ContainerBackend(Warden):
         await overflow.wait()
         log.warning("run %s: output cap exceeded, killing container early", run_id)
         await self._force_remove(name)
+
+    def _detach_cli_reap(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+        """Collect a `docker run` CLI process off the result path (Codex budget fix).
+
+        Used when the result must return NOW (guest timeout) or when the CLI is
+        wedged after the guest already finished. The finisher's kill/rm makes the
+        CLI exit on its own; this task only reaps it — or kills it as a last resort.
+        """
+        task = asyncio.create_task(self._reap_cli(proc, run_id))
+        self._finishers.add(task)
+        task.add_done_callback(self._finishers.discard)
+
+    async def _reap_cli(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+        try:
+            # Outlasts the finisher's kill (5 s) + rm -f (5 s), with slack.
+            await asyncio.wait_for(proc.wait(), timeout=3 * _CLEANUP_STEP_S)
+            return
+        except asyncio.TimeoutError:
+            pass
+        except Exception:  # detached task — never propagate
+            log.exception("run %s: CLI reap failed", run_id)
+            return
+        log.error("run %s: %s CLI still alive after container removal; killing it",
+                  run_id, self._runtime)
+        with contextlib.suppress(Exception):
+            proc.kill()
+            await proc.wait()
 
     async def _finish_run(self, sem: asyncio.Semaphore, name: str, tmpdir: str) -> None:
         """Detached post-run task (Codex P2): cleans up, then hands back the slot."""

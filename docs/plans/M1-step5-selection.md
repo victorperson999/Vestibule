@@ -2,6 +2,12 @@
 
 Status: **draft — S5-D1 / S5-D2 / S5-D3 need sign-off.**
 Parent contract: `docs/plans/M1-container-backend.md` §5 (binding; S5-D1/S5-D3 amend it slightly).
+Review history: Codex adversarial review 2026-07-05 — two high findings. (1) The step-4
+timeout path could still eat the whole outer deadline; fixed in code the same day (see the
+step-4 plan's 2026-07-05 amendment). (2) The original S5-D3 deferred image preflight to
+step 6, leaving a first node run able to trigger a silent `docker run` auto-pull inside a
+tool call — a D2 violation. S5-D3 below is the **revised** version: preflight +
+`--pull=never` land in this step.
 
 ---
 
@@ -43,9 +49,20 @@ The naive backend becomes reachable only by explicitly setting `VESTIBULE_BACKEN
 - Read-only mode (`VESTIBULE_WORKSPACE_RO=1`): confirm reading works **and writing fails**.
 - Pass = exit 0 + marker in stdout. Probe timeout 10 s (module constant, no new config).
 
+Besides this one-time checklist, **every run** first checks that its own image is present
+(S5-D3): a cheap cached `image inspect`, and `--pull=never` in the run profile as backstop —
+a missing image is a legible refusal with the pull command, never a silent in-call download.
+
 The whole selection happens *before* the server's per-run outer deadline starts, so a slow
 first probe (cold Docker Desktop VM) can't eat a run's time budget. Concurrent first calls
 share one probe via an `asyncio.Lock`.
+
+**Budget:** the preflight adds one bounded 5 s CLI call to the run path (worst case, wedged
+daemon, first use of an image). Worst honest path becomes: slot wait 5 + preflight 5 +
+collect `timeout+5` + CLI wait 5 = `timeout+20` — exactly today's outer deadline. So the
+server's outer deadline moves from `timeout+20` to **`timeout+30`**, restoring real margin
+(amends contract §7; the outer deadline is a hang backstop, not a UX promise — honest
+results still return as fast as before).
 
 ## 3. Decisions to sign off
 
@@ -67,19 +84,32 @@ limits off, and degraded runs then honestly report
   work. Finer-grained, but up to 4 extra probe containers on the first call (could exceed a
   client's tool-call timeout). Revisit only if real degraded environments show up.
 
-### S5-D3 — Selection only requires the python image
-The probe runs in `python:3.12-slim` (it also serves bash). A missing **node** image does
-not block selection — a node run just gets its own per-call "pull node:22-slim" message.
-Full per-language image preflight (plus digest pinning and `--pull=never`, which also closes
-the current accidental-auto-pull gap in `docker run`) is **step 6**, as planned.
+### S5-D3 (revised after the 2026-07-05 Codex review) — Per-run image preflight + `--pull=never` land in *this* step
+The original version deferred image preflight to step 6. Codex flagged the hole: `docker run`
+**auto-pulls a missing image by default**, so a first node run with no local image would start
+a multi-minute network pull *inside the tool call* — exactly what D2 forbids. Closed here, not
+in step 6:
+
+- **Every run preflights its own image**: `<runtime> image inspect <image>` (5 s cap) before
+  anything is spawned. Present → cached for the process (one check per image, ever).
+  Missing → refuse with the exact fix: "image `node:22-slim` is not present locally; run
+  `docker pull node:22-slim`, then retry. Vestibule never pulls images itself."
+- **`--pull=never` goes into the run profile** as the backstop, so even a race (image deleted
+  between check and run) fails fast instead of pulling. If that happens, the cached preflight
+  for the image is dropped, so the next call re-checks and returns the pull message.
+- Selection still only requires the **python** image: the probe is a normal run, so it uses
+  the same preflight; a missing node image inconveniences only node runs, never selection.
+- Floor: `--pull` needs Docker CLI ≥ 20.10 (Dec 2020) — any modern Docker/Podman. On an older
+  CLI the probe fails loudly ("unknown flag") and the run is Blocked; documented in step 7.
+- Step 6 shrinks to digest pinning + setup-UX message polish.
 
 ## 4. Code changes
 
 | File | Change |
 |---|---|
 | `src/vestibule/backends/select.py` | **New.** `select_backend(limits)` — the §2 checklist; cached verdict + 30 s failure cooldown; probe helper. |
-| `src/vestibule/backends/container.py` | Constructor gains `soft_disabled` (frozenset). `_build_command` skips those flags (tmpfs stays, only its `size=` cap drops). Results report `container-degraded` + detail when any are off. |
-| `src/vestibule/server.py` | `get_warden()` → async, returns the cached selection; selection failure raises `RunRefusedError` (built in step 4 for exactly this) → existing `Blocked:` path. Called *outside* the outer deadline. |
+| `src/vestibule/backends/container.py` | Constructor gains `soft_disabled` (frozenset). `_build_command` skips those flags (tmpfs stays, only its `size=` cap drops) and adds `--pull=never`. Per-run image preflight with per-image positive cache (S5-D3); cache entry dropped on a "no such image" spawn failure. Results report `container-degraded` + detail when any soft limits are off. |
+| `src/vestibule/server.py` | `get_warden()` → async, returns the cached selection; selection failure raises `RunRefusedError` (built in step 4 for exactly this) → existing `Blocked:` path. Called *outside* the outer deadline. Outer deadline `timeout+20` → `timeout+30` (§2 budget). |
 | `tests/test_select.py` | **New** — Docker-free suite (§6). |
 | `tests/test_container.py` | +2 Docker-marked selection tests. |
 | `docs/plans/M1-container-backend.md` | §5 annotated as amended by this doc. |
@@ -96,6 +126,11 @@ No new config knobs. New module constants: probe timeout 10 s, failure cooldown 
 - **`VESTIBULE_RUNTIME=garbage`** → Blocked "unknown runtime; use auto, docker, or podman."
 - **Probe times out on a cold Docker Desktop VM** → Blocked once; cooldown retry passes
   (VM is warm by then).
+- **Node image missing** → only node runs are refused (with the pull command); python/bash
+  unaffected. No `docker run` is ever attempted for a missing image (S5-D3).
+- **Image deleted mid-session** (after its preflight passed) → `--pull=never` makes
+  `docker run` fail fast instead of pulling; the stale cache entry is dropped, so the next
+  call re-checks and returns the pull message.
 - **Two calls race the first probe** → the lock makes one probe; both get its verdict.
 - **Probe leftovers** → the probe file is deleted by the script itself; the probe container
   goes through the normal step-4 cleanup/reaper. Nothing new to leak.
@@ -116,10 +151,14 @@ Docker-free (monkeypatched CLI/probe — run everywhere):
 7. Concurrent first calls → exactly one probe.
 8. Server renders a degraded result as
    `isolation: container-degraded (limits not applied: …)` (criterion 11).
+9. Missing image → run refused with the exact pull command **and no `docker run` is ever
+   spawned** (S5-D3); preflight result cached (second run: no second `image inspect`).
+10. `_build_command` contains `--pull=never`; a "no such image" spawn failure drops the
+    cached preflight entry.
 
 Docker-marked (this machine):
-9. Real selection picks Docker → end-to-end hello reports `isolation: container`.
-10. After selection, no probe container survives and no probe file is left in the workspace.
+11. Real selection picks Docker → end-to-end hello reports `isolation: container`.
+12. After selection, no probe container survives and no probe file is left in the workspace.
 
 Gate: all 76 existing tests stay green; `ruff check` + `mypy` clean.
 
