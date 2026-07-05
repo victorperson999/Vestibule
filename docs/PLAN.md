@@ -1,3 +1,4 @@
+
 # Vestibule — Plan & Roadmap
 
 The concrete plan: why this project, the milestones with acceptance criteria, cross-platform strategy, adoption, and résumé framing. For *how* it works internally, see `ARCHITECTURE.md`. For *how to start*, see `GETTING_STARTED.md`.
@@ -10,11 +11,11 @@ The agentic-AI job market is real and growing (agent job postings up ~280% YoY),
 
 ### Why it's *this* builder's project
 
-| Existing asset | How it becomes the differentiator |
-|---|---|
-| **mysh** — Unix shell in C: fork/exec, process mgmt, pipes, TCP wire protocol, race-condition debugging | The warden *is* fork/exec + pipe plumbing + process-group signaling + `wait4` reaping, with namespace flags added. Same primitives, explainable from experience. |
-| **Local Explorer** — MCP config on Windows, Claude Code experience | Knows the MCP client side and the pain of setup → builds a *good* install UX. |
-| **Homega ERP role** (Python + AWS/GCP + LLM assistant) | Rehearses the exact "run AI-generated automation safely" problem. Direct résumé synergy. |
+| Existing asset                                                                                                 | How it becomes the differentiator                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **mysh** — Unix shell in C: fork/exec, process mgmt, pipes, TCP wire protocol, race-condition debugging | The warden*is* fork/exec + pipe plumbing + process-group signaling + `wait4` reaping, with namespace flags added. Same primitives, explainable from experience. |
+| **Local Explorer** — MCP config on Windows, Claude Code experience                                      | Knows the MCP client side and the pain of setup → builds a*good* install UX.                                                                                     |
+| **Homega ERP role** (Python + AWS/GCP + LLM assistant)                                                   | Rehearses the exact "run AI-generated automation safely" problem. Direct résumé synergy.                                                                          |
 
 Almost every student building an agent project is gluing APIs together in Python; ~none can explain how tool execution is isolated at the kernel level. That's the moat.
 
@@ -26,21 +27,23 @@ Several "agent sandbox / MCP gateway" projects exist (some even named "Airlock")
 
 ## Locked decisions (quick reference)
 
-| Decision | Choice |
-|---|---|
-| Product name | **Vestibule** (`vestibule-mcp` on PyPI) |
-| MCP server language | **Python** (official `mcp` SDK) |
-| Warden (isolation core) language | **Python + ctypes** (direct syscalls) |
-| seccomp layer | **Optional / degradable** (via `pyseccomp` if present) |
-| License | **MIT** |
-| Ownership | **Solo** |
+| Decision                         | Choice                                                         |
+| -------------------------------- | -------------------------------------------------------------- |
+| Product name                     | **Vestibule** (`vestibule-mcp` on PyPI)                |
+| MCP server language              | **Python** (official `mcp` SDK)                        |
+| Warden (isolation core) language | **Python + ctypes** (direct syscalls)                    |
+| seccomp layer                    | **Optional / degradable** (via `pyseccomp` if present) |
+| License                          | **MIT**                                                  |
+| Ownership                        | **Solo**                                                 |
 
 ## Milestones
 
 Build in this order. The ordering is deliberate — do not build the native warden before the container backend.
 
 ### Milestone 0 — Skeleton that runs (unsafely) · ~weekend 1
+
 Prove the plumbing end-to-end with zero isolation.
+
 - Python MCP server (official SDK) exposing `run_code`.
 - `NaiveBackend`: runs code via `subprocess` with a timeout. **No isolation** — plumbing only.
 - Registered with Claude Code / a live agent.
@@ -50,7 +53,9 @@ Prove the plumbing end-to-end with zero isolation.
 **All starter code for this milestone is in `GETTING_STARTED.md`.**
 
 ### Milestone 1 — Container backend + cross-platform floor · ~week 1
+
 Make it *usable by ~80% of the audience* on day one.
+
 - `ContainerBackend`: run code in a throwaway Docker/Podman container with `--network none`, `--memory`, `--cpus`, `--pids-limit`, read-only rootfs, non-root user, workspace bind-mount.
 - Capability detection at startup: native on Linux (M2), container elsewhere.
 - `read_workspace` tool with strict path-jailing (no escape above the workspace dir).
@@ -60,7 +65,9 @@ Make it *usable by ~80% of the audience* on day one.
 **Detailed contract:** `docs/plans/M1-container-backend.md` — written after the pre-implementation adversarial review (`docs/reviews/M1-codex-adversarial-review.md`); its sharpened acceptance criteria supersede the list above.
 
 ### Milestone 2 — Native Linux isolation core · ~weeks 2–3 · **the differentiator**
+
 The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage lifecycle.
+
 - `unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWUTS|NEWIPC)` → uid/gid map → `fork()` (child = PID 1).
 - Mount fresh `/proc`; `pivot_root` into a minimal rootfs; writable `/tmp` (tmpfs) + bind-mounted workspace.
 - cgroups v2: `memory.max`, `cpu.max`, `pids.max` (filesystem writes).
@@ -71,6 +78,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage life
 **Acceptance:** on Linux, code runs with no host filesystem visibility (can't read `~/.ssh`), no network, enforced mem/cpu/pids caps, and denied syscalls reported. Result reports `isolation: native`. Cold-start benchmark recorded.
 
 ### Milestone 3 — Audit log + resource reporting · ~week 3 · the observability story
+
 - Structured JSONL audit trail of every execution (request, code hash, exit, resource high-water marks, denied syscalls).
 - `memory.peak` / `cpu.stat` surfaced in every result.
 - A `vestibule --audit` CLI to pretty-print what agents have been doing.
@@ -78,6 +86,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage life
 **Acceptance:** every run appends one audit record; `--audit` prints a readable history; results include real usage numbers.
 
 ### Milestone 4 — Polish for adoption · ~week 4 · treat as a real feature
+
 - One-command install (`pipx install vestibule-mcp`) + copy-paste MCP config for Claude Code & Cursor.
 - README with a **20-second demo GIF**: an agent tries `rm -rf /` (or reads `~/.ssh`) and is safely contained.
 - **Ruthless first-run test:** fresh machine → working in < 2 minutes, or people bounce.
@@ -89,12 +98,12 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage life
 
 ## Cross-platform strategy (non-negotiable for adoption)
 
-| Platform | Backend | Isolation quality |
-|---|---|---|
-| Linux (native) | warden: namespaces + cgroups + seccomp | Strongest — the headline |
+| Platform                                     | Backend                                      | Isolation quality             |
+| -------------------------------------------- | -------------------------------------------- | ----------------------------- |
+| Linux (native)                               | warden: namespaces + cgroups + seccomp       | Strongest — the headline     |
 | Linux (no privileges / no cgroup delegation) | rootless Podman, or reduced-guarantee native | Strong / degraded (report it) |
-| macOS | container (Docker / Podman) | Good |
-| Windows | WSL2 → native, else Docker Desktop | Good |
+| macOS                                        | container (Docker / Podman)                  | Good                          |
+| Windows                                      | WSL2 → native, else Docker Desktop          | Good                          |
 
 **Rule:** the tool must *run* everywhere even if best-in-class isolation is Linux-only. Degrade loudly (report `isolation:` honestly), never fail silently.
 
