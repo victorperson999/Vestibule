@@ -10,9 +10,9 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 ## Why use Vestibule?
 
-**The problem.** Agents no longer just suggest code — they write it and execute it, autonomously, in a loop. Running model-generated code on your real machine is the dangerous part: a prompt-injected instruction can exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`), a hallucinated argument can delete the wrong directory, a runaway loop can eat the machine. That's the *what*: untrusted agent code needs somewhere safe to run.
+**The problem:** Agents no longer just suggest code — they write it and execute it, autonomously, in a loop. Running model-generated code on your real machine is the dangerous part: a prompt-injected instruction can exfiltrate secrets (`~/.ssh`, `~/.aws`, `.env`), a hallucinated argument can delete the wrong directory, a runaway loop can eat the machine. That's the *what*: untrusted agent code needs somewhere safe to run.
 
-**The answer.** Safe execution is already a product category — hosted sandboxes like E2B and Daytona solve it well, but on their terms: you pay per usage, every execution adds a network round-trip to the agent loop, and every line of generated code (plus whatever data it reads) ships to a third party's infrastructure.
+**The answer:** Safe execution is already a product category — hosted sandboxes like E2B and Daytona solve it well, but on their terms: you pay per usage, every execution adds a network round-trip to the agent loop, and every line of generated code (plus whatever data it reads) ships to a third party's infrastructure.
 
 **Vestibule's reason to exist** is refusing all three of those costs at once:
 
