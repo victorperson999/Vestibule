@@ -154,7 +154,14 @@ async def test_rootfs_is_read_only(backend, limits):
 async def test_timeout_kills_container(backend, limits):
     r = await backend.run("python", "import time; time.sleep(300)", 3, limits)
     assert r.timed_out is True
+    # The kill is detached (Codex budget fix 2026-07-05): the result returns first,
+    # the finisher removes the container right after — poll until it settles.
     # No survivor from THIS backend (label-global emptiness would race other tests).
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if _ps_names(f"label=vestibule.owner={backend._owner}") == "":
+            break
+        await asyncio.sleep(0.5)
     assert _ps_names(f"label=vestibule.owner={backend._owner}") == ""
 
 
@@ -252,3 +259,80 @@ async def test_four_simultaneous_runs_succeed(backend, limits):
     for i, r in enumerate(results):
         assert r.exit_code == 0
         assert f"tok-{i}" in r.stdout
+
+
+# ------------------------------------------------------------ step 5: selection (§5)
+
+
+async def _drain(warden) -> None:
+    await warden.drain()
+
+
+@docker_required
+async def test_real_selection_reports_container(limits):
+    """This machine's Docker passes the full profile: verdict `container`, and a
+    post-probe run through the selected warden reports it honestly."""
+    from vestibule.backends.select import BackendSelector
+
+    sel = await BackendSelector().get(limits)
+    try:
+        assert sel.verdict == "container"
+        r = await sel.warden.run("python", "print('post-probe')", 30, limits)
+        assert r.exit_code == 0
+        assert r.isolation == "container"
+        assert "post-probe" in r.stdout
+    finally:
+        await _drain(sel.warden)
+
+
+@docker_required
+async def test_probe_leaves_no_trace(limits):
+    """Plan §6: the probe cleans its workspace file and its container goes through
+    the normal detached cleanup."""
+    from vestibule.backends.select import BackendSelector
+
+    sel = await BackendSelector().get(limits)
+    try:
+        assert not (limits.workspace_path / ".vestibule-probe").exists()
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            if _ps_names(f"label=vestibule.owner={sel.warden._owner}") == "":
+                break
+            await asyncio.sleep(0.5)
+        assert _ps_names(f"label=vestibule.owner={sel.warden._owner}") == ""
+    finally:
+        await _drain(sel.warden)
+
+
+@docker_required
+async def test_selection_with_read_only_workspace(tmp_path):
+    """RO mode: the probe demands that reads work AND writes fail."""
+    from vestibule.backends.select import BackendSelector
+
+    lim = Limits(workspace_dir=str(tmp_path / "ws-ro"), workspace_ro=True)
+    sel = await BackendSelector().get(lim)
+    try:
+        assert sel.verdict == "container"
+    finally:
+        await _drain(sel.warden)
+
+
+@docker_required
+async def test_failed_selection_drains_and_leaves_no_tasks(tmp_path, monkeypatch):
+    """Regression (build-time hang): a FAILED selection must drain its rejected
+    probe backends' detached cleanup tasks. Leaked ones get mass-cancelled at
+    event-loop shutdown, which can orphan a subprocess spawn waiter on Windows
+    (CPython proactor wart) and deadlock loop close."""
+    import vestibule.backends.select as select_mod
+    from vestibule.backends.base import RunRefusedError
+    from vestibule.backends.select import BackendSelector
+
+    monkeypatch.setattr(select_mod, "_PROBE_RW", "exit 7")  # both probes run for real; both fail
+    with pytest.raises(RunRefusedError, match="cannot enforce"):
+        await BackendSelector().get(Limits(workspace_dir=str(tmp_path / "ws")))
+
+    leftovers = [
+        t for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done()
+    ]
+    assert leftovers == []

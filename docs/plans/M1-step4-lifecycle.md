@@ -110,6 +110,18 @@ SECURITY.md/README in step 7.
 > returns immediately, and the finisher task owns the semaphore slot — releasing it only when
 > the container is actually gone, so `max_concurrent` still bounds *existing* containers, not
 > just accepted requests. Regression test: `test_result_not_delayed_by_cleanup`.
+>
+> **Amended again (Codex adversarial follow-up, 2026-07-05):** P2 detached the *post-run*
+> cleanup, but the guest-timeout branch inside `_execute()` still awaited `_force_remove` plus
+> a bounded `proc.wait()` before returning — on a wedged daemon that is kill 5 s + rm 5 s +
+> wait 5 s on top of `timeout_s + 5` of collection: the full outer budget, reproducing the P2
+> failure mode one path over. Fixed: the timeout branch now detaches entirely — the honest
+> timed-out result returns at `timeout_s + 5` (its `exit_code` is `-1`, since the CLI's exit
+> is no longer awaited); the finisher performs the container kill; a detached `_reap_cli` task
+> collects the CLI process. A CLI that wedges *after* the guest finished is now reported as a
+> runtime failure ("exit code unknown"), never mislabeled a guest timeout. Regression tests:
+> `test_timed_out_result_returns_before_any_kill`,
+> `test_cli_wedge_after_guest_finished_is_not_a_timeout`.
 
 `run()` becomes orchestration; today's spawn/collect/inner-timeout body moves to `_execute()`.
 

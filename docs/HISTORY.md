@@ -133,9 +133,62 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   swallowing the honest result — fixed by fully detaching cleanup (result returns
   immediately; the finisher task holds the concurrency slot until the container is really
   gone). +1 regression test ⇒ 76 total.
-- **Step 5 — pending.** Capability probing and honest backend selection
-  (`container` / `container-degraded` / blocked with an actionable message).
-- **Step 6 — pending.** Digest pinning captured from a real `docker pull`, image
-  preflight, setup-UX messages.
+- **Step 4 follow-up — fixed 2026-07-05.** The Codex adversarial review of the step-5
+  *plan* re-audited the step-4 code and found the guest-timeout path could still consume
+  the entire `timeout_s + 20` outer deadline on a wedged daemon (kill 5 s + rm 5 s + CLI
+  wait 5 s serialized after `timeout_s + 5` of collection) — the same failure mode as P2,
+  one path over: the honest timed-out result would be replaced by the generic outer-deadline
+  message. Fixed by detaching the timeout kill entirely: the timed-out result returns at
+  `timeout_s + 5` (now always `exit_code: -1`), the finisher kills the container, and a
+  detached reaper collects the CLI process. Bonus honesty fix the same lines hid: a CLI that
+  wedges *after* the guest finished is now reported as a runtime failure ("exit code
+  unknown"), not a fake guest timeout. +2 regression tests ⇒ 78 total, ruff + mypy clean.
+- **S5-D1 / S5-D2 / S5-D3 — approved 2026-07-05** (all as recommended, after a Codex
+  adversarial review of the plan and a final logic check). S5-D1: a failed backend selection
+  is cached only 30 s, then re-checked — "start Docker Desktop, then retry" works without
+  restarting the MCP session; success caches for the process lifetime. S5-D2: when the full
+  profile fails but hard isolation works, one retry runs with all four soft limits (memory,
+  cpu, pids, tmpfs-size) off, and such runs honestly report `container-degraded` + the exact
+  list; per-limit add-back rejected (unbounded first-call latency) unless real degraded
+  environments show up. S5-D3 (revised by the Codex review): per-run image preflight +
+  `--pull never` land in step 5 itself — `docker run`'s default auto-pull would otherwise
+  let a first node run start a multi-minute network pull inside a tool call (D2 violation);
+  selection still needs only the python image. Docker CLI ≥ 20.10 becomes the documented
+  floor.
+- **Step 5 — done 2026-07-05.** Backend selection & capability probing built
+  (`src/vestibule/backends/select.py` + wiring). On the first tool call the selector finds a
+  runtime (`auto` prefers Docker, D4), then test-drives the FULL locked-down profile as a
+  real run through the normal run path — a bash workspace round-trip in `python:3.12-slim`
+  (read-only mode instead demands that reads work and writes *fail*) — and commits:
+  `container`, `container-degraded` (soft-off retry passed), or every `run_code` Blocked
+  with the exact fix. Naive is reachable only via explicit `VESTIBULE_BACKEND=naive`;
+  unknown backend/runtime values are legible refusals. The final pre-build logic check
+  caught a plan gap: "daemon dies after a good probe" was NOT covered by S4-D2 (that only
+  fires when the docker *binary* is gone) — a dead daemon makes `docker run` exit 125 with
+  the container never started, which would have reported `isolation: container` for a
+  non-run. As built, exit 125 reports `isolation: none` ("nothing was executed") and the
+  server's `note_result` hook drops the cached selection so the next call re-probes. Probe
+  stderr is scanned for runtime WARNING lines (silently-dropped limits) and logged loudly.
+  Server outer deadline `timeout+20` → `timeout+30` to fund the preflight's bounded worst
+  case. Also tidied: the overflow-killer's container kill is now finisher-tracked/shielded
+  so a run ending mid-kill can't strand the kill's CLI subprocess.
+  **Two real bugs found by the build itself:** (1) *CRLF script corruption* — step 3 wrote
+  guest scripts in text mode, which on Windows hosts turns `\n` into `\r\n`; CRLF breaks
+  bash keywords in the Linux guest (`then\r` ≠ `then`). Python/Node tolerate it and
+  single-line bash never hit it — the read-only-mode probe was the first multi-line
+  `if/then` bash guest and failed instantly. Fixed with `newline="\n"` on the script write.
+  (2) *Failed-selection task leak* — a selection that rejects its probe candidates left
+  their detached cleanup/reaper tasks running; event-loop shutdown then mass-cancels them,
+  and a task caught mid-`create_subprocess_exec` can orphan the spawn waiter on Windows
+  (CPython proactor wart) — deadlocking loop close (the test suite hung in teardown for
+  42 minutes; diagnosed with py-spy stack dumps + a watchdog that dumps still-alive tasks
+  10 s after cancellation). Fixed: new bounded `ContainerBackend.drain()`, called on every
+  rejected candidate; permanent regression test asserts a failed selection leaves zero
+  pending tasks. +25 tests (15 Docker-free selection suite, 6 Docker-free
+  preflight/honesty, 4 Docker-marked: real selection verdict, probe leaves no trace,
+  RO-workspace selection, failed-selection drain) ⇒ 103 total, ruff + mypy clean.
+- **Step 6 — pending.** Digest pinning captured from a real `docker pull`, setup-UX
+  message polish (per-run image preflight + `--pull never` landed in step 5 via the
+  revised S5-D3).
 - **Step 7 — pending.** Docker-marked acceptance suite (14 criteria) + README/docs
   update.

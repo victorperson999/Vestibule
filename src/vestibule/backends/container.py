@@ -7,12 +7,22 @@ driven via asyncio.create_subprocess_exec — async-safe, no blocking of the eve
 
 Step-4 lifecycle guarantees:
 - Cleanup (container kill/rm + temp dir) runs as an independent task, so it survives
-  cancellation of the request that started the run (§4.5).
+  cancellation of the request that started the run and never delays the result —
+  including on guest timeout, where the kill is fully detached (§4.5, amended by the
+  Codex budget finding 2026-07-05).
 - Every container is stamped by its owner with `vestibule.deadline=<unix epoch>`; the
   reaper removes only containers past their own deadline (+margin) — never judging a
   run by this process's config, never touching this process's live runs (S4-D3).
 - At most `max_concurrent` containers in flight; a bounded wait for a slot, then a
   legible RunRefusedError (S4-D1).
+
+Step-5 additions (docs/plans/M1-step5-selection.md):
+- Per-run image preflight + `--pull never`: a missing image is a legible refusal
+  carrying the exact pull command, never an in-call download (S5-D3, upholding D2).
+- `soft_disabled` omits soft limits the step-5 probe proved unenforceable; such runs
+  honestly report `container-degraded` with the exact list (D3).
+- Exit 125 — the runtime's own "run command failed" code — reports `isolation: none`:
+  the container never started, nothing was executed (golden rule 5).
 """
 from __future__ import annotations
 
@@ -33,6 +43,11 @@ log = logging.getLogger("vestibule.container")
 
 _EXT = {"python": ".py", "bash": ".sh", "node": ".js"}
 _INTERPRETER = {"python": "python", "bash": "bash", "node": "node"}
+
+# Soft-tier resource limits (D3): a verified-unenforceable one degrades the run
+# loudly instead of blocking it. Names appear in `isolation_detail` and in the
+# step-5 degraded retry (select.py).
+SOFT_CONTROLS: tuple[str, ...] = ("cpu", "memory", "pids", "tmpfs-size")
 
 # Grace added on top of the guest timeout: container cold start (image unpack,
 # Docker Desktop VM wakeup) happens inside `docker run`, and must not eat the
@@ -62,12 +77,16 @@ def _container_user() -> str:
 class ContainerBackend(Warden):
     """Runs each snippet in a fresh, locked-down, throwaway container."""
 
-    def __init__(self, runtime: str = "docker") -> None:
+    def __init__(self, runtime: str = "docker", soft_disabled: frozenset[str] = frozenset()) -> None:
         self._runtime = runtime
+        # D3: soft limits the step-5 probe proved unenforceable here; runs proceed
+        # without them and report container-degraded (never plain container).
+        self._soft_disabled = soft_disabled
         # Observability only — never a reap criterion (a crashed owner is
         # indistinguishable from a live one without a liveness oracle; S4-D3).
         self._owner = secrets.token_hex(8)
         self._active: set[str] = set()  # names of this process's in-flight containers
+        self._images_ok: set[str] = set()  # images that passed preflight (S5-D3)
         self._sem: asyncio.Semaphore | None = None
         self._reap_task: asyncio.Task[None] | None = None
         self._finishers: set[asyncio.Task[None]] = set()  # strong refs: loop holds tasks weakly
@@ -77,19 +96,14 @@ class ContainerBackend(Warden):
         return limits.image_node if language == "node" else limits.image_python
 
     def _build_command(
-        self,
-        run_id: str,
-        language: str,
-        limits: Limits,
-        sandbox_host: str,
-        workspace_host: str,
-        deadline_epoch: int,
+        self, run_id: str, language: str, limits: Limits,
+        sandbox_host: str, workspace_host: str, deadline_epoch: int,
     ) -> list[str]:
         """The exact §3 execution profile. Never add --privileged/--device/host
         namespaces/socket mounts/-i/-t here; the environment is only what we pass."""
         script_name = f"main{_EXT[language]}"
         ws_suffix = ":ro" if limits.workspace_ro else ""
-        return [
+        cmd = [
             self._runtime, "run",
             "--name", f"vestibule-{run_id}",
             "--label", "vestibule.run=1",
@@ -97,16 +111,25 @@ class ContainerBackend(Warden):
             "--label", f"vestibule.deadline={deadline_epoch}",
             "--label", f"vestibule.owner={self._owner}",
             "--rm", "--init",
+            "--pull", "never",  # S5-D3: a missing image must never trigger an in-call pull (D2)
             "--network", "none",
             "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges",
             "--read-only",
             "--user", _container_user(),
-            "--memory", f"{limits.mem_mb}m",
-            "--memory-swap", f"{limits.mem_mb}m",  # swap == mem => no swap escape
-            "--cpus", f"{limits.cpu_pct / 100:g}",
-            "--pids-limit", str(limits.pids_max),
-            "--tmpfs", f"/tmp:rw,nosuid,nodev,size={limits.tmpfs_mb}m",
+        ]
+        if "memory" not in self._soft_disabled:
+            cmd += ["--memory", f"{limits.mem_mb}m",
+                    "--memory-swap", f"{limits.mem_mb}m"]  # swap == mem => no swap escape
+        if "cpu" not in self._soft_disabled:
+            cmd += ["--cpus", f"{limits.cpu_pct / 100:g}"]
+        if "pids" not in self._soft_disabled:
+            cmd += ["--pids-limit", str(limits.pids_max)]
+        # The tmpfs itself is not soft (guests need a writable /tmp under --read-only);
+        # only its size cap is.
+        tmpfs_size = "" if "tmpfs-size" in self._soft_disabled else f",size={limits.tmpfs_mb}m"
+        cmd += [
+            "--tmpfs", f"/tmp:rw,nosuid,nodev{tmpfs_size}",
             "-e", "HOME=/tmp/home",
             "-e", "TMPDIR=/tmp",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
@@ -117,9 +140,15 @@ class ContainerBackend(Warden):
             self.image_for(language, limits),
             _INTERPRETER[language], f"/sandbox/{script_name}",
         ]
+        return cmd
 
     async def run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
         self._schedule_reap()  # detached housekeeping; costs the run path nothing (§3.3)
+
+        # S5-D3: verify the image is present before anything spawns and before taking
+        # a concurrency slot — `docker run` would otherwise auto-pull a missing image
+        # inside the tool call (a D2 violation and a multi-minute stall).
+        await self._preflight_image(self.image_for(language, limits))
 
         sem = self._sem
         if sem is None:  # lazy: bound to the running loop; no await before assignment
@@ -161,18 +190,14 @@ class ContainerBackend(Warden):
             if not slot_handed_off:  # e.g. mkdtemp failed; nothing to clean up
                 sem.release()
 
-    async def _execute(
-        self,
-        run_id: str,
-        name: str,
-        language: str,
-        code: str,
-        timeout_s: int,
-        limits: Limits,
-        tmpdir: str,
-        deadline_epoch: int,
+    async def _execute(self, run_id: str, name: str, language: str,
+                       code: str, timeout_s: int, limits: Limits, tmpdir: str, deadline_epoch: int,
     ) -> RunResult:
-        (Path(tmpdir) / f"main{_EXT[language]}").write_text(code, encoding="utf-8")
+        # newline="\n": text mode would otherwise translate \n -> \r\n on Windows
+        # hosts, and CRLF breaks bash keywords in the Linux guest (`then\r`).
+        (Path(tmpdir) / f"main{_EXT[language]}").write_text(
+            code, encoding="utf-8", newline="\n"
+        )
         workspace = limits.workspace_path
         workspace.mkdir(parents=True, exist_ok=True)
 
@@ -207,21 +232,29 @@ class ContainerBackend(Warden):
         )
         killer = asyncio.create_task(self._kill_on_overflow(overflow, name, run_id))
 
+        # Codex budget finding (2026-07-05): nothing here may await the daemon on the
+        # result path — on a wedged daemon the old serialized kill/rm/wait consumed the
+        # server's whole outer deadline and the honest result was lost. On timeout the
+        # result returns immediately; the detached finisher still kills the container
+        # via the runtime (§4.4/§4.5), and a detached reaper collects the CLI process.
         timed_out = False
+        cli_wedged = False
         try:
             await asyncio.wait_for(collectors, timeout=timeout_s + _STARTUP_GRACE_S)
-            await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_STEP_S)
-        except asyncio.TimeoutError:
-            timed_out = True
-            log.warning("run %s: timeout after %ds, killing container", run_id, timeout_s)
-            # §4.4: kill the CONTAINER via the runtime, never just the CLI process.
-            await self._force_remove(name)
-            collectors.cancel()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=_CLEANUP_STEP_S)
             except asyncio.TimeoutError:
-                proc.kill()  # last resort: the CLI itself is wedged
-                await proc.wait()
+                # Streams hit EOF (the guest is done) but the CLI won't exit: a wedged
+                # daemon, not a guest timeout — don't mislabel it as one.
+                cli_wedged = True
+                log.error("run %s: output complete but the %s CLI did not exit; detaching",
+                          run_id, self._runtime)
+                self._detach_cli_reap(proc, run_id)
+        except asyncio.TimeoutError:
+            timed_out = True
+            log.warning("run %s: timeout after %ds; container kill detached", run_id, timeout_s)
+            collectors.cancel()
+            self._detach_cli_reap(proc, run_id)
         finally:
             killer.cancel()
             try:
@@ -234,6 +267,24 @@ class ContainerBackend(Warden):
         stderr_text = err_buf.decode(errors="replace")
         if truncated and not timed_out:
             stderr_text += "\n[output exceeded collection cap; container was terminated]"
+        if cli_wedged:
+            stderr_text += "\n[run finished but the runtime did not report an exit code]"
+
+        # D3 honesty: degraded runs say exactly which limits were off; plain
+        # "container" is reserved for the full profile.
+        isolation = "container-degraded" if self._soft_disabled else "container"
+        detail = (
+            f"limits not applied: {', '.join(sorted(self._soft_disabled))}"
+            if self._soft_disabled else None
+        )
+        if exit_code == 125 and not timed_out:
+            # 125 is docker/podman's own "the run command itself failed" code: the
+            # container never started (daemon died mid-session, image vanished) and
+            # no guest code executed — never claim container isolation for a non-run.
+            # A guest deliberately calling exit(125) lands here too; underclaiming
+            # is the safe direction (the server re-probes on the next call).
+            isolation = "none"
+            detail = "the runtime failed to start the container; nothing was executed"
 
         log.info("run %s: done exit=%s timed_out=%s", run_id, exit_code, timed_out)
         return RunResult(
@@ -241,7 +292,8 @@ class ContainerBackend(Warden):
             stderr=stderr_text,
             exit_code=exit_code,
             timed_out=timed_out,
-            isolation="container",
+            isolation=isolation,
+            isolation_detail=detail,
         )
 
     @staticmethod
@@ -262,7 +314,55 @@ class ContainerBackend(Warden):
     async def _kill_on_overflow(self, overflow: asyncio.Event, name: str, run_id: str) -> None:
         await overflow.wait()
         log.warning("run %s: output cap exceeded, killing container early", run_id)
-        await self._force_remove(name)
+        # Finisher-tracked + shielded so killer.cancel() (run end racing this kill)
+        # can't strand the kill's CLI subprocess mid-call.
+        task = asyncio.create_task(self._force_remove(name))
+        self._finishers.add(task)
+        task.add_done_callback(self._finishers.discard)
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(task)
+
+    async def drain(self) -> None:
+        """Wait (bounded) for this backend's detached finisher/reaper tasks.
+
+        For orderly teardown of a backend that will not be used again — e.g. a
+        probe candidate the selector rejected (step 5). Every detached task is
+        internally bounded, so this returns promptly. Without it, tasks caught
+        mid-`create_subprocess_exec` by event-loop shutdown can deadlock loop
+        close (CPython proactor: mass-cancellation can orphan the spawn waiter).
+        """
+        tasks: list[asyncio.Task[None]] = list(self._finishers)
+        if self._reap_task is not None and not self._reap_task.done():
+            tasks.append(self._reap_task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _detach_cli_reap(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+        """Collect a `docker run` CLI process off the result path (Codex budget fix).
+
+        Used when the result must return NOW (guest timeout) or when the CLI is
+        wedged after the guest already finished. The finisher's kill/rm makes the
+        CLI exit on its own; this task only reaps it — or kills it as a last resort.
+        """
+        task = asyncio.create_task(self._reap_cli(proc, run_id))
+        self._finishers.add(task)
+        task.add_done_callback(self._finishers.discard)
+
+    async def _reap_cli(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+        try:
+            # Outlasts the finisher's kill (5 s) + rm -f (5 s), with slack.
+            await asyncio.wait_for(proc.wait(), timeout=3 * _CLEANUP_STEP_S)
+            return
+        except asyncio.TimeoutError:
+            pass
+        except Exception:  # detached task — never propagate
+            log.exception("run %s: CLI reap failed", run_id)
+            return
+        log.error("run %s: %s CLI still alive after container removal; killing it",
+                  run_id, self._runtime)
+        with contextlib.suppress(Exception):
+            proc.kill()
+            await proc.wait()
 
     async def _finish_run(self, sem: asyncio.Semaphore, name: str, tmpdir: str) -> None:
         """Detached post-run task (Codex P2): cleans up, then hands back the slot."""
@@ -339,12 +439,36 @@ class ContainerBackend(Warden):
             return False
         return now > deadline + _REAP_MARGIN_S
 
-    async def _cli(self, *args: str) -> str | None:
+    async def _preflight_image(self, image: str) -> None:
+        """S5-D3: refuse legibly when the image is not locally usable.
+
+        One successful check per image per process; `--pull never` in the run
+        profile backstops the race (image deleted after this check passed).
+        """
+        if image in self._images_ok:
+            return
+        res = await self._cli_status("image", "inspect", "--format", "{{.Id}}", image)
+        if res is None:
+            raise RunRefusedError(
+                f"container runtime did not respond while checking image {image}; retry shortly"
+            )
+        code, _out, err = res
+        if code != 0:
+            # `image inspect` also fails when the daemon is down — the runtime's own
+            # first error line tells the user which case they are in.
+            reason = (err.strip().splitlines() or ["unknown error"])[0][:200]
+            raise RunRefusedError(
+                f"image {image} is not usable ({reason}). If it is missing, run "
+                f"`{self._runtime} pull {image}` once and retry; Vestibule never "
+                "pulls images itself."
+            )
+        self._images_ok.add(image)
+
+    async def _cli_status(self, *args: str) -> tuple[int, str, str] | None:
         """One bounded runtime-CLI call (D10 stdio rules).
 
-        Returns stdout text, or None if the call could not be spawned or timed out.
-        Nonzero exits still return output — partial results matter (e.g. a batched
-        `inspect` where one id vanished mid-flight), and races with --rm are benign.
+        Returns (exit_code, stdout, stderr), or None if the call could not be
+        spawned or timed out.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -364,7 +488,18 @@ class ContainerBackend(Warden):
             with contextlib.suppress(Exception):
                 await proc.wait()
             return None
-        if proc.returncode != 0:
-            log.debug("%s %s: exit %s: %s", self._runtime, args[0], proc.returncode,
-                      err.decode(errors="replace").strip())
-        return out.decode(errors="replace")
+        assert proc.returncode is not None  # communicate() returned => process exited
+        return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
+
+    async def _cli(self, *args: str) -> str | None:
+        """`_cli_status`, output-only. Nonzero exits still return output — partial
+        results matter (e.g. a batched `inspect` where one id vanished mid-flight),
+        and races with --rm are benign.
+        """
+        res = await self._cli_status(*args)
+        if res is None:
+            return None
+        code, out, err = res
+        if code != 0:
+            log.debug("%s %s: exit %s: %s", self._runtime, args[0], code, err.strip())
+        return out

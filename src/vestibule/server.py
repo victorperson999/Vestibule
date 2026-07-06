@@ -15,7 +15,7 @@ from mcp.types import TextContent, Tool
 
 from vestibule import workspace
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
-from vestibule.backends.naive import NaiveBackend
+from vestibule.backends.select import BackendSelector
 from vestibule.config import ALLOWED_LANGUAGES, Limits
 
 logging.basicConfig(
@@ -27,12 +27,15 @@ log = logging.getLogger("vestibule")
 
 LIMITS = Limits.from_env()
 server = Server("vestibule")
+SELECTOR = BackendSelector()
 
 
-def get_warden() -> Warden:
-    # M0: always the unsafe naive backend.
-    # M1+: capability-detect -> NativeWarden on Linux, else ContainerBackend.
-    return NaiveBackend()
+async def get_warden() -> Warden:
+    # M1 (contract §5): lazily probe & cache the real backend on the first tool
+    # call. Naive is never auto-selected — it needs explicit VESTIBULE_BACKEND=naive.
+    # Raises RunRefusedError with an actionable message when no honest isolation
+    # is possible; the handler renders it as `Blocked:` content.
+    return (await SELECTOR.get(LIMITS)).warden
 
 
 @server.list_tools()
@@ -136,17 +139,21 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     log.info("run_code lang=%s bytes=%d timeout=%ds",
              language, len(code.encode()), timeout_s)
 
-    warden = get_warden()
     try:
+        # Selection runs before the outer deadline starts: a slow first probe
+        # (cold Docker Desktop VM) must not eat this run's time budget.
+        warden = await get_warden()
         result = await asyncio.wait_for(
             warden.run(language, code, timeout_s, LIMITS),
-            # Outer deadline in case the warden itself hangs; +20 leaves room for the
-            # container backend's kill/cleanup budget of timeout_s + 15 (M1 §4).
-            timeout=timeout_s + 20,
+            # Outer deadline in case the warden itself hangs; +30 covers the backend's
+            # bounded worst case (slot wait 5 + image preflight 5 + collect timeout+5
+            # + CLI wait 5 = timeout + 20) with real margin (M1 §4, step-5 budget).
+            timeout=timeout_s + 30,
         )
     except RunRefusedError as e:
-        # Refused before anything executed (e.g. concurrency limit, S4-D1) — a
-        # legible Blocked message the model can adapt to, never an exception.
+        # Refused before anything executed (concurrency limit S4-D1, missing image
+        # or runtime, hard-tier probe failure) — a legible Blocked message the
+        # model can adapt to, never an exception.
         log.info("run_code refused: %s", e)
         return _blocked(str(e))
     except asyncio.TimeoutError:
@@ -154,6 +161,10 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
         return [TextContent(type="text",
                             text="Execution failed: sandbox did not return in time.")]
 
+    # Honesty hook: a container-tier run that reports no isolation means the
+    # runtime died mid-session — drop the cached selection so the next call
+    # re-probes and gets an actionable message.
+    SELECTOR.note_result(result)
     log.info("run_code done exit=%s timed_out=%s isolation=%s",
              result.exit_code, result.timed_out, result.isolation)
     return [TextContent(type="text", text=_format_result(result))]

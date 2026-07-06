@@ -59,6 +59,7 @@ Backend code is runtime-agnostic (capability probes, not binary-name checks); `V
   --label vestibule.run=1 --label vestibule.run_id=<runid>
   --label vestibule.deadline=<epoch> --label vestibule.owner=<token>   # step-4 amendment (S4-D3)
   --rm --init                                   # --init: PID-1 zombie reaping (finding 7)
+  --pull never                                  # step-5 amendment (S5-D3): no in-call auto-pull, ever (D2)
   --network none
   --cap-drop ALL
   --security-opt no-new-privileges
@@ -88,7 +89,10 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 > after a Codex adversarial review found the age heuristic could kill live runs of servers with
 > different timeout configs (S4-D3). Step 5's shielded cleanup is further amended (Codex P2,
 > post-implementation): cleanup is fully detached and never delays the result; the concurrency
-> slot is released only when cleanup completes.
+> slot is released only when cleanup completes. Step 4.4's on-expiry kill/rm is likewise fully
+> detached (Codex adversarial follow-up 2026-07-05 — the serialized kill could still consume
+> the whole outer budget on a wedged daemon): the timed-out result returns immediately and the
+> finisher performs the kill; timed-out runs report `exit_code: -1`.
 
 1. Acquire semaphore. Generate run ID; write script to per-run temp dir.
 2. Spawn `docker run …` (D10 stdio rules).
@@ -98,6 +102,17 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 6. **Orphan reaping** (findings 6/20), at backend init and best-effort after each run: `docker ps -a --filter label=vestibule.run` ⇒ remove all **exited/created/dead** matches; remove **running** matches only when older than `max_timeout_s + 30s` (age from `.State.StartedAt`) — age-based so concurrent Vestibule servers don't reap each other's live runs.
 
 ## 5. Backend selection & capability probing
+
+> **Amended by `docs/plans/M1-step5-selection.md` (signed off & built 2026-07-05):** failed
+> selections are cached only 30 s, then re-checked (S5-D1 — "start Docker Desktop, then retry"
+> works without an MCP session restart); the degraded retry drops all four soft limits at once
+> (S5-D2); per-run image preflight + `--pull never` land in step 5, not step 6 (S5-D3, after a
+> Codex adversarial review showed `docker run`'s default auto-pull violated D2); a run exiting
+> 125 (the runtime's own "run failed" code — container never started) reports
+> `isolation: none` and drops the cached selection so the next call re-probes; the probe is a
+> real run through the normal run path, so it exercises preflight, the full §3 profile, and
+> the workspace round-trip in one shot. The server outer deadline is now `timeout_s + 30` to
+> fund the preflight's bounded worst case (§7).
 
 Lazy, once per process (guarded by `asyncio.Lock`), cached; runs on first tool call so the MCP handshake is never delayed. Sequence:
 
@@ -125,7 +140,8 @@ Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable wi
 
 - **Validation made total** (finding 18): explicit type checks for `language`/`code`/`timeout_seconds` (`bool` excluded from int check); out-of-type ⇒ `Blocked: timeout_seconds must be an integer from 1 to <max>` — before any subprocess exists.
 - `get_warden()` ⇒ cached `select_backend()` per §5. Naive is never auto-selected once M1 lands.
-- Outer deadline `timeout_s + 20` (§4).
+- Outer deadline `timeout_s + 20` (§4) — **raised to `timeout_s + 30` by the step-5 amendment**
+  (image preflight adds a bounded 5 s worst case to the run path).
 - `list_tools` gains `read_workspace`; `run_code` description updated: workspace at `/workspace` persists **and is writable by guest code** (D1 honesty), everything else ephemeral, no network.
 - `_format_result` renders `isolation_detail` when present.
 
