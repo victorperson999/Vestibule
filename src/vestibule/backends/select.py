@@ -141,21 +141,33 @@ class BackendSelector:
         # Test-drive the FULL §3 profile through the normal run path — probe = real
         # run, image preflight included — so the probe can never drift from what a
         # real run gets. Success is the only thing that earns `container` (D3).
+        # Every rejected candidate is drain()ed: its detached cleanup tasks must
+        # not outlive selection, or event-loop shutdown can deadlock on them.
         backend = ContainerBackend(runtime)
-        failure = await self._probe(backend, limits)
+        try:
+            failure = await self._probe(backend, limits)
+        except BaseException:
+            await backend.drain()
+            raise
         if failure is None:
             return Selection(backend, "container")
+        await backend.drain()
 
         # S5-D2: one retry with every soft limit off. Hard controls are never
         # stripped, so a hard-tier failure fails this retry too and blocks.
         log.warning("selection: full-profile probe failed (%s); retrying without "
                     "soft limits", failure)
         degraded = ContainerBackend(runtime, soft_disabled=frozenset(SOFT_CONTROLS))
-        second = await self._probe(degraded, limits)
+        try:
+            second = await self._probe(degraded, limits)
+        except BaseException:
+            await degraded.drain()
+            raise
         if second is None:
             detail = f"limits not applied: {', '.join(sorted(SOFT_CONTROLS))}"
             log.warning("selection: running DEGRADED — %s", detail)
             return Selection(degraded, "container-degraded", detail)
+        await degraded.drain()
         raise RunRefusedError(
             f"container runtime cannot enforce the isolation profile ({second}); "
             "refusing to run without isolation"

@@ -171,9 +171,22 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   stderr is scanned for runtime WARNING lines (silently-dropped limits) and logged loudly.
   Server outer deadline `timeout+20` → `timeout+30` to fund the preflight's bounded worst
   case. Also tidied: the overflow-killer's container kill is now finisher-tracked/shielded
-  so a run ending mid-kill can't strand the kill's CLI subprocess. +17 tests (14 Docker-free
-  selection/preflight/honesty, 3 Docker-marked: real selection verdict, probe leaves no
-  trace, RO-workspace selection) ⇒ 95 total, ruff + mypy clean.
+  so a run ending mid-kill can't strand the kill's CLI subprocess.
+  **Two real bugs found by the build itself:** (1) *CRLF script corruption* — step 3 wrote
+  guest scripts in text mode, which on Windows hosts turns `\n` into `\r\n`; CRLF breaks
+  bash keywords in the Linux guest (`then\r` ≠ `then`). Python/Node tolerate it and
+  single-line bash never hit it — the read-only-mode probe was the first multi-line
+  `if/then` bash guest and failed instantly. Fixed with `newline="\n"` on the script write.
+  (2) *Failed-selection task leak* — a selection that rejects its probe candidates left
+  their detached cleanup/reaper tasks running; event-loop shutdown then mass-cancels them,
+  and a task caught mid-`create_subprocess_exec` can orphan the spawn waiter on Windows
+  (CPython proactor wart) — deadlocking loop close (the test suite hung in teardown for
+  42 minutes; diagnosed with py-spy stack dumps + a watchdog that dumps still-alive tasks
+  10 s after cancellation). Fixed: new bounded `ContainerBackend.drain()`, called on every
+  rejected candidate; permanent regression test asserts a failed selection leaves zero
+  pending tasks. +25 tests (15 Docker-free selection suite, 6 Docker-free
+  preflight/honesty, 4 Docker-marked: real selection verdict, probe leaves no trace,
+  RO-workspace selection, failed-selection drain) ⇒ 103 total, ruff + mypy clean.
 - **Step 6 — pending.** Digest pinning captured from a real `docker pull`, setup-UX
   message polish (per-run image preflight + `--pull never` landed in step 5 via the
   revised S5-D3).

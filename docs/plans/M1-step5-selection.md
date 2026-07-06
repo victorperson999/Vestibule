@@ -51,6 +51,12 @@ The naive backend becomes reachable only by explicitly setting `VESTIBULE_BACKEN
    Passes → verdict **`container-degraded`**; all later runs omit those flags and say so.
    Fails → **Blocked**: "runtime cannot enforce the isolation profile: `<last error>`."
 
+**Found by the probe (build-time):** step 3's script delivery wrote guest files in text
+mode, which on Windows hosts turns `\n` into `\r\n` — and CRLF breaks bash keywords in the
+Linux guest (`then\r` is not `then`). Python/Node tolerate CRLF and single-line bash never
+hit it, so the RO probe (the first multi-line `if/then` bash guest) exposed it. Fixed:
+scripts are always written with `newline="\n"`.
+
 **The probe script** (bash — runs in `python:3.12-slim`, which ships bash):
 - Normal mode: write a file in `/workspace`, read it back, delete it, print a marker.
 - Read-only mode (`VESTIBULE_WORKSPACE_RO=1`): confirm reading works **and writing fails**.
@@ -145,6 +151,12 @@ No new config knobs. New module constants: probe timeout 10 s, failure cooldown 
 - **Two calls race the first probe** → the lock makes one probe; both get its verdict.
 - **Probe leftovers** → the probe file is deleted by the script itself; the probe container
   goes through the normal step-4 cleanup/reaper. Nothing new to leak.
+- **Rejected probe candidates** (found at build time, the hard way) → every candidate
+  backend the selector rejects is `drain()`ed — a bounded wait for its detached
+  cleanup/reaper tasks — before selection continues or refuses. Leaving them running let
+  event-loop shutdown mass-cancel a task mid-`create_subprocess_exec`, which can orphan the
+  spawn waiter on Windows (CPython proactor wart) and deadlock loop close: the test suite
+  hung in teardown, diagnosed via py-spy + a pending-task watchdog dump.
 - **Podman** → selected only if its probes pass (D4); still documented experimental.
 
 ## 6. Tests

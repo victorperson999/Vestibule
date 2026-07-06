@@ -265,10 +265,7 @@ async def test_four_simultaneous_runs_succeed(backend, limits):
 
 
 async def _drain(warden) -> None:
-    await asyncio.gather(*list(warden._finishers), return_exceptions=True)
-    if warden._reap_task is not None:
-        with contextlib.suppress(Exception):
-            await warden._reap_task
+    await warden.drain()
 
 
 @docker_required
@@ -318,3 +315,24 @@ async def test_selection_with_read_only_workspace(tmp_path):
         assert sel.verdict == "container"
     finally:
         await _drain(sel.warden)
+
+
+@docker_required
+async def test_failed_selection_drains_and_leaves_no_tasks(tmp_path, monkeypatch):
+    """Regression (build-time hang): a FAILED selection must drain its rejected
+    probe backends' detached cleanup tasks. Leaked ones get mass-cancelled at
+    event-loop shutdown, which can orphan a subprocess spawn waiter on Windows
+    (CPython proactor wart) and deadlock loop close."""
+    import vestibule.backends.select as select_mod
+    from vestibule.backends.base import RunRefusedError
+    from vestibule.backends.select import BackendSelector
+
+    monkeypatch.setattr(select_mod, "_PROBE_RW", "exit 7")  # both probes run for real; both fail
+    with pytest.raises(RunRefusedError, match="cannot enforce"):
+        await BackendSelector().get(Limits(workspace_dir=str(tmp_path / "ws")))
+
+    leftovers = [
+        t for t in asyncio.all_tasks()
+        if t is not asyncio.current_task() and not t.done()
+    ]
+    assert leftovers == []

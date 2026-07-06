@@ -193,7 +193,11 @@ class ContainerBackend(Warden):
     async def _execute(self, run_id: str, name: str, language: str,
                        code: str, timeout_s: int, limits: Limits, tmpdir: str, deadline_epoch: int,
     ) -> RunResult:
-        (Path(tmpdir) / f"main{_EXT[language]}").write_text(code, encoding="utf-8")
+        # newline="\n": text mode would otherwise translate \n -> \r\n on Windows
+        # hosts, and CRLF breaks bash keywords in the Linux guest (`then\r`).
+        (Path(tmpdir) / f"main{_EXT[language]}").write_text(
+            code, encoding="utf-8", newline="\n"
+        )
         workspace = limits.workspace_path
         workspace.mkdir(parents=True, exist_ok=True)
 
@@ -317,6 +321,21 @@ class ContainerBackend(Warden):
         task.add_done_callback(self._finishers.discard)
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.shield(task)
+
+    async def drain(self) -> None:
+        """Wait (bounded) for this backend's detached finisher/reaper tasks.
+
+        For orderly teardown of a backend that will not be used again — e.g. a
+        probe candidate the selector rejected (step 5). Every detached task is
+        internally bounded, so this returns promptly. Without it, tasks caught
+        mid-`create_subprocess_exec` by event-loop shutdown can deadlock loop
+        close (CPython proactor: mass-cancellation can orphan the spawn waiter).
+        """
+        tasks: list[asyncio.Task[None]] = list(self._finishers)
+        if self._reap_task is not None and not self._reap_task.done():
+            tasks.append(self._reap_task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     def _detach_cli_reap(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
         """Collect a `docker run` CLI process off the result path (Codex budget fix).
