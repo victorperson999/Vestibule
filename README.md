@@ -1,6 +1,6 @@
 # Vestibule
 
-**Run untrusted AI-agent code safely — on your own machine, for free, with nothing sent to a cloud.**
+**Run untrusted AI-agent code safely — on your own machine, for free, with nothing sent to a cloud service.**
 
 A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server.
 
