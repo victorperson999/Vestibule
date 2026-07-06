@@ -10,7 +10,7 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
                                 ╔═════════════════════════════╗
 ┌──────────────┐                ║          VESTIBULE          ║                ┌──────────────────┐
 │              │    run_code    ║                             ║    sealed:     │   your machine   │
-│   AI agent   │ ─────────────► ║   generated code runs here  ║ ────── ✕ ────► │  files, secrets, │
+│   AI agent   │ ─────────────► ║   generated code runs here  ║ ────── ✕ ────►│  files, secrets,  │
 │  (via MCP)   │ ◄───────────── ║                             ║ no way through │  network, shell  │
 │              │  output only   ║  no network · no host files ║                │   — untouched    │
 └──────────────┘                ║  capped cpu · memory · disk ║                └──────────────────┘
