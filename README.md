@@ -6,6 +6,19 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 > A *vestibule* is the small sealed entry chamber you pass through between outside and inside. Vestibule sits between an AI agent and your host machine: the agent's generated code runs *inside* the chamber, never touching the real system.
 
+```text
+                                ╔═════════════════════════════╗
+┌──────────────┐                ║          VESTIBULE          ║                ┌──────────────────┐
+│              │    run_code    ║                             ║    sealed:     │   your machine   │
+│   AI agent   │ ─────────────► ║   generated code runs here  ║ ────── ✕ ────► │  files, secrets, │
+│  (via MCP)   │ ◄───────────── ║                             ║ no way through │  network, shell  │
+│              │  output only   ║  no network · no host files ║                │   — untouched    │
+└──────────────┘                ║  capped cpu · memory · disk ║                └──────────────────┘
+                                ╚══════════════╤══════════════╝
+                                               │
+                  the one doorway: /workspace (a dedicated folder for files)
+```
+
 ---
 
 ## Why use Vestibule?
