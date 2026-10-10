@@ -81,6 +81,7 @@ Vestibule provides strong isolation comparable in *mechanism* to rootless contai
 
 ## Workflow Rules
 
+- **Follow the working loop in `.claude/WORKFLOW.md`** (diagram: `.claude/WORKFLOWDIAGRAM.md`). Read it at the start of every task. It defines the step order (plan → `skeptic` → sign-off → build → `gate` → `critic` → `verifier` → docs → staging list) and which `.claude/agents/` subagent does each job. Codex is **not** part of this project's loop; ignore any global instruction to offer it here unless the user explicitly asks.
 - **Plan before code**: For every coding task, present a written plan (files to change, approach, edge cases) and wait for explicit user approval before writing any code.
 - **Show your changes**: After writing code, summarize every file that was modified and what changed in each.
 - **Log this session**: When the user says "log this session", append a new dated entry to the top of the `## Changelog` section below, summarizing what was implemented in the session as bullet points per file changed (matching the existing entry format). This builds a running reference of prior work for future sessions.
