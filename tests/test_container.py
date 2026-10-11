@@ -1,7 +1,7 @@
 """ContainerBackend tests (M1 steps 3–6). Marked 'docker' — they need a running
 daemon and BOTH digest-pinned sandbox images pulled locally; anywhere else they skip
 cleanly, and the skip reason carries the exact `docker pull` commands. Nothing here
-ever pulls from the network.
+ever pulls from the network. The skip rule and CLI helpers live in tests/dockerutil.py.
 
 Step-4 additions (plan §6 tests 6–10): cancellation cleanup, deadline-label reaping
 (remove past-deadline, spare future-deadline, spare unlabeled), and 4-way concurrency.
@@ -13,7 +13,6 @@ import contextlib
 import logging
 import re
 import secrets
-import shutil
 import subprocess
 import tempfile
 import time
@@ -21,44 +20,12 @@ from pathlib import Path
 
 import pytest
 
+from dockerutil import docker_required, plant, ps_names, remove
+
 from vestibule.backends.container import ContainerBackend
 from vestibule.config import Limits
 
-
-def _docker(*args: str) -> int | None:
-    """Exit code of a short read-only docker CLI call; None if it could not run."""
-    try:
-        r = subprocess.run(["docker", *args], capture_output=True, timeout=10,
-                           stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return r.returncode
-
-
-def _docker_skip_reason() -> str | None:
-    """None if the Docker-marked tests can run here, else why not (with the fix).
-
-    Daemon up but images missing must SKIP, not fail: the backend would refuse every
-    run (preflight), which is correct product behavior but says nothing about the code.
-    """
-    if shutil.which("docker") is None:
-        return "docker CLI not found"
-    if _docker("version", "--format", "{{.Server.Version}}") != 0:
-        return "no reachable Docker daemon"
-    lim = Limits()
-    missing = [ref for ref in (lim.image_python, lim.image_node)
-               if _docker("image", "inspect", "--format", "{{.Id}}", ref) != 0]
-    if missing:
-        return "pinned sandbox image(s) not pulled; run: " + "; ".join(
-            f"docker pull {ref}" for ref in missing
-        )
-    return None
-
-
 pytestmark = pytest.mark.docker
-
-_SKIP_REASON = _docker_skip_reason()
-docker_required = pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
 
 
 @pytest.fixture()
@@ -76,33 +43,6 @@ async def backend():
     if b._reap_task is not None:
         with contextlib.suppress(Exception):
             await b._reap_task
-
-
-def _ps_names(*filters: str, all_states: bool = True) -> str:
-    cmd = ["docker", "ps", "--format", "{{.Names}}"]
-    if all_states:
-        cmd.insert(2, "-a")
-    for f in filters:
-        cmd += ["--filter", f]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
-                       stdin=subprocess.DEVNULL)
-    return r.stdout.strip()
-
-
-def _plant(name: str, labels: dict[str, str]) -> None:
-    """Start a labeled sleeper container (no --rm: removal is the subject under test).
-    `--pull never`: tests must never touch the network (a missing image skips instead)."""
-    cmd = ["docker", "run", "-d", "--pull", "never", "--name", name, "--network", "none"]
-    for k, v in labels.items():
-        cmd += ["--label", f"{k}={v}"]
-    cmd += [Limits().image_python, "sleep", "300"]
-    subprocess.run(cmd, check=True, capture_output=True, timeout=60,
-                   stdin=subprocess.DEVNULL)
-
-
-def _remove(name: str) -> None:
-    subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=15,
-                   stdin=subprocess.DEVNULL)
 
 
 # ---------------------------------------------------------------- step 3: happy path
@@ -183,10 +123,10 @@ async def test_timeout_kills_container(backend, limits):
     # No survivor from THIS backend (label-global emptiness would race other tests).
     deadline = time.time() + 20
     while time.time() < deadline:
-        if _ps_names(f"label=vestibule.owner={backend._owner}") == "":
+        if ps_names(f"label=vestibule.owner={backend._owner}") == "":
             break
         await asyncio.sleep(0.5)
-    assert _ps_names(f"label=vestibule.owner={backend._owner}") == ""
+    assert ps_names(f"label=vestibule.owner={backend._owner}") == ""
 
 
 @docker_required
@@ -235,7 +175,7 @@ async def test_cancellation_cleans_up_container_and_tmpdir(backend, limits):
     )
     deadline = time.time() + 60
     while time.time() < deadline:  # wait until the container is actually up
-        if _ps_names(f"label=vestibule.owner={backend._owner}", all_states=False):
+        if ps_names(f"label=vestibule.owner={backend._owner}", all_states=False):
             break
         await asyncio.sleep(0.5)
     else:
@@ -247,12 +187,12 @@ async def test_cancellation_cleans_up_container_and_tmpdir(backend, limits):
 
     deadline = time.time() + 20  # poll: the detached cleanup + --rm/rm -f settle
     while time.time() < deadline:
-        gone = _ps_names(f"label=vestibule.owner={backend._owner}") == ""
+        gone = ps_names(f"label=vestibule.owner={backend._owner}") == ""
         no_new_dirs = not (set(tmp_root.glob("vestibule-run-*")) - before)
         if gone and no_new_dirs:
             break
         await asyncio.sleep(0.5)
-    assert _ps_names(f"label=vestibule.owner={backend._owner}") == ""
+    assert ps_names(f"label=vestibule.owner={backend._owner}") == ""
     assert set(tmp_root.glob("vestibule-run-*")) - before == set()
 
 
@@ -261,12 +201,12 @@ async def test_reaper_removes_past_deadline_container(backend):
     """Plan §6 test 7 — a *running* container with deadline=1 (epoch 1970) is removed:
     proves the rule is state-independent (acceptance criterion 8, strengthened)."""
     name = f"vestibule-plant-{secrets.token_hex(4)}"
-    _plant(name, {"vestibule.run": "1", "vestibule.deadline": "1"})
+    plant(name, {"vestibule.run": "1", "vestibule.deadline": "1"})
     try:
         await backend._reap_orphans()
-        assert _ps_names(f"name={name}") == ""
+        assert ps_names(f"name={name}") == ""
     finally:
-        _remove(name)
+        remove(name)
 
 
 @docker_required
@@ -274,26 +214,26 @@ async def test_reaper_spares_future_deadline_container(backend):
     """Plan §6 test 8 — a live run (future deadline) is untouchable, whatever the
     reaper's own config says."""
     name = f"vestibule-plant-{secrets.token_hex(4)}"
-    _plant(name, {"vestibule.run": "1", "vestibule.deadline": str(int(time.time()) + 100_000)})
+    plant(name, {"vestibule.run": "1", "vestibule.deadline": str(int(time.time()) + 100_000)})
     try:
         await backend._reap_orphans()
-        assert _ps_names(f"name={name}") == name
+        assert ps_names(f"name={name}") == name
     finally:
-        _remove(name)
+        remove(name)
 
 
 @docker_required
 async def test_reaper_spares_and_warns_on_missing_deadline(backend, caplog):
     """Plan §6 test 9 — no deadline label => never reaped, warned loudly."""
     name = f"vestibule-plant-{secrets.token_hex(4)}"
-    _plant(name, {"vestibule.run": "1"})
+    plant(name, {"vestibule.run": "1"})
     try:
         with caplog.at_level(logging.WARNING, logger="vestibule.container"):
             await backend._reap_orphans()
-        assert _ps_names(f"name={name}") == name
+        assert ps_names(f"name={name}") == name
         assert "no parseable vestibule.deadline" in caplog.text
     finally:
-        _remove(name)
+        remove(name)
 
 
 @docker_required
@@ -323,7 +263,9 @@ async def test_real_selection_reports_container(limits):
 
     sel = await BackendSelector().get(limits)
     try:
-        assert sel.verdict == "container"
+        # S7-D3: plain `container` now also means the probe read every soft limit
+        # back from the container's own cgroup and found it applied.
+        assert (sel.verdict, sel.detail) == ("container", None)
         r = await sel.warden.run("python", "print('post-probe')", 30, limits)
         assert r.exit_code == 0
         assert r.isolation == "container"
@@ -340,13 +282,15 @@ async def test_probe_leaves_no_trace(limits):
 
     sel = await BackendSelector().get(limits)
     try:
-        assert not (limits.workspace_path / ".vestibule-probe").exists()
+        # The probe file name is random per probe (step 7a): no probe file of any name
+        # may be left behind.
+        assert list(limits.workspace_path.glob(".vestibule-probe*")) == []
         deadline = time.time() + 20
         while time.time() < deadline:
-            if _ps_names(f"label=vestibule.owner={sel.warden._owner}") == "":
+            if ps_names(f"label=vestibule.owner={sel.warden._owner}") == "":
                 break
             await asyncio.sleep(0.5)
-        assert _ps_names(f"label=vestibule.owner={sel.warden._owner}") == ""
+        assert ps_names(f"label=vestibule.owner={sel.warden._owner}") == ""
     finally:
         await _drain(sel.warden)
 
@@ -383,3 +327,88 @@ async def test_failed_selection_drains_and_leaves_no_tasks(tmp_path, monkeypatch
         if t is not asyncio.current_task() and not t.done()
     ]
     assert leftovers == []
+
+
+# ------------------------------------------------- step 7a: probe name + self-deadline
+
+
+@docker_required
+async def test_planted_probe_name_cannot_break_selection(tmp_path):
+    """Plan §4.1 regression: a guest that once created a directory at the probe's old
+    fixed name made every later selection fail — forever, since the workspace
+    persists. The probe file name is now random per probe."""
+    from vestibule.backends.select import BackendSelector
+
+    lim = Limits(workspace_dir=str(tmp_path / "ws"))
+    (lim.workspace_path / ".vestibule-probe").mkdir(parents=True)
+    sel = await BackendSelector().get(lim)
+    try:
+        assert sel.verdict == "container"
+        assert [p.name for p in lim.workspace_path.iterdir()] == [".vestibule-probe"]
+    finally:
+        await _drain(sel.warden)
+
+
+@docker_required
+async def test_container_ends_itself_without_a_server(tmp_path, monkeypatch):
+    """S7-D5: the exact run profile, launched with no Vestibule server watching it
+    (as after a hard kill): the in-container `timeout` ends the guest at its own
+    deadline and the daemon's --rm removes the container."""
+    import vestibule.backends.container as container_mod
+
+    monkeypatch.setattr(container_mod, "_DEADLINE_SLACK_S", 2)  # deadline = 1 + 2 s
+    sandbox = tmp_path / "sbx"
+    sandbox.mkdir()
+    (sandbox / "main.py").write_text("import time\ntime.sleep(300)\n", newline="\n")
+    run_id = secrets.token_hex(8)
+    lim = Limits(workspace_dir=str(tmp_path / "ws"))
+    lim.workspace_path.mkdir(parents=True)
+    cmd = ContainerBackend()._build_command(
+        run_id, "python", lim, str(sandbox), str(lim.workspace_path),
+        int(time.time()) + 60, 1,
+    )
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=60, stdin=subprocess.DEVNULL)
+        elapsed = time.monotonic() - t0
+        assert proc.returncode == 137, proc.stderr  # killed by its own deadline
+        assert elapsed < 30  # nowhere near the guest's 300 s sleep
+        deadline = time.time() + 10
+        while ps_names(f"name=^vestibule-{run_id}$") and time.time() < deadline:
+            await asyncio.sleep(0.25)
+        assert ps_names(f"name=^vestibule-{run_id}$") == ""
+    finally:
+        remove(f"vestibule-{run_id}")
+
+
+@docker_required
+async def test_run_cancelled_at_spawn_leaves_no_container(backend, limits, monkeypatch):
+    """7a critic round 2: a run cancelled while `docker run` is still creating its
+    container can have the finisher's `kill` and `rm -f` both miss, after which the
+    CLI starts the container anyway. What stops that late guest is `_cleanup`
+    removing the script dir right after: it finds no script, exits, and --rm removes
+    it. Without that, this 300 s guest would still be running at the end."""
+    spawned = asyncio.Event()
+    real_spawn = asyncio.create_subprocess_exec
+
+    async def spy(*cmd, **kw):
+        proc = await real_spawn(*cmd, **kw)
+        if len(cmd) > 1 and cmd[1] == "run":
+            spawned.set()
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    for _ in range(3):  # the race is ~50/50 per try; any lost one must still end clean
+        spawned.clear()
+        task = asyncio.create_task(
+            backend.run("python", "import time; time.sleep(300)", 60, limits)
+        )
+        await asyncio.wait_for(spawned.wait(), 60)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    deadline = time.time() + 20
+    while ps_names(f"label=vestibule.owner={backend._owner}") and time.time() < deadline:
+        await asyncio.sleep(0.5)
+    assert ps_names(f"label=vestibule.owner={backend._owner}") == ""

@@ -2,7 +2,9 @@
 
 Covers the semaphore cap, the bounded-wait busy refusal (S4-D1) and its server
 rendering, the pure reap decision rule (S4-D3), cancellation hygiene, and the
-deadline/owner label emission.
+deadline/owner label emission. Step 7a adds the non-cancelling drain, idle(), the
+tracked CLI reap on cancellation (S7-D1), the self-deadline wrapper (S7-D5), and
+container-degraded reporting for unverified limits (S7-D3).
 """
 import asyncio
 import shutil
@@ -161,6 +163,7 @@ async def test_result_not_delayed_by_cleanup(quiet_backend, monkeypatch):
 
     async def blocked_cleanup(name, tmpdir):
         await finished.wait()
+        shutil.rmtree(tmpdir, ignore_errors=True)  # stubbed cleanup still owns temp hygiene
 
     async def quick_execute(*args):
         return _ok()
@@ -184,7 +187,7 @@ async def test_result_not_delayed_by_cleanup(quiet_backend, monkeypatch):
 
 def test_build_command_stamps_deadline_and_owner():
     b = ContainerBackend()
-    cmd = b._build_command("cafe01", "python", Limits(), "/h/sbx", "/h/ws", 1234567890)
+    cmd = b._build_command("cafe01", "python", Limits(), "/h/sbx", "/h/ws", 1234567890, 30)
     assert "vestibule.deadline=1234567890" in cmd
     assert f"vestibule.owner={b._owner}" in cmd
     # profile sanity: the step-3 invariants survived the restructure
@@ -387,7 +390,7 @@ async def test_preflight_hedge_names_the_configured_runtime(monkeypatch):
 
 def test_build_command_soft_flags_and_pull_never():
     limits = Limits()
-    full = ContainerBackend()._build_command("c1", "python", limits, "/h/sbx", "/h/ws", 1)
+    full = ContainerBackend()._build_command("c1", "python", limits, "/h/sbx", "/h/ws", 1, 30)
     assert ["--pull", "never"] == full[full.index("--pull"):full.index("--pull") + 2]
     for flag in ("--memory", "--memory-swap", "--cpus", "--pids-limit"):
         assert flag in full
@@ -395,7 +398,7 @@ def test_build_command_soft_flags_and_pull_never():
 
     from vestibule.backends.container import SOFT_CONTROLS
     bare = ContainerBackend(soft_disabled=frozenset(SOFT_CONTROLS))._build_command(
-        "c2", "python", limits, "/h/sbx", "/h/ws", 1
+        "c2", "python", limits, "/h/sbx", "/h/ws", 1, 30
     )
     for flag in ("--memory", "--memory-swap", "--cpus", "--pids-limit"):
         assert flag not in bare
@@ -461,3 +464,152 @@ async def test_degraded_backend_reports_detail(monkeypatch, tmp_path):
     assert r.isolation_detail == "limits not applied: cpu, memory, pids, tmpfs-size"
 
     await asyncio.gather(*list(b._finishers), return_exceptions=True)
+
+
+# ------------------------------------------------------- S7-D1: drain, idle, CLI reap
+
+
+async def test_starting_run_is_not_idle(quiet_backend, monkeypatch, tmp_path):
+    """The in-flight count rises at run() entry, before the preflight await: pruning
+    must never forget a backend whose run is still starting."""
+    b = quiet_backend
+    gate = asyncio.Event()
+
+    async def slow_preflight(image):
+        await gate.wait()
+        raise RunRefusedError("stop here")
+
+    monkeypatch.setattr(b, "_preflight_image", slow_preflight)
+    task = asyncio.create_task(
+        b.run("python", "1", 5, Limits(workspace_dir=str(tmp_path / "ws")))
+    )
+    await asyncio.sleep(0.02)
+    assert not b.idle()
+    gate.set()
+    with pytest.raises(RunRefusedError):
+        await task
+    assert b.idle()
+
+
+async def test_drain_timeout_reports_pending_and_never_cancels():
+    b = ContainerBackend()
+    slow = asyncio.create_task(asyncio.sleep(0.3))
+    b._finishers.add(slow)
+    slow.add_done_callback(b._finishers.discard)
+    assert await b.drain(timeout=0.05) is False
+    assert not slow.done()
+    assert await b.drain() is True
+    assert not slow.cancelled()
+
+
+async def test_drain_catches_tasks_added_while_draining():
+    """A run ending mid-drain adds a new finisher; drain loops until quiet."""
+    b = ContainerBackend()
+    late_done = asyncio.Event()
+
+    async def late():
+        await asyncio.sleep(0.05)
+        late_done.set()
+
+    async def first():
+        await asyncio.sleep(0.05)
+        t = asyncio.create_task(late())
+        b._finishers.add(t)
+        t.add_done_callback(b._finishers.discard)
+
+    t = asyncio.create_task(first())
+    b._finishers.add(t)
+    t.add_done_callback(b._finishers.discard)
+    assert await b.drain(timeout=2) is True
+    assert late_done.is_set()
+
+
+async def test_cancelled_run_hands_its_cli_to_a_tracked_reap(monkeypatch, tmp_path):
+    """Skeptic finding 11: on cancellation the `docker run` CLI process is collected
+    by a tracked task, so drain() waits for it instead of leaving it to loop close."""
+    b = ContainerBackend()
+    limits = Limits(max_concurrent=1, workspace_dir=str(tmp_path / "ws"))
+    monkeypatch.setattr(b, "_schedule_reap", lambda: None)
+    monkeypatch.setattr(b, "_preflight_image", _ok_preflight)
+
+    async def noop_cleanup(name, tmpdir):
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    monkeypatch.setattr(b, "_cleanup", noop_cleanup)
+    proc = FakeCliProc()  # a guest that runs until killed
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    task = asyncio.create_task(b.run("python", "while True: pass", 30, limits))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    reaps = [t for t in b.pending_tasks() if "_reap_cli" in repr(t.get_coro())]
+    assert len(reaps) == 1
+    proc.kill()  # what the finisher's container kill makes the real CLI do
+    assert await b.drain(timeout=2) is True
+
+
+# ----------------------------------------------- S7-D5 self-deadline + S7-D3 reporting
+
+
+def test_guest_runs_under_its_own_deadline():
+    """S7-D5: the container ends itself at timeout + the label slack even if the
+    server is gone — the wrapper sits between the image and the interpreter."""
+    lim = Limits()
+    cmd = ContainerBackend()._build_command("c3", "node", lim, "/h/sbx", "/h/ws", 1, 30)
+    tail = cmd[cmd.index(lim.image_node):]
+    assert tail == [lim.image_node, "timeout", "-s", "KILL",
+                    str(30 + container_mod._DEADLINE_SLACK_S), "node", "/sandbox/main.js"]
+
+
+def test_unverified_limits_are_reported_degraded():
+    b = ContainerBackend()
+    assert b.isolation_status() == ("container", None)
+    b.set_limits_note("limits not verified: pids (pids.max=max)")
+    assert b.isolation_status() == (
+        "container-degraded", "limits not verified: pids (pids.max=max)"
+    )
+
+    from vestibule.backends.container import SOFT_CONTROLS
+    d = ContainerBackend(soft_disabled=frozenset(SOFT_CONTROLS))
+    d.set_limits_note("runtime warning: WARNING: x")
+    assert d.isolation_status() == (
+        "container-degraded",
+        "limits not applied: cpu, memory, pids, tmpfs-size; runtime warning: WARNING: x",
+    )
+
+
+async def test_cancelled_cli_call_kills_its_process(monkeypatch):
+    """7a critic round 1 (verifier side finding): a cancelled caller of _cli_status
+    (e.g. the preflight of a cancelled request) must not leave the CLI running
+    unowned until loop close."""
+    b = ContainerBackend()
+
+    class HangingProc:
+        returncode = None
+        killed = False
+
+        async def communicate(self):
+            await asyncio.Event().wait()
+
+        def kill(self):
+            self.killed = True
+
+    proc = HangingProc()
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    task = asyncio.create_task(b._cli_status("image", "inspect", "x"))
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.killed

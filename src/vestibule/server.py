@@ -6,7 +6,9 @@ a stray print() corrupts the protocol. All logging goes to stderr.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import sys
 
 from mcp.server import Server
@@ -50,7 +52,14 @@ async def list_tools() -> list[Tool]:
                 "may create, modify, or delete files in it. Everything else is "
                 "ephemeral and discarded after the run. It is resource-limited: "
                 "code exceeding the memory/CPU/time limits is terminated. "
-                "Use this to run and test code safely; do not expect internet access."
+                "Use this to run and test code safely; do not expect internet access. "
+                "Your code runs as /sandbox/main.<ext> with /workspace as the working "
+                "directory, so to import your own modules saved in the workspace, add it "
+                "to the path first (Python: sys.path.insert(0, '/workspace'); Node: "
+                "require('/workspace/<file>')). Read files that runs produce with "
+                "read_workspace and change them with run_code, never with other file "
+                "tools: the workspace is written by sandboxed code and may contain "
+                "symlinks that other tools would follow out of it, for reads and writes."
             ),
             inputSchema={
                 "type": "object",
@@ -143,20 +152,21 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
         # Selection runs before the outer deadline starts: a slow first probe
         # (cold Docker Desktop VM) must not eat this run's time budget.
         warden = await get_warden()
-        result = await asyncio.wait_for(
-            warden.run(language, code, timeout_s, LIMITS),
-            # Outer deadline in case the warden itself hangs; +30 covers the backend's
-            # bounded worst case (slot wait 5 + image preflight 5 + collect timeout+5
-            # + CLI wait 5 = timeout + 20) with real margin (M1 §4, step-5 budget).
-            timeout=timeout_s + 30,
-        )
+        # Outer deadline in case the warden itself hangs; +30 covers the backend's
+        # bounded worst case (slot wait 5 + image preflight 5 + collect timeout+5
+        # + CLI wait 5 = timeout + 20) with real margin (M1 §4, step-5 budget).
+        # asyncio.timeout, not wait_for: on 3.11 wait_for runs the run in a separate
+        # task, which can outlive this handler when the SDK cancels it through its
+        # anyio scope — an untracked run that shutdown cleanup can't see (S7-D1).
+        async with asyncio.timeout(timeout_s + 30):
+            result = await warden.run(language, code, timeout_s, LIMITS)
     except RunRefusedError as e:
         # Refused before anything executed (concurrency limit S4-D1, missing image
         # or runtime, hard-tier probe failure) — a legible Blocked message the
         # model can adapt to, never an exception.
         log.info("run_code refused: %s", e)
         return _blocked(str(e))
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.error("warden exceeded outer deadline")
         return [TextContent(type="text",
                             text="Execution failed: sandbox did not return in time.")]
@@ -164,7 +174,7 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     # Honesty hook: a container-tier run that reports no isolation means the
     # runtime died mid-session — drop the cached selection so the next call
     # re-probes and gets an actionable message.
-    SELECTOR.note_result(result)
+    SELECTOR.note_result(warden, result)
     log.info("run_code done exit=%s timed_out=%s isolation=%s",
              result.exit_code, result.timed_out, result.isolation)
     return [TextContent(type="text", text=_format_result(result))]
@@ -221,8 +231,42 @@ def _truncate(s: str, limit: int = LIMITS.max_output_bytes) -> str:
 
 
 async def _main() -> None:
-    async with stdio_server() as (read, write):
-        await server.run(read, write, server.create_initialization_options())
+    try:
+        async with stdio_server() as (read, write):
+            await server.run(read, write, server.create_initialization_options())
+    finally:
+        await _shutdown()
+
+
+async def _shutdown() -> None:
+    """Client gone (stdin EOF): clean up inside the client's ~2 s grace (S7-D1).
+
+    The SDK has already cancelled in-flight handlers; their containers are removed
+    here. If cleanup tasks are still pending, exit at once instead of returning into
+    asyncio.run(), whose cancel-all can catch a task mid-subprocess-spawn and hang
+    loop close forever on Windows (the step-5 hang; reproduced at shutdown in step 7).
+    Nothing is written to stdout here — the client is no longer reading it.
+    """
+    try:
+        clean = await SELECTOR.aclose()
+    except Exception:
+        log.exception("shutdown cleanup failed")
+        clean = False
+    # Belt and braces: return into asyncio.run() only when there is nothing at all
+    # left for its cancel-all to cancel — whatever spawned it, tracked or not.
+    leftovers = _other_live_tasks()
+    if not clean or leftovers:
+        log.warning("shutdown: exiting with cleanup still pending (%d other task(s))",
+                    len(leftovers))
+        for stream in (sys.stderr, sys.stdout):
+            with contextlib.suppress(Exception):
+                stream.flush()
+        os._exit(0)
+
+
+def _other_live_tasks() -> list[asyncio.Task]:
+    me = asyncio.current_task()
+    return [t for t in asyncio.all_tasks() if t is not me and not t.done()]
 
 
 def run() -> None:

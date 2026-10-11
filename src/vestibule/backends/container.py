@@ -24,6 +24,14 @@ Step-5 additions (docs/plans/M1-step5-selection.md):
 - Exit 125 — the runtime's own "run command failed" code — reports `isolation: none`:
   usually the container never started (golden rule 5). A guest that exits 125 itself
   is underclaimed the same way (the safe direction), and the detail says so.
+
+Step-7a additions (docs/plans/M1/M1-step7-acceptance.md):
+- S7-D1: an optional shared concurrency semaphore (one budget per process), an
+  in-flight count + idle(), and a drain() that never cancels what it waits on.
+- S7-D5: every guest runs under `timeout -s KILL <timeout + slack>`, so a container
+  ends itself at its labeled deadline even when the server was killed.
+- S7-D3: a soft limit the selection probe could not verify inside the container
+  makes runs report container-degraded, never plain container.
 """
 from __future__ import annotations
 
@@ -84,7 +92,12 @@ def _container_user() -> str:
 class ContainerBackend(Warden):
     """Runs each snippet in a fresh, locked-down, throwaway container."""
 
-    def __init__(self, runtime: str = "docker", soft_disabled: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self,
+        runtime: str = "docker",
+        soft_disabled: frozenset[str] = frozenset(),
+        slots: asyncio.Semaphore | None = None,
+    ) -> None:
         self._runtime = runtime
         # D3: soft limits the step-5 probe proved unenforceable here; runs proceed
         # without them and report container-degraded (never plain container).
@@ -94,9 +107,45 @@ class ContainerBackend(Warden):
         self._owner = secrets.token_hex(8)
         self._active: set[str] = set()  # names of this process's in-flight containers
         self._images_ok: set[str] = set()  # images that passed preflight (S5-D3)
-        self._sem: asyncio.Semaphore | None = None
+        # S7-D1: the selector passes ONE semaphore to every backend it builds, so
+        # `max_concurrent` keeps bounding existing containers across re-selection.
+        # A standalone backend (tests) lazily makes its own.
+        self._sem: asyncio.Semaphore | None = slots
         self._reap_task: asyncio.Task[None] | None = None
         self._finishers: set[asyncio.Task[None]] = set()  # strong refs: loop holds tasks weakly
+        self._inflight = 0  # run() calls in progress, counted from entry (before preflight)
+        # Set at shutdown (S7-D1): the orphan reaper skips its remaining steps (another
+        # server's stale containers can wait for the next start; the client is leaving).
+        self._closing = False
+        # S7-D3: set by the selection probe when a soft limit could not be verified
+        # inside the container (cgroup readback mismatch, or a runtime warning on
+        # cgroup v1). Runs then report container-degraded with this detail.
+        self._limits_note: str | None = None
+
+    @property
+    def runtime(self) -> str:
+        return self._runtime
+
+    @property
+    def inflight(self) -> int:
+        """run() calls in progress on this backend (counted from entry)."""
+        return self._inflight
+
+    def set_limits_note(self, note: str | None) -> None:
+        self._limits_note = note
+
+    def isolation_status(self) -> tuple[str, str | None]:
+        """What a run on this backend honestly reports (D3): plain `container` only
+        when the full profile applied AND was verified; otherwise `container-degraded`
+        with exactly what is missing."""
+        notes = []
+        if self._soft_disabled:
+            notes.append(f"limits not applied: {', '.join(sorted(self._soft_disabled))}")
+        if self._limits_note:
+            notes.append(self._limits_note)
+        if notes:
+            return "container-degraded", "; ".join(notes)
+        return "container", None
 
     def image_for(self, language: str, limits: Limits) -> str:
         # python:3.12-slim is Debian-based and ships bash — it serves both (D2).
@@ -104,7 +153,7 @@ class ContainerBackend(Warden):
 
     def _build_command(
         self, run_id: str, language: str, limits: Limits,
-        sandbox_host: str, workspace_host: str, deadline_epoch: int,
+        sandbox_host: str, workspace_host: str, deadline_epoch: int, timeout_s: int,
     ) -> list[str]:
         """The exact §3 execution profile. Never add --privileged/--device/host
         namespaces/socket mounts/-i/-t here; the environment is only what we pass."""
@@ -145,11 +194,25 @@ class ContainerBackend(Warden):
             "-v", f"{sandbox_host}:/sandbox:ro",
             "--workdir", "/workspace",
             self.image_for(language, limits),
+            # S7-D5: the container ends itself at the deadline its owner stamped on the
+            # label, even if this server was killed and nobody will ever `kill` it.
+            # Normally never fires: the server kills timed-out runs at timeout + grace.
+            # Under --init, `timeout` kills its whole process group, then tini exits.
+            "timeout", "-s", "KILL", str(timeout_s + _DEADLINE_SLACK_S),
             _INTERPRETER[language], f"/sandbox/{script_name}",
         ]
         return cmd
 
     async def run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
+        # Counted before any await: idle() must never mistake a starting run (still in
+        # preflight or waiting for a slot) for an idle backend (S7-D1 pruning).
+        self._inflight += 1
+        try:
+            return await self._run(language, code, timeout_s, limits)
+        finally:
+            self._inflight -= 1
+
+    async def _run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
         self._schedule_reap()  # detached housekeeping; costs the run path nothing (§3.3)
 
         # S5-D3: verify the image is present before anything spawns and before taking
@@ -161,8 +224,12 @@ class ContainerBackend(Warden):
         if sem is None:  # lazy: bound to the running loop; no await before assignment
             sem = self._sem = asyncio.Semaphore(limits.max_concurrent)
         try:
-            await asyncio.wait_for(sem.acquire(), timeout=_SEM_WAIT_S)
-        except asyncio.TimeoutError:
+            # asyncio.timeout keeps the acquire in this task: 3.11's wait_for runs it
+            # in an inner task and can drop a cancel that lands as the slot frees,
+            # carrying a cancelled request on into a spawn (S7-D1, critic finding 1).
+            async with asyncio.timeout(_SEM_WAIT_S):
+                await sem.acquire()
+        except TimeoutError:
             raise RunRefusedError(
                 f"too many concurrent runs (max {limits.max_concurrent}); retry shortly"
             ) from None
@@ -208,7 +275,9 @@ class ContainerBackend(Warden):
         workspace = limits.workspace_path
         workspace.mkdir(parents=True, exist_ok=True)
 
-        cmd = self._build_command(run_id, language, limits, tmpdir, str(workspace), deadline_epoch)
+        cmd = self._build_command(
+            run_id, language, limits, tmpdir, str(workspace), deadline_epoch, timeout_s
+        )
         log.info("run %s: spawning %s container (image=%s)",
                  run_id, self._runtime, self.image_for(language, limits))
         try:
@@ -262,6 +331,13 @@ class ContainerBackend(Warden):
             log.warning("run %s: timeout after %ds; container kill detached", run_id, timeout_s)
             collectors.cancel()
             self._detach_cli_reap(proc, run_id)
+        except asyncio.CancelledError:
+            # The request was cancelled (client cancel or shutdown, S7-D1): the finisher
+            # kills the container, and this tracked task collects its CLI, so drain()
+            # sees the CLI process too instead of leaving it to loop-close cleanup.
+            collectors.cancel()
+            self._detach_cli_reap(proc, run_id)
+            raise
         finally:
             killer.cancel()
             try:
@@ -277,13 +353,7 @@ class ContainerBackend(Warden):
         if cli_wedged:
             stderr_text += "\n[run finished but the runtime did not report an exit code]"
 
-        # D3 honesty: degraded runs say exactly which limits were off; plain
-        # "container" is reserved for the full profile.
-        isolation = "container-degraded" if self._soft_disabled else "container"
-        detail = (
-            f"limits not applied: {', '.join(sorted(self._soft_disabled))}"
-            if self._soft_disabled else None
-        )
+        isolation, detail = self.isolation_status()
         if exit_code == 125 and not timed_out:
             # 125 is docker/podman's own "the run command itself failed" code: the
             # container never started (daemon died mid-session, image vanished) and
@@ -337,20 +407,56 @@ class ContainerBackend(Warden):
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.shield(task)
 
-    async def drain(self) -> None:
-        """Wait (bounded) for this backend's detached finisher/reaper tasks.
-
-        For orderly teardown of a backend that will not be used again — e.g. a
-        probe candidate the selector rejected (step 5). Every detached task is
-        internally bounded, so this returns promptly. Without it, tasks caught
-        mid-`create_subprocess_exec` by event-loop shutdown can deadlock loop
-        close (CPython proactor: mass-cancellation can orphan the spawn waiter).
-        """
-        tasks: list[asyncio.Task[None]] = list(self._finishers)
+    def pending_tasks(self) -> list[asyncio.Task[None]]:
+        """This backend's detached finisher/CLI-reap/reaper tasks still running."""
+        tasks = [t for t in self._finishers if not t.done()]
         if self._reap_task is not None and not self._reap_task.done():
             tasks.append(self._reap_task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        return tasks
+
+    def idle(self) -> bool:
+        """No run in progress and no detached task pending: safe to forget (S7-D1)."""
+        return self._inflight == 0 and not self.pending_tasks()
+
+    def active_names(self) -> list[str]:
+        """Names of this backend's containers that may still exist."""
+        return sorted(self._active)
+
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Wait for this backend's detached tasks; True once none is left pending.
+
+        For orderly teardown of a backend that will not be used again — a probe
+        candidate the selector rejected, or every backend at shutdown. Each detached
+        task is internally bounded, so an unbounded drain still returns promptly.
+
+        Never cancels what it waits on (S7-D1): `asyncio.wait`, not `gather`. Inside
+        the MCP SDK's anyio cancel scope the waiter itself is re-cancelled at every
+        await, and `gather` would pass that cancellation on to the cleanup tasks: a
+        finisher cancelled before its first step never releases its slot or removes
+        its container, and one cancelled mid-`create_subprocess_exec` can deadlock
+        loop close on Windows (CPython proactor). Loops because a run ending during
+        the drain adds a new finisher.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = None if timeout is None else loop.time() + timeout
+        while True:
+            tasks = self.pending_tasks()
+            if not tasks:
+                return True
+            remaining = None if deadline is None else deadline - loop.time()
+            if remaining is not None and remaining <= 0:
+                return False
+            await asyncio.wait(tasks, timeout=remaining)
+
+    def begin_close(self) -> None:
+        """Shutdown (S7-D1): stop optional housekeeping (the orphan reaper). Run
+        cleanup itself is never skipped — see `_force_remove`."""
+        self._closing = True
+
+    async def remove_now(self, names: list[str], timeout: float) -> None:
+        """One batched `rm -f` of `names`, bounded by `timeout` (shutdown path)."""
+        if names:
+            await self._cli_status("rm", "-f", *names, timeout=timeout)
 
     def _detach_cli_reap(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
         """Collect a `docker run` CLI process off the result path (Codex budget fix).
@@ -390,12 +496,26 @@ class ContainerBackend(Warden):
             sem.release()
 
     async def _cleanup(self, name: str, tmpdir: str) -> None:
-        """Post-run cleanup; idempotent alongside --rm and the timeout kill path (§4.5)."""
+        """Post-run cleanup; idempotent alongside --rm and the timeout kill path (§4.5).
+
+        Order matters — keep the script removal right after `_force_remove`. A run
+        cancelled while `docker run` is still creating its container can have both
+        `kill` and `rm -f` miss ("No such container"), after which the CLI starts the
+        container anyway (seen in 7 of 12 live tries, 7a critic round 2). Removing
+        the script dir (mounted at /sandbox) at once is what stops that late guest:
+        it finds no script, exits 127, and `--rm` removes it. Deferring or moving
+        this rmtree would let it run until its S7-D5 deadline.
+        """
         await self._force_remove(name)
         await asyncio.to_thread(shutil.rmtree, tmpdir, ignore_errors=True)
 
     async def _force_remove(self, name: str) -> None:
-        """`kill` then `rm -f`, each bounded; 'No such container' is fine (races --rm)."""
+        """`kill` then `rm -f`, each bounded; 'No such container' is fine (races --rm).
+
+        Deliberately NOT skipped at shutdown even though the batched removal just ran:
+        a container still being created when that batch ran was missed by it, and only
+        this per-name pass catches it (~0.3 s on Docker Desktop, inside the budget).
+        """
         await self._cli("kill", name)
         await self._cli("rm", "-f", name)
 
@@ -416,7 +536,7 @@ class ContainerBackend(Warden):
         try:
             listing = await self._cli("ps", "-aq", "--filter", "label=vestibule.run=1")
             ids = listing.split() if listing else []
-            if not ids:
+            if not ids or self._closing:  # shutdown: housekeeping can wait for next time
                 return
             # The id is part of the format so a container vanishing between ps and
             # inspect can never misalign the output with the id list.
@@ -433,7 +553,7 @@ class ContainerBackend(Warden):
                     continue
                 if self._reap_decision(name.lstrip("/"), deadline_raw, now, self._active):
                     doomed.append(cid)
-            if doomed:
+            if doomed and not self._closing:
                 log.warning("reaper: removing %d stale labeled container(s)", len(doomed))
                 await self._cli("rm", "-f", *doomed)
         except Exception:  # detached task — never propagate
@@ -483,7 +603,9 @@ class ContainerBackend(Warden):
             )
         self._images_ok.add(image)
 
-    async def _cli_status(self, *args: str) -> tuple[int, str, str] | None:
+    async def _cli_status(
+        self, *args: str, timeout: float = _CLEANUP_STEP_S
+    ) -> tuple[int, str, str] | None:
         """One bounded runtime-CLI call (D10 stdio rules).
 
         Returns (exit_code, stdout, stderr), or None if the call could not be
@@ -500,13 +622,20 @@ class ContainerBackend(Warden):
             log.warning("%s %s: cannot spawn: %s", self._runtime, args[0], e)
             return None
         try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=_CLEANUP_STEP_S)
-        except asyncio.TimeoutError:
-            log.error("%s %s: no response in %ds", self._runtime, args[0], _CLEANUP_STEP_S)
+            async with asyncio.timeout(timeout):
+                out, err = await proc.communicate()
+        except TimeoutError:
+            log.error("%s %s: no response in %gs", self._runtime, args[0], timeout)
             proc.kill()
             with contextlib.suppress(Exception):
                 await proc.wait()
             return None
+        except asyncio.CancelledError:
+            # A cancelled caller (e.g. preflight of a cancelled request) must not
+            # leave the CLI process running unowned until loop close.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise
         assert proc.returncode is not None  # communicate() returned => process exited
         return proc.returncode, out.decode(errors="replace"), err.decode(errors="replace")
 

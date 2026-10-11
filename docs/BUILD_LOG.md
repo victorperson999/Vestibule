@@ -33,20 +33,118 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 3 | `ContainerBackend` happy path | 2026-07-03 | `4f765e9` | 58 |
 | M1 step 4 | Run lifecycle: cleanup, reaping, concurrency cap | 2026-07-04 | `b4019a7` (+ fix in `5ce882a`) | 78 |
 | M1 step 5 | Backend selection + capability probing | 2026-07-05 | `522606f` `5ce882a` `d6a9df8` `7ebd28b` | 103 (104 after `99a7f99`) |
-| M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | *pending (Victor commits)* | 122 |
-| M1 step 7 | Acceptance suite (14 criteria) + docs | pending | — | — |
+| M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | `a0827fd` | 122 |
+| M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | *pending (Victor commits)* | 175 |
+| M1 step 7b | Acceptance suite (14 criteria) + docs | pending | — | — |
 
 ## Known open issues
 
 | Found | Where | Issue | Owner |
 |---|---|---|---|
+| 2026-10-11 (7a review) | `server.py` `_main` | Linux/macOS: a client that sends SIGTERM *without* closing stdin first skips shutdown cleanup (Python's default SIGTERM exits at once). The in-flight container lives until its S7-D5 self-deadline (`timeout + 90` s). The installed MCP Python client always closes stdin first; Claude Code's behavior is unmeasured. | M2 (needs a Linux host to test a SIGTERM handler) |
+| 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
+| 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids. | Documented residual (M4 `SECURITY.md`) |
+| 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
+| 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Docs in 7b; M2 / M4 |
+
+**Closed:** the 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
+shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite shutdown hang.
+
+---|---|---|---|
 | 2026-10-10 (step-6 review, pre-existing since steps 4–5) | `select.py` `BackendSelector.note_result`; `server.py` `_main` | A selection dropped by `note_result` is never `drain()`ed, and the live warden is not drained at server shutdown either (`asyncio.run` mass-cancels leftovers). Cleanup tasks caught mid-spawn can hit the Windows proactor deadlock `drain()` exists for; the replacement backend's fresh semaphore briefly doesn't count the dropped one's still-cleaning containers. | Step-7 plan (needs design + `skeptic`) |
 
 ---
 
-## M1 step 6 — Digest-pinned images + setup UX (2026-10-10)
+## M1 step 7a — Shutdown & lifetime hardening, verified limits (2026-10-11)
 
 - **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) v2:
+  S7-D1 (shutdown + one concurrency budget), S7-D5 (in-container self-deadline), S7-D3
+  (cgroup readback), S7-D2 (description sentence), §4.1 (random probe name), §4.2 (import
+  idiom). §11 has the skeptic dispositions; §12 has critic rounds 1–2.
+- **What:**
+  - `BackendSelector` tracks every backend it builds, with one shared semaphore.
+    `note_result(warden, result)` checks identity.
+  - `aclose()` removes all active containers in one batched `rm -f` (1.5 s), then waits
+    without cancelling (0.5 s; in-flight runs count).
+  - `server._shutdown` runs it on stdin EOF and calls `os._exit(0)` if anything at all is
+    still alive.
+  - Waits use `asyncio.wait`/`asyncio.timeout`, never `gather`/`wait_for` around cleanup or
+    the run. Cancelled CLI calls kill their process.
+  - Guest command: `timeout -s KILL <timeout+90> <interpreter> …`.
+  - The probe reads back `memory.max`, `memory.swap.max`, `pids.max`, `cpu.max` and the
+    `/tmp` size. A mismatch, or no visible cgroup, gives `container-degraded`; cgroup v1
+    falls back to a broadened warning scan.
+  - The probe file is `.vestibule-probe-<hex>`.
+  - New refusals: a workspace-permission refusal, and an image refusal naming `timeout`.
+- **Files:**
+  - Source: `backends/base.py`, `backends/container.py`, `backends/select.py`,
+    `server.py`.
+  - New tests: `tests/dockerutil.py` (the shared Docker skip rule, moved out of
+    `test_container.py`) and `tests/test_stdio_e2e.py`.
+  - Changed tests: `tests/test_select.py`, `tests/test_lifecycle.py`,
+    `tests/test_container.py`.
+  - Docs: `README.md` (override contract needs `timeout`), contract §3/§4/§5 amendments,
+    plan, HISTORY, this file.
+  - The plans moved to `docs/plans/M1/` in the same commit (Victor's renames).
+- **Guarded by:**
+  - `tests/test_stdio_e2e.py`: all 3 tests use the real server process, closing stdin
+    and killing at 2 s like a client.
+  - `test_select.py`:
+    - `test_anyio_cancel_during_candidate_drain_spares_its_cleanup` (fails on the old
+      `gather` drain; mutation-checked)
+    - `test_cancelled_handler_leaves_no_run_behind` (fails on the old `wait_for`;
+      mutation-checked)
+    - `test_anyio_cancel_mid_probe_leaves_candidate_for_aclose`
+    - `test_aclose_*`, `test_server_shutdown_*`,
+      `test_note_result_ignores_a_dropped_backends_late_result`
+    - `test_reselection_shares_one_slot_budget`
+    - `test_limits_note` (14 cases), `test_runtime_warning_formats`
+    - `test_unverified_limit_makes_the_selection_degraded`,
+      `test_unusable_workspace_gets_its_own_refusal`
+    - `test_probe_uses_a_fresh_random_file_name`
+  - `test_lifecycle.py`:
+    - `test_guest_runs_under_its_own_deadline`, `test_unverified_limits_are_reported_degraded`
+    - the drain/idle tests
+    - `test_cancelled_run_hands_its_cli_to_a_tracked_reap`,
+      `test_cancelled_cli_call_kills_its_process`
+  - `test_container.py` (Docker):
+    - `test_real_selection_reports_container` (now also checks the limits were verified)
+    - `test_planted_probe_name_cannot_break_selection`
+    - `test_container_ends_itself_without_a_server`
+    - `test_run_cancelled_at_spawn_leaves_no_container`
+- **Red first:** on unchanged code, `test_stdio_shutdown_with_run_in_flight_removes_its_container`
+  failed: the server was still alive 30 s after stdin closed. A `py-spy dump` showed the
+  main thread in `asyncio.runners._cancel_all_tasks` (`server.py:230`), and the
+  container was still running. Same mechanism as the step-5 hang.
+- **Bugs found and fixed (all before commit):**
+  1. *v1 drain cancelled its own cleanup* (skeptic): `gather` passed the SDK's anyio
+     cancellation into the finisher ⇒ `asyncio.wait`.
+  2. *3.11 `wait_for` inner task* (critic r1, verifier repro): a cancelled request's run
+     could outlive its handler, untracked ⇒ `asyncio.timeout`; `aclose` counts in-flight
+     runs; hard exit if any task remains.
+  3. *Fixed probe filename lockout* (skeptic, live repro) ⇒ random name.
+  4. *Unimportable workspace modules* (skeptic, live repro) ⇒ documented idiom.
+  5. *Overclaimed `container` with unverified limits* ⇒ readback (S7-D3), including the
+     no-cgroupfs case (critic r2).
+  6. *Test-hygiene leak:* `test_result_not_delayed_by_cleanup` (step 4) leaked two
+     `%TEMP%` dirs per suite run ⇒ the stub now cleans up; 49 stale dirs deleted.
+- **If it breaks, start here:**
+  - **The server hangs on exit, or a container survives it:** run
+    `pytest tests/test_stdio_e2e.py -v`, then `py-spy dump --pid <python child of the
+    launcher>`. Look for `_cancel_all_tasks`. Check `_shutdown` / `_other_live_tasks`
+    and `BackendSelector.aclose`.
+  - **Selection reports `container-degraded (limits not verified: …)` unexpectedly:** the
+    detail quotes the observed cgroup values. Compare them with `Limits()`; see
+    `select._limits_note`.
+  - **Every run fails with exit 127 and a tini "exec … failed" error:** the image lacks
+    coreutils `timeout` (override contract).
+  - **`Blocked: the sandbox could not use the workspace …`:** fix that folder's
+    permissions, then retry.
+
+## M1 step 6 — Digest-pinned images + setup UX (2026-10-10)
+
+- **Commit:** `a0827fd`.
 - **Plan:** [`docs/plans/M1-step6-pinning.md`](plans/M1-step6-pinning.md) v2 — S6-D1
   (tagless, fully qualified index digests), S6-D2 (unpinned override ⇒ stderr warning),
   S6-D3 (no doctor CLI in M1), S6-D4 (proof under both image stores). §9 = skeptic

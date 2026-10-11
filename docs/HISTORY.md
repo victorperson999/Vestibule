@@ -249,3 +249,73 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   shutdown — is never drained, so its cleanup tasks can be cut off at exit (the Windows
   hang `drain()` was built to prevent) and briefly escape the concurrency count. Needs
   its own design + `skeptic` pass in the step-7 plan.
+- **Step 7 planned — 2026-10-11** (`docs/plans/M1/M1-step7-acceptance.md`; the M1 plans
+  now live in `docs/plans/M1/`). Planning found two new problems, both checked on this
+  machine:
+  - *Guest-made symlinks are real host symlinks.* Ordinary host tools follow them out of
+    the workspace. Vestibule's `read_workspace` refuses them.
+  - *Silently dropped limits.* A runtime that drops a resource limit with only a warning
+    still got `isolation: container`.
+
+  `skeptic` judged v1's shutdown fix wrong: it would have cancelled the cleanup it waited
+  for, and it assumed a client that waits 20 s, when real clients kill the server after
+  about 2 s. `verifier` confirmed all 11 code claims, including four live checks:
+  - a killed server leaves its container running
+  - modules saved to `/workspace` can't be imported
+  - one guest can permanently break setup by creating a folder named `.vestibule-probe`
+  - a cancelled drain kills its own cleanup
+- **S7-D1…D5 — approved 2026-10-11** (all as recommended):
+  - **S7-D1:** on shutdown, remove our containers first in one quick batch, never let a
+    wait cancel cleanup, use one concurrency budget per process, and hard-exit rather than
+    risk the Windows hang.
+  - **S7-D5:** every guest runs under `timeout`, so a container ends itself at its labeled
+    deadline even if the server was killed. This amends contract §3, and custom images now
+    need coreutils `timeout`.
+  - **S7-D2:** warn the model (tool description) and the user (README) about guest
+    symlinks, and amend D1's wording. A structural seccomp fix is noted for M2, and per-run
+    link reporting for M3.
+  - **S7-D3:** the probe reads its own cgroup limits back and reports `container-degraded`
+    on any mismatch, with a broadened warning scan as the cgroup-v1 fallback.
+  - **S7-D4:** archive the M0 walkthrough and write a current dev guide.
+
+  Built in two parts, each reviewed and committed separately: 7a (hardening) and 7b
+  (acceptance suite + docs). M1 is called *accepted* only after a live check from a
+  restarted Claude Code session.
+- **Step 7a — done 2026-10-11** (hardening; 7b, the acceptance suite + docs, is next).
+  - **The shutdown hang is real, and fixed.** A new test drives the real `vestibule-mcp`
+    over stdio the way an MCP client does. On the old code, closing stdin with a run in
+    flight hung the server indefinitely. A stack dump showed `asyncio.run`'s cancel-all,
+    the same mechanism as the 42-minute step-5 hang, and the container was still running.
+  - **How shutdown works now:**
+    - the server removes every container it owns in one batch
+    - it waits briefly without cancelling cleanup
+    - it hard-exits if anything is still pending
+  - **Measured:** shutdown takes 0.2–0.4 s, inside the 2 s that clients allow before
+    killing the server, and the tests now kill at 2 s exactly like a client.
+  - **Containers end themselves.** Every guest runs under `timeout`, so even a killed
+    server can't leave a runaway container. This was proven by running the profile with no
+    server attached: a 300 s guest was killed at its deadline and auto-removed.
+  - **Limits are verified, not assumed.** The probe reads its own cgroup limits back. A
+    limit that isn't really applied, or a container that can't see its cgroup, now reports
+    `container-degraded`. This machine verifies all five.
+  - **Two lockouts closed:**
+    - the probe's workspace file name is now random, so a guest can't block all future
+      setups by planting a folder
+    - a workspace whose permissions a run changed gets its own clear refusal that names
+      the folder
+  - **`run_code` description** now explains how to import your own workspace modules,
+    and warns that workspace files must be read and edited only through Vestibule (guest
+    symlinks).
+  - **Review:**
+    - `critic` ran twice, and `verifier` checked every finding (several with live Docker
+      trials).
+    - Round 1 found a real Python-3.11 race: `asyncio.wait_for` could carry a cancelled
+      run past shutdown untracked. The fix keeps it in the request's own task, with a
+      regression test that fails on the old code.
+    - Round 2's medium was refuted as stated: the race exists, but cleanup already removes
+      the script before the late container can run anything. That guard is now
+      deliberate and tested.
+    - SIGTERM handling on Linux/macOS is deferred to M2.
+  - **A test-hygiene leak** in a step-4 test (two `%TEMP%` dirs per suite run) was found
+    and fixed.
+  - **Totals:** 122 → 175 tests, ruff + mypy clean.
