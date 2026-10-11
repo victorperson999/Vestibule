@@ -22,7 +22,8 @@ Step-5 additions (docs/plans/M1-step5-selection.md):
 - `soft_disabled` omits soft limits the step-5 probe proved unenforceable; such runs
   honestly report `container-degraded` with the exact list (D3).
 - Exit 125 — the runtime's own "run command failed" code — reports `isolation: none`:
-  the container never started, nothing was executed (golden rule 5).
+  usually the container never started (golden rule 5). A guest that exits 125 itself
+  is underclaimed the same way (the safe direction), and the detail says so.
 """
 from __future__ import annotations
 
@@ -62,6 +63,12 @@ _SEM_WAIT_S = 5
 _DEADLINE_SLACK_S = 90
 # A reaper removes a container only when now > its deadline + this margin (S4-D3).
 _REAP_MARGIN_S = 60
+# How to start a runtime that is not responding, for refusal messages. Runtime-specific
+# so a Podman user is never pointed at Docker Desktop (and vice versa).
+START_HINTS = {
+    "docker": " (Docker Desktop on Windows/macOS)",
+    "podman": " (`podman machine start` on Windows/macOS)",
+}
 
 
 def _container_user() -> str:
@@ -283,8 +290,16 @@ class ContainerBackend(Warden):
             # no guest code executed — never claim container isolation for a non-run.
             # A guest deliberately calling exit(125) lands here too; underclaiming
             # is the safe direction (the server re-probes on the next call).
+            # The wording must hold for BOTH causes: a blanket "retry" would make the
+            # model re-run guest code that already ran (workspace side effects included).
             isolation = "none"
-            detail = "the runtime failed to start the container; nothing was executed"
+            detail = (
+                "exit code 125 is the runtime's own code for 'could not start the "
+                "container', so no isolation is claimed for this run. If the container "
+                "failed to start, retry: the next call re-checks setup and names the fix. "
+                "If your code exited with 125 itself, it did run: do not retry; use a "
+                "different exit code"
+            )
 
         log.info("run %s: done exit=%s timed_out=%s", run_id, exit_code, timed_out)
         return RunResult(
@@ -457,10 +472,14 @@ class ContainerBackend(Warden):
             # `image inspect` also fails when the daemon is down — the runtime's own
             # first error line tells the user which case they are in.
             reason = (err.strip().splitlines() or ["unknown error"])[0][:200]
+            # The pull command quotes the configured ref verbatim: with a digest-pinned
+            # default, `pull <tag>` could fetch different bytes and never satisfy this
+            # check (M1 step 6 plan §2).
             raise RunRefusedError(
                 f"image {image} is not usable ({reason}). If it is missing, run "
                 f"`{self._runtime} pull {image}` once and retry; Vestibule never "
-                "pulls images itself."
+                f"pulls images itself. If {self._runtime} itself is not responding, "
+                f"start it{START_HINTS.get(self._runtime, '')}, then retry."
             )
         self._images_ok.add(image)
 

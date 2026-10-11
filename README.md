@@ -43,16 +43,42 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 
 ## Status
 
-> ⚠️ **Early development — do not use this to run untrusted code yet.**
-> The only backend that exists today applies **no isolation** (and says so in every result: `isolation: none`). The isolation layers are designed and are being built next. Not yet published to PyPI.
+> ⚠️ **Early development — do not rely on this for hostile code yet.**
+> The container backend is built: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. Its acceptance suite (M1 step 7) has not landed yet. Not yet published to PyPI.
 
 | Milestone | What                                                                                         | Status                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                |
-| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔜 designed, next up — see[`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
+| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔨 steps 1–6 of 7 done (backend, `read_workspace`, backend selection, digest-pinned images); acceptance suite next — see [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
 | M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                |
 | M3        | Audit log + resource reporting                                                               | planned                                                                                                |
 | M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                |
+
+## One-time setup
+
+Not on PyPI yet, so install from a clone. You need Python ≥ 3.11 and Docker (on Windows/macOS: Docker Desktop, running Linux containers).
+
+```bash
+git clone https://github.com/victorperson999/Vestibule.git && cd Vestibule
+python -m venv .venv
+.venv/bin/pip install .                 # Windows: .venv\Scripts\pip install .
+claude mcp add --scope user vestibule -- "$PWD/.venv/bin/vestibule-mcp"
+# Windows: claude mcp add --scope user vestibule -- C:\path\to\Vestibule\.venv\Scripts\vestibule-mcp.exe
+# (--scope user = available in every project; the default registers it for this folder only)
+
+# The two sandbox images, pinned to exact bytes (Vestibule never pulls images itself):
+docker pull docker.io/library/python@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+docker pull docker.io/library/node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+```
+
+Then ask your agent to run some code. The first `run_code` call checks your setup, and every result states the isolation that actually applied (normally `isolation: container`).
+
+- If a call is ever `Blocked:`, the message names the exact fix and says whether to retry or restart.
+- The images are `python:3.12-slim` and `node:22-slim` as of 2026-10-10, pinned by digest so they can never change silently. The flip side: they get no upstream security fixes until Vestibule re-pins them.
+- Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
+- Custom images (`VESTIBULE_IMAGE_PYTHON` / `VESTIBULE_IMAGE_NODE`) must provide `bash` plus the language's interpreter on `PATH`, and work as an arbitrary non-root user on a read-only root filesystem. Pin them as `name@sha256:…`; an unpinned tag still works but logs a warning.
+
+Dev install and hand-editing the MCP config: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
 ## How it works (design)
 

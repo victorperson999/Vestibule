@@ -1,12 +1,17 @@
-"""ContainerBackend tests (M1 steps 3–4). Marked 'docker' — they need a running
-daemon and the two pulled images; they skip cleanly anywhere else.
+"""ContainerBackend tests (M1 steps 3–6). Marked 'docker' — they need a running
+daemon and BOTH digest-pinned sandbox images pulled locally; anywhere else they skip
+cleanly, and the skip reason carries the exact `docker pull` commands. Nothing here
+ever pulls from the network.
 
 Step-4 additions (plan §6 tests 6–10): cancellation cleanup, deadline-label reaping
 (remove past-deadline, spare future-deadline, spare unlabeled), and 4-way concurrency.
+Step-6 addition (plan §7 test 6): the pinned refs pass the real preflight and hold the
+interpreter versions the config comment claims.
 """
 import asyncio
 import contextlib
 import logging
+import re
 import secrets
 import shutil
 import subprocess
@@ -20,22 +25,40 @@ from vestibule.backends.container import ContainerBackend
 from vestibule.config import Limits
 
 
-def _docker_ready() -> bool:
-    if shutil.which("docker") is None:
-        return False
+def _docker(*args: str) -> int | None:
+    """Exit code of a short read-only docker CLI call; None if it could not run."""
     try:
-        r = subprocess.run(
-            ["docker", "version", "--format", "{{.Server.Version}}"],
-            capture_output=True, timeout=10, stdin=subprocess.DEVNULL,
-        )
+        r = subprocess.run(["docker", *args], capture_output=True, timeout=10,
+                           stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired):
-        return False
-    return r.returncode == 0
+        return None
+    return r.returncode
+
+
+def _docker_skip_reason() -> str | None:
+    """None if the Docker-marked tests can run here, else why not (with the fix).
+
+    Daemon up but images missing must SKIP, not fail: the backend would refuse every
+    run (preflight), which is correct product behavior but says nothing about the code.
+    """
+    if shutil.which("docker") is None:
+        return "docker CLI not found"
+    if _docker("version", "--format", "{{.Server.Version}}") != 0:
+        return "no reachable Docker daemon"
+    lim = Limits()
+    missing = [ref for ref in (lim.image_python, lim.image_node)
+               if _docker("image", "inspect", "--format", "{{.Id}}", ref) != 0]
+    if missing:
+        return "pinned sandbox image(s) not pulled; run: " + "; ".join(
+            f"docker pull {ref}" for ref in missing
+        )
+    return None
 
 
 pytestmark = pytest.mark.docker
 
-docker_required = pytest.mark.skipif(not _docker_ready(), reason="no reachable Docker daemon")
+_SKIP_REASON = _docker_skip_reason()
+docker_required = pytest.mark.skipif(_SKIP_REASON is not None, reason=_SKIP_REASON or "")
 
 
 @pytest.fixture()
@@ -67,8 +90,9 @@ def _ps_names(*filters: str, all_states: bool = True) -> str:
 
 
 def _plant(name: str, labels: dict[str, str]) -> None:
-    """Start a labeled sleeper container (no --rm: removal is the subject under test)."""
-    cmd = ["docker", "run", "-d", "--name", name, "--network", "none"]
+    """Start a labeled sleeper container (no --rm: removal is the subject under test).
+    `--pull never`: tests must never touch the network (a missing image skips instead)."""
+    cmd = ["docker", "run", "-d", "--pull", "never", "--name", name, "--network", "none"]
     for k, v in labels.items():
         cmd += ["--label", f"{k}={v}"]
     cmd += [Limits().image_python, "sleep", "300"]
@@ -163,6 +187,29 @@ async def test_timeout_kills_container(backend, limits):
             break
         await asyncio.sleep(0.5)
     assert _ps_names(f"label=vestibule.owner={backend._owner}") == ""
+
+
+@docker_required
+async def test_pinned_images_pass_preflight_and_hold_expected_versions(backend, limits):
+    """M1 step 6 (plan §7 test 6): both shipped digest refs pass the real preflight, and
+    the bytes behind them are what the config comment says — python 3.12, node 22.
+    Docker does not check a tag next to a digest, so this test is what keeps the
+    `python:3.12-slim` / `node:22-slim` labels honest across re-pins."""
+    from vestibule.config import DEFAULT_IMAGE_NODE, DEFAULT_IMAGE_PYTHON
+
+    assert (limits.image_python, limits.image_node) == (DEFAULT_IMAGE_PYTHON, DEFAULT_IMAGE_NODE)
+    await backend._preflight_image(DEFAULT_IMAGE_PYTHON)  # raises RunRefusedError if unusable
+    await backend._preflight_image(DEFAULT_IMAGE_NODE)
+
+    r = await backend.run(
+        "python", "import sys; print('v=%d.%d' % sys.version_info[:2])", 30, limits
+    )
+    assert (r.exit_code, r.isolation) == (0, "container"), r.stderr
+    assert re.search(r"^v=3\.12$", r.stdout, re.M), r.stdout
+
+    r = await backend.run("node", "console.log('v=' + process.versions.node)", 30, limits)
+    assert (r.exit_code, r.isolation) == (0, "container"), r.stderr
+    assert re.search(r"^v=22\.\d+\.\d+$", r.stdout, re.M), r.stdout
 
 
 @docker_required

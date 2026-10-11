@@ -32,5 +32,5 @@ target-version = "py311"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
-    "docker: requires a running Docker daemon and the pulled sandbox images",
+    "docker: needs a running Docker daemon and both digest-pinned sandbox images; skips (with the pull commands) otherwise",
 ]

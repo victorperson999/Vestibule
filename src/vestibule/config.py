@@ -10,10 +10,25 @@ from pathlib import Path
 
 ALLOWED_LANGUAGES: tuple[str, ...] = ("python", "bash", "node")
 
-# M1 step 6 pins these by digest captured from a fresh `docker pull` + `docker inspect`
-# (never invented, never :latest). Tag-only until that step lands.
-DEFAULT_IMAGE_PYTHON = "python:3.12-slim"
-DEFAULT_IMAGE_NODE = "node:22-slim"
+# Sandbox images, pinned by multi-platform index digest (D2, M1 step 6 —
+# docs/plans/M1-step6-pinning.md S6-D1). Tagless and fully qualified on purpose: Docker
+# does not verify a tag that sits next to a digest, so the tag lives here instead, and
+# tests/test_container.py checks the interpreter version inside each pinned image.
+#   python  <- python:3.12-slim    node  <- node:22-slim
+# Captured 2026-10-10 from a fresh `docker pull <tag>` on Docker 28.5.1: the pull's
+# "Digest:" line matched RepoDigests, and `docker buildx imagetools inspect` showed an OCI
+# index with linux/amd64 + linux/arm64/v8. Proven 2026-10-10 under BOTH Docker Desktop image
+# stores, containerd and classic (S6-D4): pull by this exact ref into an empty store, then
+# `image inspect` + `run --pull never` (python 3.12.15, node v22.23.3) + `pytest -m docker`.
+# To re-pin, follow the plan's "Re-pin cost" (one store mode suffices for the same form).
+DEFAULT_IMAGE_PYTHON = (
+    "docker.io/library/python"
+    "@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+)
+DEFAULT_IMAGE_NODE = (
+    "docker.io/library/node"
+    "@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392"
+)
 
 
 @dataclass(frozen=True)

@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
+import re
 import time
 from dataclasses import dataclass
 
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
-from vestibule.backends.container import SOFT_CONTROLS, ContainerBackend
+from vestibule.backends.container import SOFT_CONTROLS, START_HINTS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
 from vestibule.config import Limits
 
@@ -33,6 +35,19 @@ _PROBE_TIMEOUT_S = 10
 # the process lifetime. Keeps "start Docker Desktop, then retry" working without
 # an MCP session restart, without hammering a dead daemon on every call.
 _RETRY_COOLDOWN_S = 30
+
+# S6-D2: an image ref counts as pinned only if it names an exact digest.
+_PINNED_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+# `_version_check`'s status for a missing CLI binary (vs. a daemon that won't answer).
+_NOT_INSTALLED = "not installed"
+
+# Config is read once at server start (server.py LIMITS) and the process environment is
+# fixed when the agent launches the server, so config mistakes need a restart, not a retry.
+_RESTART_HINT = (
+    "Fix it in the Vestibule server's MCP config, then restart the server "
+    "(settings are read once at startup)."
+)
 
 _PROBE_MARKER = "VESTIBULE-PROBE-OK"
 # D3 hard-tier workspace round-trip, run as a normal bash guest (python:3.12-slim
@@ -66,6 +81,13 @@ _RUNTIME_ORDER: dict[str, tuple[str, ...]] = {
 }
 
 
+class _RestartRequired(RunRefusedError):
+    """A refusal only a restart can fix (config is read once at startup; a running
+    process keeps the PATH it was launched with). Its cached copy is never annotated
+    with the retry cooldown: waiting cannot help, and saying it might sends the model
+    into a wait-and-retry loop."""
+
+
 @dataclass
 class Selection:
     """The committed verdict: a warden plus what its runs will honestly report."""
@@ -82,6 +104,7 @@ class BackendSelector:
         self._lock: asyncio.Lock | None = None
         self._selection: Selection | None = None
         self._fail_reason: str | None = None
+        self._fail_needs_restart = False
         self._failed_at: float = 0.0
 
     async def get(self, limits: Limits) -> Selection:
@@ -98,14 +121,23 @@ class BackendSelector:
             if self._selection is not None:
                 return self._selection
             if self._fail_reason is not None:
-                if time.monotonic() - self._failed_at < _RETRY_COOLDOWN_S:
-                    raise RunRefusedError(self._fail_reason)
+                waited = time.monotonic() - self._failed_at
+                if waited < _RETRY_COOLDOWN_S:
+                    if self._fail_needs_restart:
+                        raise _RestartRequired(self._fail_reason)
+                    # Say so: a fix made inside the window would otherwise look failed.
+                    raise RunRefusedError(
+                        f"{self._fail_reason} (setup is re-checked at most every "
+                        f"{_RETRY_COOLDOWN_S} s; next check in "
+                        f"{math.ceil(_RETRY_COOLDOWN_S - waited)} s)"
+                    )
                 log.info("selection: retry cooldown over, re-checking")
                 self._fail_reason = None
             try:
                 self._selection = await self._select(limits)
             except RunRefusedError as e:
                 self._fail_reason = str(e)  # S5-D1: cached, re-checked after cooldown
+                self._fail_needs_restart = isinstance(e, _RestartRequired)
                 self._failed_at = time.monotonic()
                 raise
             log.info(
@@ -133,9 +165,11 @@ class BackendSelector:
             log.warning("VESTIBULE_BACKEND=naive: NO isolation (dev-only opt-in)")
             return Selection(NaiveBackend(), "none", "explicitly configured, dev-only")
         if limits.backend != "auto":
-            raise RunRefusedError(
-                f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto' or 'naive'"
+            raise _RestartRequired(
+                f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto' or 'naive'. "
+                + _RESTART_HINT
             )
+        _warn_unpinned(limits)
         runtime = await self._resolve_runtime(limits)
 
         # Test-drive the FULL §3 profile through the normal run path — probe = real
@@ -168,19 +202,24 @@ class BackendSelector:
             log.warning("selection: running DEGRADED — %s", detail)
             return Selection(degraded, "container-degraded", detail)
         await degraded.drain()
+        # Neutral on cause: a hard-tier failure and an override image that cannot run
+        # the bash probe look identical from here; the parenthetical says which.
         raise RunRefusedError(
-            f"container runtime cannot enforce the isolation profile ({second}); "
-            "refusing to run without isolation"
+            f"the isolation probe failed even with resource limits off ({second}): "
+            "either the container runtime cannot enforce the isolation profile, or the "
+            "configured image cannot run the probe (it needs bash); refusing to run "
+            "without isolation"
         )
 
     async def _resolve_runtime(self, limits: Limits) -> str:
         order = _RUNTIME_ORDER.get(limits.runtime)
         if order is None:
-            raise RunRefusedError(
+            raise _RestartRequired(
                 f"unknown VESTIBULE_RUNTIME {limits.runtime!r}; "
-                "use 'auto', 'docker', or 'podman'"
+                "use 'auto', 'docker', or 'podman'. " + _RESTART_HINT
             )
         problems: list[str] = []
+        statuses: list[str] = []
         for rt in order:
             status = await _version_check(rt)
             if status is None:
@@ -188,10 +227,21 @@ class BackendSelector:
                 return rt
             log.warning("selection: runtime %r unusable: %s", rt, status)
             problems.append(f"{rt}: {status}")
-        raise RunRefusedError(
-            "no usable container runtime (" + "; ".join(problems) + "). "
-            "Start Docker Desktop (or install Docker/Podman), then retry."
-        )
+            statuses.append(status)
+        msg = "no usable container runtime (" + "; ".join(problems) + "). "
+        if all(s == _NOT_INSTALLED for s in statuses):
+            # "not installed" really means "not found on this process's PATH": a fresh
+            # install, an install the agent's PATH doesn't include, or a mis-set
+            # VESTIBULE_RUNTIME. Every one of those needs a restart to take effect.
+            raise _RestartRequired(
+                msg + "Install Docker (or Podman); if it is already installed, make sure "
+                "it is on the PATH your agent starts Vestibule with, and check "
+                "VESTIBULE_RUNTIME. Then restart your agent."
+            )
+        # Runtime-specific start hints: a Podman user is never pointed at Docker Desktop.
+        down = [rt for rt, s in zip(order, statuses) if s != _NOT_INSTALLED]
+        start = " or ".join(f"{rt}{START_HINTS.get(rt, '')}" for rt in down)
+        raise RunRefusedError(msg + f"Start {start}, then retry.")
 
     async def _probe(self, backend: ContainerBackend, limits: Limits) -> str | None:
         """Run the workspace round-trip probe; None on success, else a short reason.
@@ -219,6 +269,23 @@ class BackendSelector:
         return f"probe exit {r.exit_code}, timed_out={r.timed_out}: {first_err}"
 
 
+def _warn_unpinned(limits: Limits) -> None:
+    """S6-D2: an un-pinned image override is allowed, but never silent.
+
+    Both refs are checked once per selection pass: the probe only exercises the python
+    image, so the node ref would otherwise go unchecked until its first run.
+    """
+    for var, ref in (
+        ("VESTIBULE_IMAGE_PYTHON", limits.image_python),
+        ("VESTIBULE_IMAGE_NODE", limits.image_node),
+    ):
+        if not _PINNED_REF.search(ref):
+            log.warning(
+                "image %r (%s) is not digest-pinned; the tag can change underneath you. "
+                "Pin it as <name>@sha256:<digest>.", ref, var,
+            )
+
+
 async def _version_check(runtime: str) -> str | None:
     """None if `<runtime> version` succeeds (CLI present, daemon reachable);
     otherwise a short human-readable reason."""
@@ -230,7 +297,7 @@ async def _version_check(runtime: str) -> str | None:
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
-        return "not installed"
+        return _NOT_INSTALLED
     except OSError as e:
         return f"cannot run: {e}"
     try:
@@ -242,5 +309,5 @@ async def _version_check(runtime: str) -> str | None:
         return "not responding"
     if proc.returncode != 0:
         first = (err.decode(errors="replace").strip().splitlines() or ["unknown error"])[0]
-        return f"daemon not reachable ({first[:200]}) — is Docker Desktop running?"
+        return f"daemon not reachable ({first[:200]})"
     return None

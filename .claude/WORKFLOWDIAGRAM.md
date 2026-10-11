@@ -14,7 +14,7 @@ flowchart TD
         PLAN[2. Write plan<br/>docs/plans/&lt;step&gt;.md<br/>files · approach · edge cases]
         WEIGH[Address each plan finding<br/>accept · amend · reject + reason]
         BUILD[5. Build the change]
-        DOCS[9. Update README/docs<br/>+ HISTORY bullet]
+        DOCS[9. Update README/docs<br/>+ HISTORY bullet + BUILD_LOG entry]
     end
 
     CTX <-. "where is X?" .-> SCOUT[scout · Haiku · low<br/>file:line only]:::haiku
@@ -89,7 +89,7 @@ flowchart TD
         8. verifier · Opus ─CONFIRMED high/med──────────┘
                        │ refuted / low      │
                        ▼                    ▼
-        9. README/docs + HISTORY bullet ◄───┘
+        9. README/docs + HISTORY + BUILD_LOG ◄───┘
                        │
                        ▼
         staging list + commit message  ──►  YOU COMMIT
