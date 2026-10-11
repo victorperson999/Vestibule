@@ -160,6 +160,15 @@ Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable wi
 
 (`Limits.from_env` grows a string-valued getter alongside `_i`.)
 
+> **Amendment 2026-10-10 (M1 step 6, `docs/plans/M1-step6-pinning.md` S6-D1):** the image
+> defaults shipped **tagless and fully qualified** —
+> `docker.io/library/python@sha256:a6e34c59…` (from `python:3.12-slim`) and
+> `docker.io/library/node@sha256:c3de60bf…` (from `node:22-slim`), full digests in
+> `config.py`. The `name:tag@sha256:` form in the table above was dropped because Docker
+> does not verify a tag next to a digest; the tag lives in the `config.py` comment, and a
+> Docker test checks the interpreter versions inside the pinned images. Captured from a
+> fresh pull on 2026-10-10 and proven under both Docker Desktop image stores (S6-D4).
+
 ## 9. Acceptance criteria (supersedes PLAN.md §M1 list)
 
 1. python/bash/node hello-world via Docker ⇒ `isolation: container`.

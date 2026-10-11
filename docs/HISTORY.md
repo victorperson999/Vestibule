@@ -187,8 +187,65 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   pending tasks. +25 tests (15 Docker-free selection suite, 6 Docker-free
   preflight/honesty, 4 Docker-marked: real selection verdict, probe leaves no trace,
   RO-workspace selection, failed-selection drain) ⇒ 103 total, ruff + mypy clean.
-- **Step 6 — pending.** Digest pinning captured from a real `docker pull`, setup-UX
-  message polish (per-run image preflight + `--pull never` landed in step 5 via the
-  revised S5-D3).
+- **Step 6 planned — 2026-07-06** (`docs/plans/M1-step6-pinning.md`, two Codex
+  adversarial passes). Four decisions: S6-D1 (pin the multi-arch manifest-list digest,
+  proven through the real preflight + `--pull never` path), S6-D2 (un-pinned image
+  override ⇒ loud warning, never refusal), S6-D3 (no standalone doctor CLI in M1),
+  S6-D4 (below).
+- **S6-D4 — approved 2026-07-06.** The pin-proof gate runs under *both* Docker Desktop
+  image stores (classic and containerd — they are separate stores and treat
+  manifest lists differently), so neither mainstream configuration is claimed but
+  untested. If either mode fails, narrowing support comes back as a fresh decision;
+  nothing ships on hope.
+- **Out-of-band fix — 2026-07-06.** Codex's second step-6 pass also caught a stray
+  working-tree edit in `naive.py` that made the spawn-failure path report
+  `isolation="false"` (not a valid isolation value). Reverted before commit; permanent
+  regression test `test_spawn_failure_reports_isolation_none` in `tests/test_smoke.py`
+  ⇒ 104 tests.
+- **Workflow change — 2026-10-10.** The build loop moved to the Claude-only process in
+  `.claude/WORKFLOW.md` (plan → `skeptic` → sign-off → build → `gate` → `critic` →
+  `verifier` → docs). Codex is no longer part of this project's loop.
+- **Step-6 plan v2 — skeptic-reviewed 2026-10-10.** First review under the new loop:
+  5 medium + 5 low findings, all ten code/Docker claims confirmed by `verifier`.
+  Biggest catch: Docker does not check a tag that sits next to a digest
+  (`python:3.11-slim@<3.12 digest>` resolves to the 3.12 image), so the planned
+  `python:3.12-slim@sha256:…` form carried a label nothing verified.
+- **S6-D1 / S6-D2 / S6-D3 — approved 2026-10-10** (all as recommended, v2 plan).
+  S6-D1: pin each image's multi-platform index digest in **tagless, fully qualified**
+  form (`docker.io/library/python@sha256:…`), captured from a fresh pull and accepted only
+  when two independent readings agree and the index lists amd64 + arm64; the tag lives in
+  a dated comment, and a Docker test checks the interpreter version inside each pinned
+  image. S6-D4's procedure tightened with it: in *each* store mode the store starts empty,
+  the shipped ref is pulled exactly as the README says, then the real Docker test suite
+  runs. S6-D2: an unpinned image override gets one stderr warning per selection (both
+  refs, skipped for naive), never a refusal and never in run results (provenance is M3's
+  audit log, not the isolation field); the override-image requirements go in the README.
+  S6-D3: no standalone doctor CLI in M1 (M4 candidate). Also adopted from the review:
+  setup refusals say *retry* or *restart* according to what actually works (config and
+  fresh installs need a restart), cooldown-cached refusals say when they re-check, and
+  the README pull commands are test-pinned to the config.
+- **Step 6 — done 2026-10-10.** The sandbox images are now pinned to exact bytes:
+  `docker.io/library/python@sha256:a6e34c59…` (python:3.12-slim → Python 3.12.15) and
+  `docker.io/library/node@sha256:c3de60bf…` (node:22-slim → Node v22.23.3), captured from
+  a fresh pull here (both tags had moved since July), cross-checked two ways, confirmed
+  multi-platform (amd64 + arm64). Proven the way a new user would hit it — empty store,
+  pull by the exact README command, then the real Docker test suite — under **both**
+  Docker Desktop image stores (containerd, then classic, then back). Setup UX: README
+  gained a one-time setup block (install, `--scope user` registration, the two pull
+  commands, honest notes) and its stale Status lines were fixed; every setup refusal now
+  says whether to *retry* or *restart*, cached refusals say when they re-check (unless
+  only a restart can help), start hints name the right product per runtime, and the
+  exit-125 detail no longer tells the model to re-run code that may already have run.
+  Tests: the README pull lines and config pins are test-locked together, a Docker test
+  checks the interpreter versions inside the pinned images, and Docker tests now *skip*
+  with the exact pull commands on a machine without the images (seen working on the
+  empty classic store) instead of failing — and can never pull from the network.
+  Review: two `critic` rounds (1 medium + 2 low, then 1 medium + 3 low), every finding
+  `verifier`-confirmed and fixed. 104 → 122 tests, ruff + mypy clean. Backtracking
+  index started: `docs/BUILD_LOG.md`.
 - **Step 7 — pending.** Docker-marked acceptance suite (14 criteria) + README/docs
-  update.
+  update. Carries one known issue surfaced in step 6's review (pre-existing since
+  steps 4–5): a backend dropped by the server's honesty hook — and the live one at
+  shutdown — is never drained, so its cleanup tasks can be cut off at exit (the Windows
+  hang `drain()` was built to prevent) and briefly escape the concurrency count. Needs
+  its own design + `skeptic` pass in the step-7 plan.

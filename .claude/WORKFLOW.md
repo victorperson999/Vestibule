@@ -10,7 +10,7 @@ you
  │
  ▼
 MAIN SESSION — Opus 5.5 (architect + implementer)
- │  1. read context (CLAUDE.md, docs/plans/, HISTORY)   ──► scout (Haiku): file:line lookups
+ │  1. read context (CLAUDE.md, docs/plans/, HISTORY, BUILD_LOG) ──► scout (Haiku): file:line lookups
  │  2. write plan → docs/plans/<milestone-step>.md
  │  3. [plan review] skeptic (Opus) on milestone/step plans → main session weighs findings
  │  4. you sign off → bullet in docs/HISTORY.md
@@ -18,7 +18,7 @@ MAIN SESSION — Opus 5.5 (architect + implementer)
  │  6. gate (Haiku): ruff + mypy + pytest            ── FAIL → back to 5
  │  7. critic (Opus): adversarial diff review
  │  8. verifier (Opus): CONFIRMED / PLAUSIBLE / REFUTED per finding ── confirmed high/med → back to 5
- │  9. update README/docs if user-facing; HISTORY bullet
+ │  9. update README/docs if user-facing; HISTORY bullet + BUILD_LOG entry
  ▼
 you commit (Claude never runs git add/commit/push; it gives you a staging list + message)
 
@@ -93,6 +93,7 @@ Every reviewer is the same model family as the author, so independence has to be
   - no CONFIRMED high/med findings are open
   - docs are updated
   - the HISTORY bullet is written
+  - the `docs/BUILD_LOG.md` entry is written (commit hash filled in next session)
   - you have a staging list
 
   After that, "log this session" appends to the CLAUDE.md changelog.

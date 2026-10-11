@@ -1,0 +1,247 @@
+# Vestibule — Build log
+
+A lookup index for backtracking and bug-fixing: for every finished build step, **when** it
+landed, **which commits** carry it, **which plan** explains it, **what files** it touched,
+**which tests guard it**, **what broke along the way** (and how it was fixed), and **where to
+start** if it breaks again.
+
+How this differs from the other records:
+- [`docs/HISTORY.md`](HISTORY.md) is the plain-language story: decisions, sign-offs, why.
+- `docs/plans/*.md` are the contracts: the full reasoning for each step.
+- This file is the index you open when something regresses. Entries are newest first.
+
+**Keeping it current** (part of loop step 9 in `.claude/WORKFLOW.md`): when a step lands,
+add an entry. The commit hash only exists after Victor commits, so an entry starts as
+`pending` and Claude fills in the hash from `git log` at the start of the next session.
+
+**Using it on a regression:**
+1. Find the step that owns the behavior (status table, then the entry's *Files*).
+2. Run its guarding tests: `.venv/Scripts/python.exe -m pytest -q <file>::<test>`.
+3. See what changed since: `git log --oneline <commit>..HEAD -- <file>`.
+4. Read the plan's decision before changing the behavior; most rules here exist because
+   a review found a concrete failure.
+
+---
+
+## Status at a glance
+
+| Milestone / step | What | Landed | Commit(s) | Tests after |
+|---|---|---|---|---|
+| M0 | MCP server + naive backend (no isolation) | 2026-07-02 | `aabd935` | 4 |
+| M1 step 1 | Config additions + `read_workspace` path jail | 2026-07-03 | `9f43762` | — |
+| M1 step 2 | Total arg validation, `read_workspace` tool, `isolation_detail` | 2026-07-03 | `ec467f7` | 49 |
+| M1 step 3 | `ContainerBackend` happy path | 2026-07-03 | `4f765e9` | 58 |
+| M1 step 4 | Run lifecycle: cleanup, reaping, concurrency cap | 2026-07-04 | `b4019a7` (+ fix in `5ce882a`) | 78 |
+| M1 step 5 | Backend selection + capability probing | 2026-07-05 | `522606f` `5ce882a` `d6a9df8` `7ebd28b` | 103 (104 after `99a7f99`) |
+| M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | *pending (Victor commits)* | 122 |
+| M1 step 7 | Acceptance suite (14 criteria) + docs | pending | — | — |
+
+## Known open issues
+
+| Found | Where | Issue | Owner |
+|---|---|---|---|
+| 2026-10-10 (step-6 review, pre-existing since steps 4–5) | `select.py` `BackendSelector.note_result`; `server.py` `_main` | A selection dropped by `note_result` is never `drain()`ed, and the live warden is not drained at server shutdown either (`asyncio.run` mass-cancels leftovers). Cleanup tasks caught mid-spawn can hit the Windows proactor deadlock `drain()` exists for; the replacement backend's fresh semaphore briefly doesn't count the dropped one's still-cleaning containers. | Step-7 plan (needs design + `skeptic`) |
+
+---
+
+## M1 step 6 — Digest-pinned images + setup UX (2026-10-10)
+
+- **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M1-step6-pinning.md`](plans/M1-step6-pinning.md) v2 — S6-D1
+  (tagless, fully qualified index digests), S6-D2 (unpinned override ⇒ stderr warning),
+  S6-D3 (no doctor CLI in M1), S6-D4 (proof under both image stores). §9 = skeptic
+  dispositions, §10 = critic dispositions (two rounds).
+- **What:** `config.py` ships
+  `docker.io/library/python@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1`
+  (python:3.12-slim → 3.12.15) and
+  `docker.io/library/node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392`
+  (node:22-slim → v22.23.3); captured 2026-10-10 on Docker 28.5.1, pull `Digest:` ==
+  `RepoDigests`, OCI index with amd64 + arm64/v8; proven (empty store → pull by ref →
+  inspect + `run --pull never` + `pytest -m docker`) in containerd **and** classic mode.
+  README one-time setup block; setup refusals say retry vs. restart; runtime-specific
+  start hints; hedged exit-125 detail.
+- **Files:** `config.py`, `backends/select.py`, `backends/container.py`, `README.md`,
+  `pyproject.toml` (docker marker text), `tests/test_pins.py` (new), `tests/test_select.py`,
+  `tests/test_lifecycle.py`, `tests/test_container.py`, plus docs (plan, contract §8,
+  HISTORY, this file).
+- **Guarded by:** `tests/test_pins.py` (per-constant ref format; README pull lines ==
+  config); `tests/test_container.py::test_pinned_images_pass_preflight_and_hold_expected_versions`
+  (Docker); in `tests/test_select.py` the `test_unpinned_override_warns_for_both_refs`,
+  `test_pinned_defaults_do_not_warn`, `test_naive_skips_pin_check`,
+  `test_config_refusals_say_restart_not_retry`,
+  `test_runtime_not_installed_says_install_and_restart_agent`,
+  `test_daemon_down_says_start_then_retry`, `test_daemon_down_hint_is_runtime_specific`,
+  `test_cached_restart_refusal_never_suggests_waiting`,
+  `test_cached_refusal_says_when_it_rechecks`; in `tests/test_lifecycle.py` the
+  `test_preflight_missing_image_refused` (verbatim ref + hedge),
+  `test_preflight_hedge_names_the_configured_runtime`, `test_exit_125_reports_no_isolation`
+  (both-cause wording). The Docker-test skip path (`_docker_skip_reason`) was exercised
+  live on an empty classic store: 19 skipped with the pull commands.
+- **Bugs found and fixed (all before commit):**
+  1. *Tag next to a digest is unchecked* (skeptic): `python:3.11-slim@<3.12 digest>`
+     resolves to 3.12, so the planned `name:tag@digest` form carried a label nothing
+     verified ⇒ tagless refs + interpreter-version test.
+  2. *Docker tests failed instead of skipping* on a daemon-up/images-missing machine,
+     and `_plant` could pull from the network (skeptic) ⇒ image-aware skip +
+     `--pull never`.
+  3. *"Retry" sent the model in circles* (critic): config errors and fresh installs need
+     a restart; cached refusals hid fixes for 30 s; the exit-125 "retry" would re-run
+     code that already ran ⇒ retry-vs-restart wording, `_RestartRequired`, hedged
+     exit-125 detail.
+  4. *Wrong product named* (critic ×2): Podman users were told to start Docker Desktop
+     ⇒ shared `START_HINTS`.
+  5. *README registered the server for the clone folder only* (critic) ⇒
+     `--scope user`.
+- **If it breaks, start here:**
+  - `Blocked: image … is not usable` after a Docker update, store switch, or prune →
+    run the README pull commands again (they are the shipped refs). Preflight:
+    `ContainerBackend._preflight_image`.
+  - `test_readme_pull_command_matches_config` fails → someone re-pinned `config.py` and
+    forgot the README (or the reverse).
+  - The interpreter-version Docker test fails → a re-pin pasted a digest from the wrong
+    tag.
+  - Re-pinning for upstream fixes → the plan's "Re-pin cost": capture + both checks +
+    proof gate in one store mode + full suite.
+
+## M1 step 5 — Backend selection + capability probing (2026-07-05)
+
+- **Commits:** `522606f` (plan draft), `5ce882a` (plan final + step-4 budget fix),
+  `d6a9df8` (selection build), `7ebd28b` (CRLF + task-leak fixes).
+- **Plan:** [`docs/plans/M1-step5-selection.md`](plans/M1-step5-selection.md) — S5-D1
+  (30 s failure cooldown), S5-D2 (all-soft-off degraded retry), S5-D3 (per-run image
+  preflight + `--pull never`).
+- **What:** on the first tool call, `BackendSelector` picks a runtime (`auto` prefers
+  Docker), test-drives the full locked-down profile as a real bash run, and commits to
+  `container`, `container-degraded`, or a `Blocked:` refusal with the fix. Naive is only
+  reachable through `VESTIBULE_BACKEND=naive`.
+- **Files:** `backends/select.py` (new), `backends/container.py`, `server.py`,
+  `tests/test_select.py` (new), `tests/test_lifecycle.py`, `tests/test_container.py`.
+- **Guarded by:** all of `tests/test_select.py`; in `tests/test_lifecycle.py` the
+  `test_preflight_*`, `test_build_command_soft_flags_and_pull_never`,
+  `test_exit_125_reports_no_isolation`, `test_degraded_backend_reports_detail`; in
+  `tests/test_container.py` the step-5 block, especially
+  `test_failed_selection_drains_and_leaves_no_tasks`.
+- **Bugs found and fixed:**
+  1. *CRLF script corruption* (latent since step 3): on a Windows host, text-mode writes
+     turned `\n` into `\r\n` and bash in the Linux guest choked (`then\r`). Fix:
+     `newline="\n"` on the script write in `ContainerBackend._execute`.
+  2. *Failed-selection task leak*: rejected probe backends left detached cleanup tasks
+     alive; event-loop shutdown cancelled one mid-`create_subprocess_exec` and deadlocked
+     (Windows proactor). The suite hung 42 min in teardown; found with py-spy stack dumps
+     plus a task-dump watchdog. Fix: `ContainerBackend.drain()` on every rejected
+     candidate.
+  3. *Exit 125 claimed isolation for a non-run*: a dead daemon makes `docker run` exit
+     125 without starting anything. Fix: report `isolation: none`, and the server's
+     `note_result` hook drops the cached selection so the next call re-checks.
+- **If it breaks, start here:** a pytest run that hangs at teardown means a leaked
+  detached task — check `drain()` is awaited on every rejected `ContainerBackend`. A
+  multi-line bash guest failing only on Windows hosts means CRLF — check the script
+  write. A wrong `isolation:` value: `BackendSelector._probe` acceptance rules and the
+  exit-125 branch in `ContainerBackend._execute`.
+
+## M1 step 4 — Run lifecycle (2026-07-04)
+
+- **Commits:** `b4019a7`; follow-up budget fix in `5ce882a` (2026-07-05).
+- **Plan:** [`docs/plans/M1-step4-lifecycle.md`](plans/M1-step4-lifecycle.md) — S4-D1
+  (5 s bounded wait, then `Blocked:`), S4-D2 (missing runtime reports `isolation: none`),
+  S4-D3 (deadline-label reaping).
+- **What:** cleanup (container kill → `rm -f` → temp dir) runs as a detached finisher
+  task that survives request cancellation and holds the concurrency slot until the
+  container is really gone; orphan reaping removes only containers whose own
+  `vestibule.deadline` label is past (+60 s), never on missing or garbled labels;
+  `max_concurrent` semaphore.
+- **Files:** `backends/base.py` (`RunRefusedError`), `backends/container.py`,
+  `server.py`, `tests/test_lifecycle.py` (new), `tests/test_container.py`.
+- **Guarded by:** `tests/test_lifecycle.py` — `test_semaphore_caps_concurrency`,
+  `test_busy_refusal_after_bounded_wait`, `test_reap_decision` (7-case table),
+  `test_cancelled_run_releases_slot_and_active_name`,
+  `test_result_not_delayed_by_cleanup`, `test_build_command_stamps_deadline_and_owner`,
+  `test_timed_out_result_returns_before_any_kill`,
+  `test_cli_wedge_after_guest_finished_is_not_a_timeout`; Docker-marked
+  `test_cancellation_cleans_up_container_and_tmpdir`, the three `test_reaper_*`,
+  `test_four_simultaneous_runs_succeed`.
+- **Bugs found and fixed:**
+  1. *v1 design rejected before code*: age-based reaping judged other servers'
+     containers by this server's timeout and could kill their live runs. Replaced by
+     owner-stamped deadline labels (which also avoided Docker Desktop clock drift).
+  2. *Codex P2*: shield-awaited cleanup could push a timed-out result past the server's
+     outer deadline on a slow daemon, so the honest result was lost. Fix: full
+     detachment + slot handoff.
+  3. *Same failure, one path over* (`5ce882a`): the timeout path serialized kill + rm +
+     wait (15 s) after `timeout + 5`. Fix: detached kill; the result returns at
+     `timeout + 5`. A CLI that wedges after the guest finished is reported as "exit code
+     unknown", never as a fake timeout.
+- **If it breaks, start here:** a result replaced by the generic outer-deadline message
+  means something on the request path awaits cleanup — every bound must fit inside
+  `timeout + 30` (`server.py`). Containers piling up: `ContainerBackend._reap_orphans` /
+  `_reap_decision`. Note: containers created before step 4 have no deadline label and
+  are never reaped; remove them by hand.
+
+## M1 step 3 — `ContainerBackend` happy path (2026-07-03)
+
+- **Commit:** `4f765e9`.
+- **Plan:** [`docs/plans/M1-container-backend.md`](plans/M1-container-backend.md) §3
+  (exact container profile).
+- **What:** each run gets a fresh, named, labeled container: `--network none`,
+  `--cap-drop ALL`, `no-new-privileges`, `--read-only`, non-root `--user`, memory = swap,
+  CPU, pids, capped tmpfs `/tmp`, no env inheritance. Code arrives via a read-only
+  `/sandbox` mount (never argv or stdin); output is collected streaming with a 2× cap
+  that kills a flooding container; timeouts kill the container, not just the CLI.
+- **Files:** `backends/container.py` (new), `tests/test_container.py` (new).
+- **Guarded by:** `tests/test_container.py` step-3 block — `test_python_hello`,
+  `test_bash_hello`, `test_node_hello`, `test_nonzero_exit_and_stderr`,
+  `test_workspace_write_persists_to_host`, `test_network_is_gone`,
+  `test_rootfs_is_read_only`, `test_timeout_kills_container`,
+  `test_output_flood_is_capped_and_killed`.
+- **Bugs:** the CRLF script bug was introduced here and found in step 5.
+- **If it breaks, start here:** `ContainerBackend._build_command` (the profile) and
+  `_execute` (collection, caps, timeout).
+
+## M1 step 2 — Server hardening + `read_workspace` wiring (2026-07-03)
+
+- **Commit:** `ec467f7`.
+- **Plan:** M1 contract §7 (server changes) and §6 (`read_workspace`).
+- **What:** every `run_code` argument type-checked before anything spawns (malformed ⇒
+  `Blocked:`, never a crash); `read_workspace` tool exposed (filesystem work off the
+  event loop); `RunResult.isolation_detail` + the `container-degraded` vocabulary;
+  outer deadline `timeout + 20` (raised to `+30` in step 5).
+- **Files:** `server.py`, `backends/base.py` (this commit also carried
+  `tests/test_workspace.py`).
+- **Guarded by:** all of `tests/test_validation.py`.
+- **If it breaks, start here:** `server._handle_run_code` (validation order) and
+  `server.call_tool` (handlers must return content, never raise).
+
+## M1 step 1 — Config + `read_workspace` path jail (2026-07-03)
+
+- **Commit:** `9f43762` (this commit also carried `tests/test_validation.py`; the jail
+  suite landed in `ec467f7`).
+- **Plan:** M1 contract §8 (config) and §6 (`read_workspace` jail); decision D1
+  (writable dedicated workspace).
+- **What:** env-overridable M1 settings in `config.py`; `workspace.py` rejects traversal,
+  absolute paths, drive letters / NTFS streams (any `:`), UNC/device prefixes, NUL,
+  reserved device names and trailing dots/spaces *before* touching the filesystem, then
+  walks the path refusing symlinks/reparse points.
+- **Files:** `config.py`, `workspace.py` (new).
+- **Guarded by:** all of `tests/test_workspace.py` (24 cases incl. live symlink attacks;
+  `test_jail_rejects` is the parametrized lexical table).
+- **If it breaks, start here:** `workspace.split_relpath` (lexical rules) then
+  `resolve_in_workspace` (component walk + containment).
+
+## M0 — Skeleton that runs, unsafely (2026-07-02)
+
+- **Commit:** `aabd935`; acceptance recorded in `c70bca6`.
+- **Plan:** [`docs/PLAN.md`](PLAN.md) Milestone 0; scaffold in `docs/GETTING_STARTED.md`.
+- **What:** MCP server over stdio with `run_code`; `Warden` ABC + `RunResult`;
+  `NaiveBackend` (plain subprocess, honestly `isolation: none`); stderr-only logging.
+- **Files:** `server.py`, `config.py`, `backends/base.py`, `backends/naive.py`,
+  `tests/test_smoke.py`.
+- **Guarded by:** `tests/test_smoke.py` — incl. `test_guest_stdin_is_closed_not_inherited`
+  and `test_spawn_failure_reports_isolation_none` (added 2026-07-06, `99a7f99`).
+- **Bugs found and fixed:**
+  1. *Guest stdin inherited the server's stdin*: leaks the JSON-RPC channel to untrusted
+     code and hangs the child on Windows. Fix: `stdin=DEVNULL` — now a rule for every
+     backend and every runtime CLI call.
+  2. *2026-07-06*: a stray working-tree edit made the spawn-failure path report
+     `isolation="false"`; caught by review before commit and pinned by a regression test.
+- **If it breaks, start here:** a dead MCP session is almost always something writing to
+  stdout (golden rule 1) — look for `print()` in anything the server runs.

@@ -2,8 +2,11 @@
 
 The `<runtime> version` check and the probe run are monkeypatched; the real
 end-to-end selection lives in tests/test_container.py (Docker-marked).
+Step 6 adds the S6-D2 un-pinned-image warning and the §4.3 retry-vs-restart shapes.
 """
 import asyncio
+import logging
+import re
 import time
 
 import pytest
@@ -138,8 +141,11 @@ async def test_degraded_fallback_drops_all_soft_limits(docker_ok, monkeypatch):
 async def test_both_probes_failing_blocks_hard(docker_ok, monkeypatch):
     probe, _ = _probe_that("probe exit 1: no cap-drop", "probe exit 1: no cap-drop")
     monkeypatch.setattr(BackendSelector, "_probe", probe)
-    with pytest.raises(RunRefusedError, match="cannot enforce the isolation profile"):
+    with pytest.raises(RunRefusedError, match="cannot enforce the isolation profile") as ei:
         await BackendSelector().get(_limits())
+    # Step 6 §4.3: neutral on cause — a bash-less override image fails the same way.
+    assert "image cannot run the probe (it needs bash)" in str(ei.value)
+    assert "probe exit 1: no cap-drop" in str(ei.value)  # the actual reason still shown
 
 
 async def test_concurrent_first_calls_share_one_probe(docker_ok, monkeypatch):
@@ -220,6 +226,135 @@ async def test_probe_checks_marker_and_isolation():
                   timed_out=False, isolation="none"),
     ):
         assert await s._probe(FakeBackend(bad), _limits()) is not None
+
+
+# ----------------------------------------- step 6: pin warning (S6-D2) + §4.3 shapes
+
+
+async def test_unpinned_override_warns_for_both_refs(docker_ok, monkeypatch, caplog):
+    """S6-D2: an un-pinned override is allowed but never silent — and the node ref is
+    checked too, although selection only probes the python image."""
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    with caplog.at_level(logging.WARNING, logger="vestibule.select"):
+        sel = await BackendSelector().get(
+            _limits(image_python="my-python:latest", image_node="my-node:22")
+        )
+    assert sel.verdict == "container"  # warned, never refused
+    assert "my-python:latest" in caplog.text and "my-node:22" in caplog.text
+    assert caplog.text.count("not digest-pinned") == 2
+
+
+async def test_pinned_defaults_do_not_warn(docker_ok, monkeypatch, caplog):
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    with caplog.at_level(logging.WARNING, logger="vestibule.select"):
+        await BackendSelector().get(_limits())
+    assert "not digest-pinned" not in caplog.text
+
+
+async def test_naive_skips_pin_check(caplog):
+    with caplog.at_level(logging.WARNING, logger="vestibule.select"):
+        await BackendSelector().get(_limits(backend="naive", image_python="x:latest"))
+    assert "not digest-pinned" not in caplog.text
+
+
+@pytest.mark.parametrize("kw", [{"backend": "containr"}, {"runtime": "dokcer"}])
+async def test_config_refusals_say_restart_not_retry(kw):
+    """Config is read once at startup, so 'retry' would loop forever; say restart."""
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits(**kw))
+    msg = str(ei.value)
+    assert "restart the server" in msg
+    assert "retry" not in msg.lower()
+
+
+async def test_runtime_not_installed_says_install_and_restart_agent(monkeypatch):
+    """A running server keeps the PATH it started with: a fresh install is invisible
+    until the agent that launched it restarts."""
+    async def vc(runtime):
+        return "not installed"
+
+    monkeypatch.setattr(select_mod, "_version_check", vc)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits())
+    msg = str(ei.value)
+    assert "Install Docker" in msg and "restart your agent" in msg
+    # "not installed" = not on this process's PATH, which also covers an existing
+    # install the agent's PATH lacks, or a mis-set VESTIBULE_RUNTIME.
+    assert "PATH" in msg and "VESTIBULE_RUNTIME" in msg
+
+
+async def test_daemon_down_says_start_then_retry(monkeypatch):
+    """Mixed causes (docker installed but down, podman absent): starting the daemon is
+    the fix, and a retry does work (after the cooldown)."""
+    async def vc(runtime):
+        return "not installed" if runtime == "podman" else "daemon not reachable (x)"
+
+    monkeypatch.setattr(select_mod, "_version_check", vc)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits())
+    msg = str(ei.value)
+    assert "Start docker (Docker Desktop on Windows/macOS), then retry" in msg
+    assert "restart your agent" not in msg
+
+
+async def test_daemon_down_hint_is_runtime_specific(monkeypatch):
+    """Critic fix: a Podman user is never pointed at Docker Desktop."""
+    async def vc(runtime):
+        return "daemon not reachable (cannot connect to Podman)"
+
+    monkeypatch.setattr(select_mod, "_version_check", vc)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits(runtime="podman"))
+    msg = str(ei.value)
+    assert "Start podman (`podman machine start` on Windows/macOS), then retry" in msg
+    assert "Docker Desktop" not in msg
+
+
+@pytest.mark.parametrize("case", ["backend", "runtime", "not-installed"])
+async def test_cached_restart_refusal_never_suggests_waiting(case, monkeypatch):
+    """Critic fix: a refusal only a restart can fix keeps saying restart when served
+    from the cooldown cache, and never adds 'next check in N s' (waiting can't help)."""
+    kw: dict[str, str] = {}
+    if case == "backend":
+        kw = {"backend": "containr"}
+    elif case == "runtime":
+        kw = {"runtime": "dokcer"}
+    else:
+        async def vc(runtime):
+            return "not installed"
+
+        monkeypatch.setattr(select_mod, "_version_check", vc)
+
+    s = BackendSelector()
+    with pytest.raises(RunRefusedError) as first:
+        await s.get(_limits(**kw))
+    with pytest.raises(RunRefusedError) as cached:
+        await s.get(_limits(**kw))
+    assert str(cached.value) == str(first.value)  # served from cache, unannotated
+    assert "restart" in str(cached.value)
+    assert "re-checked" not in str(cached.value)
+
+
+async def test_cached_refusal_says_when_it_rechecks(monkeypatch):
+    """S5-D1 cooldown: a fix made inside the window gets the same refusal, so the
+    cached one must say it is cached and when the next real check happens."""
+    async def vc(runtime):
+        return "daemon not reachable (x)"
+
+    monkeypatch.setattr(select_mod, "_version_check", vc)
+    s = BackendSelector()
+    with pytest.raises(RunRefusedError) as first:
+        await s.get(_limits())
+    assert "re-checked" not in str(first.value)  # a fresh verdict carries no annotation
+
+    with pytest.raises(RunRefusedError) as cached:
+        await s.get(_limits())
+    msg = str(cached.value)
+    assert msg.startswith(str(first.value))
+    cooldown = select_mod._RETRY_COOLDOWN_S
+    assert re.search(rf"re-checked at most every {cooldown} s; next check in \d+ s", msg)
 
 
 # ------------------------------------------------------------- server rendering

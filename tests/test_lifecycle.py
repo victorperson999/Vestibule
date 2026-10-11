@@ -310,7 +310,7 @@ async def test_preflight_missing_image_refused(quiet_backend, monkeypatch, tmp_p
     limits = Limits(workspace_dir=str(tmp_path / "ws"))
 
     async def missing(*args):
-        return (1, "", "Error: No such image: python:3.12-slim")
+        return (1, "", f"Error: No such image: {limits.image_python}")
 
     async def must_not_run(*args, **kw):  # pragma: no cover - the assertion IS the test
         raise AssertionError("docker run was spawned for a missing image")
@@ -319,8 +319,15 @@ async def test_preflight_missing_image_refused(quiet_backend, monkeypatch, tmp_p
     monkeypatch.setattr(b, "_cli_status", missing)
     monkeypatch.setattr(b, "_execute", must_not_run)
 
-    with pytest.raises(RunRefusedError, match=r"pull python:3\.12-slim"):
+    with pytest.raises(RunRefusedError) as ei:
         await b.run("python", "print(1)", 5, limits)
+    msg = str(ei.value)
+    # M1 step 6 §2: the pull command quotes the configured (digest-pinned) ref verbatim —
+    # `pull <tag>` could fetch different bytes and never satisfy the preflight.
+    assert f"`docker pull {limits.image_python}`" in msg
+    assert "@sha256:" in msg
+    # §4.2 hedge: a dead daemon also fails `image inspect`; the message covers both.
+    assert "docker itself is not responding" in msg
 
 
 async def test_preflight_passes_once_then_cached(quiet_backend, monkeypatch, tmp_path):
@@ -356,6 +363,26 @@ async def test_preflight_unresponsive_runtime_refused(quiet_backend, monkeypatch
 
     with pytest.raises(RunRefusedError, match="did not respond"):
         await b.run("python", "print(1)", 5, limits)
+
+
+async def test_preflight_hedge_names_the_configured_runtime(monkeypatch):
+    """M1 step 6 §4.2 (+ critic fix): the 'start it' hint is runtime-specific — a Podman
+    user is never pointed at Docker Desktop."""
+    async def unusable(*args):
+        return (1, "", "Error: cannot connect")
+
+    msgs: dict[str, str] = {}
+    for runtime in ("docker", "podman"):
+        b = ContainerBackend(runtime)
+        monkeypatch.setattr(b, "_cli_status", unusable)
+        with pytest.raises(RunRefusedError) as ei:
+            await b._preflight_image("example/img@sha256:" + "0" * 64)
+        msgs[runtime] = str(ei.value)
+    assert "If docker itself is not responding" in msgs["docker"]
+    assert "Docker Desktop" in msgs["docker"]
+    assert "If podman itself is not responding" in msgs["podman"]
+    assert "podman machine start" in msgs["podman"]
+    assert "Docker Desktop" not in msgs["podman"]
 
 
 def test_build_command_soft_flags_and_pull_never():
@@ -396,7 +423,15 @@ async def test_exit_125_reports_no_isolation(quiet_backend, monkeypatch, tmp_pat
     r = await b.run("python", "print(1)", 5, limits)
     assert r.exit_code == 125
     assert r.isolation == "none"
-    assert r.isolation_detail is not None and "nothing was executed" in r.isolation_detail
+    detail = r.isolation_detail
+    assert detail is not None and "no isolation is claimed" in detail
+    # M1 step 6 §4.3 (+ critic fix): 125 is ambiguous — a start failure OR a guest that
+    # exited 125 itself. The detail must give the right next action for both and must
+    # not claim "nothing was executed" (false in the guest case), nor tell the model to
+    # blindly retry code that may already have run.
+    assert "If the container failed to start, retry" in detail
+    assert "If your code exited with 125 itself, it did run: do not retry" in detail
+    assert "nothing was executed" not in detail
 
 
 async def test_degraded_backend_reports_detail(monkeypatch, tmp_path):
