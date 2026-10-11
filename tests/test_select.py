@@ -3,12 +3,16 @@
 The `<runtime> version` check and the probe run are monkeypatched; the real
 end-to-end selection lives in tests/test_container.py (Docker-marked).
 Step 6 adds the S6-D2 un-pinned-image warning and the §4.3 retry-vs-restart shapes.
+Step 7a adds S7-D1: tracked backends, one slot budget, note_result identity, and
+shutdown/cancellation behavior — cancellation delivered through an anyio task
+group, exactly as the MCP SDK delivers it, never only plain task.cancel().
 """
 import asyncio
 import logging
 import re
 import time
 
+import anyio
 import pytest
 
 import vestibule.backends.select as select_mod
@@ -144,7 +148,7 @@ async def test_both_probes_failing_blocks_hard(docker_ok, monkeypatch):
     with pytest.raises(RunRefusedError, match="cannot enforce the isolation profile") as ei:
         await BackendSelector().get(_limits())
     # Step 6 §4.3: neutral on cause — a bash-less override image fails the same way.
-    assert "image cannot run the probe (it needs bash)" in str(ei.value)
+    assert "image cannot run the probe (it needs bash and coreutils `timeout`)" in str(ei.value)
     assert "probe exit 1: no cap-drop" in str(ei.value)  # the actual reason still shown
 
 
@@ -173,27 +177,27 @@ async def test_note_result_invalidates_on_lost_runtime(docker_ok, monkeypatch):
     probe, entered = _probe_that(None)
     monkeypatch.setattr(BackendSelector, "_probe", probe)
     s = BackendSelector()
-    await s.get(_limits())
+    sel = await s.get(_limits())
     assert len(entered) == 1
 
     # A run that reported honest no-isolation (S4-D2 / exit-125) drops the cache...
-    s.note_result(RunResult(stdout="", stderr="", exit_code=125, timed_out=False,
-                            isolation="none"))
-    await s.get(_limits())
+    s.note_result(sel.warden, RunResult(stdout="", stderr="", exit_code=125,
+                                        timed_out=False, isolation="none"))
+    sel = await s.get(_limits())
     assert len(entered) == 2  # ...so the next call re-probed
 
     # A normal container result never invalidates.
-    s.note_result(RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
-                            isolation="container"))
+    s.note_result(sel.warden, RunResult(stdout="", stderr="", exit_code=0,
+                                        timed_out=False, isolation="container"))
     await s.get(_limits())
     assert len(entered) == 2
 
 
 async def test_note_result_ignores_naive_selection():
     s = BackendSelector()
-    await s.get(_limits(backend="naive"))
-    s.note_result(RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
-                            isolation="none"))
+    sel = await s.get(_limits(backend="naive"))
+    s.note_result(sel.warden, RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
+                                        isolation="none"))
     assert s._selection is not None  # naive legitimately reports none; keep it
 
 
@@ -209,6 +213,9 @@ async def test_probe_checks_marker_and_isolation():
 
         async def run(self, *args):
             return self._result
+
+        def set_limits_note(self, note):
+            self.limits_note = note
 
     ok = RunResult(stdout=f"{select_mod._PROBE_MARKER}\n", stderr="", exit_code=0,
                    timed_out=False, isolation="container")
@@ -396,3 +403,424 @@ async def test_server_renders_degraded_isolation(monkeypatch):
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert "isolation: container-degraded (limits not applied: cpu, memory, pids, " \
            "tmpfs-size)" in out[0].text
+
+
+# ------------------------------------------------- S7-D1: lifecycle across selections
+
+
+def _none_result():
+    return RunResult(stdout="", stderr="", exit_code=125, timed_out=False, isolation="none")
+
+
+def _track(backend, coro):
+    """Register `coro` as one of `backend`'s detached cleanup tasks (like a finisher)."""
+    task = asyncio.create_task(coro)
+    backend._finishers.add(task)
+    task.add_done_callback(backend._finishers.discard)
+    return task
+
+
+async def test_note_result_ignores_a_dropped_backends_late_result(docker_ok, monkeypatch):
+    """A late `isolation: none` from an already-dropped backend must not evict the
+    healthy selection that replaced it."""
+    probe, entered = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    old = await s.get(_limits())
+    s.note_result(old.warden, _none_result())
+    new = await s.get(_limits())
+    assert new.warden is not old.warden and len(entered) == 2
+
+    s.note_result(old.warden, _none_result())  # stale: ignored
+    assert await s.get(_limits()) is new
+    assert len(entered) == 2
+
+
+async def test_reselection_shares_one_slot_budget(docker_ok, monkeypatch):
+    """One semaphore per process: a dropped backend's still-running containers keep
+    counting against max_concurrent after re-selection."""
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    first = await s.get(_limits(max_concurrent=3))
+    s.note_result(first.warden, _none_result())
+    second = await s.get(_limits(max_concurrent=3))
+    assert first.warden._sem is second.warden._sem is s._slots
+    assert s._slots._value == 3
+
+
+async def test_degraded_candidates_share_the_budget_too(docker_ok, monkeypatch):
+    probe, _ = _probe_that("full profile failed", None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    sel = await s.get(_limits())
+    assert sel.verdict == "container-degraded"
+    assert sel.warden._sem is s._slots
+
+
+async def test_idle_backends_are_pruned_live_one_kept(docker_ok, monkeypatch):
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    sel = await s.get(_limits())
+    assert s._backends == [sel.warden]
+    s.note_result(sel.warden, _none_result())  # dropped and idle => forgotten
+    assert s._backends == []
+
+
+async def test_busy_dropped_backend_stays_tracked(docker_ok, monkeypatch):
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    sel = await s.get(_limits())
+    gate = asyncio.Event()
+    task = _track(sel.warden, gate.wait())
+    s.note_result(sel.warden, _none_result())
+    assert s._backends == [sel.warden]  # cleanup still pending => shutdown must reach it
+    gate.set()
+    await task
+
+
+async def test_anyio_cancel_during_candidate_drain_spares_its_cleanup(docker_ok, monkeypatch):
+    """Skeptic finding 1 (verifier-confirmed): a client cancel or disconnect arrives
+    through the SDK's anyio cancel scope while _select drains a rejected candidate.
+    The drain must stop waiting WITHOUT cancelling the cleanup task — a finisher
+    cancelled before its first step never releases its slot or removes its container."""
+    finishers: list[asyncio.Task] = []
+    finished = asyncio.Event()
+
+    async def cleanup(slots):
+        # Like ContainerBackend._finish_run: owns a slot, releases it when done.
+        # Cancelled before its first step, this body never runs and the slot leaks.
+        try:
+            await asyncio.sleep(0.3)
+            finished.set()
+        finally:
+            slots.release()
+
+    async def failing_probe(self, backend, limits):
+        await backend._sem.acquire()  # the probe run's slot, handed to its finisher
+        finishers.append(_track(backend, cleanup(backend._sem)))
+        return "probe exit 1"  # rejected => _select drains this candidate
+
+    monkeypatch.setattr(BackendSelector, "_probe", failing_probe)
+    s = BackendSelector()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(s.get, _limits(max_concurrent=2))
+        await asyncio.sleep(0.05)  # get() is now inside the candidate's drain
+        tg.cancel_scope.cancel()
+
+    assert len(finishers) == 1
+    await asyncio.wait_for(finished.wait(), 2)
+    assert not finishers[0].cancelled()
+    assert s._slots._value == 2  # the shared budget is whole again
+    assert await s.aclose()
+
+
+async def test_anyio_cancel_mid_probe_leaves_candidate_for_aclose(docker_ok, monkeypatch):
+    """Shutdown during the first call's probe: the run is cancelled and leaves a
+    container + a finisher behind. _select must not await anything on cancellation,
+    and aclose() must still reach the candidate (it is tracked from birth)."""
+    finished = asyncio.Event()
+    removed: list[list[str]] = []
+
+    async def cleanup(backend, name):
+        await asyncio.sleep(0.05)
+        backend._active.discard(name)
+        finished.set()
+
+    async def probe_cancelled_mid_run(self, backend, limits):
+        backend._active.add("vestibule-probe-run")
+        try:
+            await asyncio.sleep(3600)
+        finally:  # what run() does on cancellation: hand cleanup to a detached task
+            _track(backend, cleanup(backend, "vestibule-probe-run"))
+
+    async def fake_remove_now(self, names, timeout):
+        removed.append(list(names))
+
+    monkeypatch.setattr(BackendSelector, "_probe", probe_cancelled_mid_run)
+    monkeypatch.setattr(ContainerBackend, "remove_now", fake_remove_now)
+    s = BackendSelector()
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(s.get, _limits())
+        await asyncio.sleep(0.05)
+        tg.cancel_scope.cancel()
+
+    assert len(s._backends) == 1  # the candidate is still tracked
+    assert await s.aclose()
+    assert removed == [["vestibule-probe-run"]]
+    assert finished.is_set()
+
+
+async def test_aclose_batches_one_removal_across_live_and_dropped(docker_ok, monkeypatch):
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    removed: list[list[str]] = []
+
+    async def fake_remove_now(self, names, timeout):
+        removed.append(list(names))
+
+    monkeypatch.setattr(ContainerBackend, "remove_now", fake_remove_now)
+    s = BackendSelector()
+    old = await s.get(_limits())
+    old.warden._active.add("vestibule-old")
+    gate = asyncio.Event()
+    task = _track(old.warden, gate.wait())  # keeps the dropped backend tracked
+    s.note_result(old.warden, _none_result())
+    new = await s.get(_limits())
+    new.warden._active.add("vestibule-new")
+
+    gate.set()
+    assert await s.aclose()
+    assert removed == [["vestibule-old", "vestibule-new"]]  # one call, both backends
+    await task
+
+
+async def test_aclose_reports_pending_without_cancelling(docker_ok, monkeypatch):
+    """Over budget: aclose says so (the server then hard-exits) and leaves the task
+    running — it never hands cleanup to a cancellation."""
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    sel = await s.get(_limits())
+    slow = _track(sel.warden, asyncio.sleep(0.5))
+    assert await s.aclose(rm_budget_s=0.1, wait_budget_s=0.05) is False
+    assert not slow.done()
+    await slow
+
+
+async def test_aclose_with_nothing_selected_is_clean():
+    assert await BackendSelector().aclose()
+
+
+# ------------------------------------------------------------- server shutdown (S7-D1)
+
+
+@pytest.mark.parametrize("aclose_outcome, expect_exit", [
+    (True, False),       # clean: return normally into asyncio.run
+    (False, True),       # tasks still pending: never hand them to cancel-all
+    ("raise", True),     # cleanup itself failed: same
+])
+async def test_server_shutdown_hard_exits_only_when_cleanup_is_pending(
+    aclose_outcome, expect_exit, monkeypatch
+):
+    from vestibule import server
+
+    exits: list[int] = []
+
+    class FakeSelector:
+        async def aclose(self):
+            if aclose_outcome == "raise":
+                raise RuntimeError("boom")
+            return aclose_outcome
+
+    monkeypatch.setattr(server, "SELECTOR", FakeSelector())
+    monkeypatch.setattr(server.os, "_exit", exits.append)
+    monkeypatch.setattr(server, "_other_live_tasks", lambda: [])
+    await server._shutdown()
+    assert exits == ([0] if expect_exit else [])
+
+
+# ------------------------------------- S7-D3 limits readback + §4.1 random probe name
+
+_V2_OK = ("VESTIBULE-LIMITS cgroup=v2 memory.max=268435456 memory.swap.max=0 "
+          "pids.max=128 cpu.max=75000,100000 tmp=16384,4096")
+
+
+def _v2(**over):
+    fields = dict(kv.split("=", 1) for kv in _V2_OK.split()[1:])
+    fields.update({k.replace("_", "."): v for k, v in over.items()})
+    return "VESTIBULE-LIMITS " + " ".join(f"{k}={v}" for k, v in fields.items())
+
+
+_DOCKER_WARN = ("WARNING: Your kernel does not support swap limit capabilities or the "
+                "cgroup is not mounted. Memory limited without swap.")
+_PODMAN_LOGRUS = ('time="2026-10-11T12:00:00Z" level=warning msg="Resource limits are not '
+                  'supported and ignored on cgroups V1 rootless systems"')
+_PODMAN_TTY = "WARN[0000] Resource limits are not supported and ignored on cgroups V1"
+
+
+@pytest.mark.parametrize("stdout, warnings, soft_off, expected", [
+    (_V2_OK, [], frozenset(), None),
+    (_v2(memory_max="max"), [], frozenset(),
+     "limits not verified: memory (memory.max=max, memory.swap.max=0)"),
+    (_v2(memory_swap_max=""), [], frozenset(),  # no swap accounting: swap NOT capped
+     "limits not verified: memory (memory.max=268435456, memory.swap.max=?)"),
+    (_v2(pids_max="max"), [], frozenset(), "limits not verified: pids (pids.max=max)"),
+    (_v2(cpu_max="max,100000"), [], frozenset(),
+     "limits not verified: cpu (cpu.max=max,100000)"),
+    (_v2(tmp="2000000,4096"), [], frozenset(),  # ~8 GB: the size cap was dropped
+     "limits not verified: tmpfs-size (tmp=2000000,4096)"),
+    (_v2(pids_max="max", cpu_max="max,100000"), [], frozenset(),
+     "limits not verified: pids (pids.max=max); cpu (cpu.max=max,100000)"),
+    # a degraded backend never applied those flags: nothing to verify
+    (_v2(memory_max="max", memory_swap_max="max", pids_max="max", cpu_max="max,100000",
+         tmp="2000000,4096"), [], frozenset(SOFT_CONTROLS), None),
+    # v2 readback wins: an unrelated warning does not degrade a verified profile
+    (_V2_OK, ["WARNING: The requested image's platform does not match"], frozenset(), None),
+    # cgroup v1: no readback, the runtime's own warning is the only signal
+    ("VESTIBULE-LIMITS cgroup=v1", [_DOCKER_WARN], frozenset(),
+     f"runtime warning: {_DOCKER_WARN[:200]}"),
+    ("VESTIBULE-LIMITS cgroup=v1", [_PODMAN_LOGRUS], frozenset(),
+     f"runtime warning: {_PODMAN_LOGRUS[:200]}"),
+    ("VESTIBULE-LIMITS cgroup=v1", [], frozenset(), None),
+    # no cgroupfs visible at all (7a critic round 2): unverifiable, never plain container
+    ("VESTIBULE-LIMITS cgroup=none", [], frozenset(),
+     "limits not verified: the container cannot see its cgroup"),
+    ("no readback line at all", [], frozenset(),
+     "limits not verified: the probe could not read them back"),
+])
+def test_limits_note(stdout, warnings, soft_off, expected):
+    assert select_mod._limits_note(stdout, warnings, soft_off, _limits()) == expected
+
+
+@pytest.mark.parametrize("line, is_warning", [
+    (_DOCKER_WARN, True),
+    (_PODMAN_LOGRUS, True),
+    (_PODMAN_TTY, True),
+    ("  WARNING: indented", True),
+    ("VESTIBULE-PROBE-OK", False),
+    ("cat: /x: no warning here", False),
+])
+def test_runtime_warning_formats(line, is_warning):
+    """Skeptic finding 6: Podman logs through logrus, which the old
+    startswith("WARNING") check never matched."""
+    assert bool(select_mod._RUNTIME_WARNING.match(line)) is is_warning
+
+
+async def test_probe_uses_a_fresh_random_file_name():
+    s = BackendSelector()
+    scripts: list[str] = []
+
+    class FakeBackend:
+        _soft_disabled = frozenset()
+
+        async def run(self, language, script, *args):
+            scripts.append(script)
+            return RunResult(stdout=f"{_V2_OK}\n{select_mod._PROBE_MARKER}\n", stderr="",
+                             exit_code=0, timed_out=False, isolation="container")
+
+        def set_limits_note(self, note):
+            pass
+
+    for ro in (False, True, False):
+        assert await s._probe(FakeBackend(), _limits(workspace_ro=ro)) is None
+    names = [re.findall(r"/workspace/\.vestibule-probe-[0-9a-f]{12}\b", sc) for sc in scripts]
+    assert all(n for n in names)
+    assert len({n[0] for n in names}) == 3  # fresh per probe
+    assert all("@PROBE_FILE@" not in sc for sc in scripts)
+    assert all("/workspace/.vestibule-probe " not in sc for sc in scripts)
+
+
+async def test_unverified_limit_makes_the_selection_degraded(docker_ok, monkeypatch):
+    """S7-D3 end to end through _select: the probe passed, but the container's own
+    cgroup shows no pids cap — so the verdict is container-degraded, and so is every
+    run on that backend."""
+    async def run(self, language, code, timeout_s, limits):
+        return RunResult(stdout=f"{_v2(pids_max='max')}\n{select_mod._PROBE_MARKER}\n",
+                         stderr="", exit_code=0, timed_out=False,
+                         isolation=self.isolation_status()[0])
+
+    monkeypatch.setattr(ContainerBackend, "run", run)
+    sel = await BackendSelector().get(_limits())
+    assert sel.verdict == "container-degraded"
+    assert sel.detail == "limits not verified: pids (pids.max=max)"
+    assert sel.warden.isolation_status() == ("container-degraded", sel.detail)
+
+
+async def test_verified_limits_keep_plain_container(docker_ok, monkeypatch):
+    async def run(self, language, code, timeout_s, limits):
+        return RunResult(stdout=f"{_V2_OK}\n{select_mod._PROBE_MARKER}\n", stderr="",
+                         exit_code=0, timed_out=False, isolation="container")
+
+    monkeypatch.setattr(ContainerBackend, "run", run)
+    sel = await BackendSelector().get(_limits())
+    assert (sel.verdict, sel.detail) == ("container", None)
+
+
+# ----------------------------------------- 7a critic round 1 (verifier-confirmed fixes)
+
+
+async def test_cancelled_handler_leaves_no_run_behind(monkeypatch):
+    """Critic finding 1: on Python 3.11 `asyncio.wait_for` ran the run in an inner
+    task that could outlive a handler the SDK cancelled through its anyio scope —
+    a run nothing tracked, still in flight at shutdown. The run must unwind inside
+    the handler task itself."""
+    from vestibule import server
+
+    b = ContainerBackend()
+    monkeypatch.setattr(b, "_schedule_reap", lambda: None)
+    gate = asyncio.Event()
+
+    async def slow_to_unwind_preflight(image):
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.2)  # unwinding takes a while, like a CLI subprocess
+            raise
+
+    monkeypatch.setattr(b, "_preflight_image", slow_to_unwind_preflight)
+
+    async def fake_get_warden():
+        return b
+
+    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    async with anyio.create_task_group() as tg:
+        tg.start_soon(server._handle_run_code, {"language": "python", "code": "1"})
+        await asyncio.sleep(0.05)
+        tg.cancel_scope.cancel()
+
+    assert b.inflight == 0  # unwound before the handler finished
+    assert server._other_live_tasks() == []
+
+
+async def test_aclose_is_not_clean_while_a_run_is_in_flight(docker_ok, monkeypatch):
+    probe, _ = _probe_that(None)
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    s = BackendSelector()
+    sel = await s.get(_limits())
+    sel.warden._inflight = 1  # a run that has not unwound yet
+    assert await s.aclose(rm_budget_s=0.1, wait_budget_s=0.1) is False
+    sel.warden._inflight = 0
+    assert await s.aclose(rm_budget_s=0.1, wait_budget_s=0.1) is True
+
+
+async def test_server_shutdown_hard_exits_when_any_other_task_is_alive(monkeypatch):
+    """Belt and braces: even after a 'clean' aclose(), any live task at all means
+    asyncio.run's cancel-all would have something to cancel mid-spawn."""
+    from vestibule import server
+
+    exits: list[int] = []
+
+    class CleanSelector:
+        async def aclose(self):
+            return True
+
+    monkeypatch.setattr(server, "SELECTOR", CleanSelector())
+    monkeypatch.setattr(server.os, "_exit", exits.append)
+    stray = asyncio.create_task(asyncio.sleep(0.2))
+    await server._shutdown()
+    assert exits == [0]
+    await stray
+
+
+async def test_unusable_workspace_gets_its_own_refusal(docker_ok, monkeypatch):
+    """Critic finding 7: a guest can leave the workspace unusable (e.g. chmod 555 on a
+    Linux host, where it runs as your uid). That must read as a fixable folder
+    problem naming the folder — not as a runtime that cannot isolate."""
+    probe, _ = _probe_that(
+        "probe exit 1, timed_out=False: bash: line 3: "
+        "/workspace/.vestibule-probe-0123456789ab: Permission denied",
+        "probe exit 1, timed_out=False: bash: line 3: "
+        "/workspace/.vestibule-probe-ba9876543210: Permission denied",
+    )
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    lim = _limits(workspace_dir="~/vestibule-ws-under-test")
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(lim)
+    msg = str(ei.value)
+    assert "could not use the workspace" in msg
+    assert str(lim.workspace_path) in msg
+    assert "Permission denied" in msg
+    assert "cannot enforce" not in msg

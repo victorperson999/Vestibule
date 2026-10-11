@@ -37,3 +37,10 @@ class Warden(ABC):
     @abstractmethod
     async def run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
         ...
+
+    async def drain(self, timeout: float | None = None) -> bool:
+        """Wait for detached background work, never cancelling it; True when none is left.
+
+        Backends without detached work (naive) have nothing to wait for.
+        """
+        return True

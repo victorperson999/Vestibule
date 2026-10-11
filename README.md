@@ -76,7 +76,7 @@ Then ask your agent to run some code. The first `run_code` call checks your setu
 - If a call is ever `Blocked:`, the message names the exact fix and says whether to retry or restart.
 - The images are `python:3.12-slim` and `node:22-slim` as of 2026-10-10, pinned by digest so they can never change silently. The flip side: they get no upstream security fixes until Vestibule re-pins them.
 - Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
-- Custom images (`VESTIBULE_IMAGE_PYTHON` / `VESTIBULE_IMAGE_NODE`) must provide `bash` plus the language's interpreter on `PATH`, and work as an arbitrary non-root user on a read-only root filesystem. Pin them as `name@sha256:…`; an unpinned tag still works but logs a warning.
+- Custom images (`VESTIBULE_IMAGE_PYTHON` / `VESTIBULE_IMAGE_NODE`) must provide `bash`, coreutils `timeout` (every run is wrapped in it so a container ends itself at its deadline), and the language's interpreter on `PATH`, and work as an arbitrary non-root user on a read-only root filesystem. Pin them as `name@sha256:…`; an unpinned tag still works but logs a warning.
 
 Dev install and hand-editing the MCP config: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 

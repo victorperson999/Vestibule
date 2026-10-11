@@ -74,8 +74,21 @@ Backend code is runtime-agnostic (capability probes, not binary-name checks); `V
   -v <run_tmp_host>:/sandbox:ro
   --workdir /workspace
   <image@digest>
+  timeout -s KILL <timeout_s + 90>              # step-7a amendment (S7-D5): self-deadline
   <interpreter> /sandbox/main.<ext>
 ```
+
+> **Amendment 2026-10-11 (M1 step 7a, [`M1-step7-acceptance.md`](M1-step7-acceptance.md)
+> S7-D5):** the guest command is wrapped in coreutils `timeout`, set to the same deadline
+> the owner stamps on the `vestibule.deadline` label. This closes a gap: nothing inside a
+> container bounded its lifetime. If the server was hard-killed (real MCP clients kill the
+> process tree about 2 s after closing stdin), a `while True:` guest ran until some later
+> server's reaper found it, or forever if none did. Now the container ends itself and the
+> daemon's `--rm` removes it. It never fires in normal operation, because the server kills
+> timed-out runs at `timeout_s + 5`.
+>
+> The residual risk is documented: the watchdog runs as the guest's uid, so a deliberately
+> malicious guest can `SIGSTOP` it. Custom images must ship `timeout`.
 
 Never present: `--privileged`, `--device`, host PID/IPC/UTS/user namespaces, any socket mount (Docker socket, SSH agent), `-i`/`-t`. Environment is only what we pass with `-e` — no host env inheritance; proxy/credential vars are therefore structurally absent (finding 16). Writable-layer quota (`--storage-opt size=`) is **not** used in M1 — it's storage-driver-dependent; the read-only rootfs + capped tmpfs already bound non-workspace writes (finding 2).
 
@@ -93,6 +106,20 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 > detached (Codex adversarial follow-up 2026-07-05 — the serialized kill could still consume
 > the whole outer budget on a wedged daemon): the timed-out result returns immediately and the
 > finisher performs the kill; timed-out runs report `exit_code: -1`.
+
+> **Amendment 2026-10-11 (M1 step 7a, S7-D1): shutdown and cancellation.** A cleanup task
+> is never cancelled by anything that waits for it. Waits use `asyncio.wait`, because the
+> MCP SDK delivers client cancels and disconnects through an anyio cancel scope, and a
+> `gather`-based wait passed that cancellation into the cleanup.
+>
+> - The selector tracks every backend it builds and gives them **one** concurrency
+>   semaphore.
+> - On stdin EOF, `server._main` calls `SELECTOR.aclose()`. That removes every active
+>   container in one batched `rm -f` (1.5 s), then waits up to 0.5 s for cleanup tasks
+>   without cancelling them.
+> - If anything is still pending, the server exits with `os._exit(0)` instead of
+>   returning into `asyncio.run`'s cancel-all. That cancel-all was reproduced hanging
+>   the server indefinitely, with its container still running.
 
 1. Acquire semaphore. Generate run ID; write script to per-run temp dir.
 2. Spawn `docker run …` (D10 stdio rules).
@@ -113,6 +140,18 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 > real run through the normal run path, so it exercises preflight, the full §3 profile, and
 > the workspace round-trip in one shot. The server outer deadline is now `timeout_s + 30` to
 > fund the preflight's bounded worst case (§7).
+
+> **Amendment 2026-10-11 (M1 step 7a, S7-D3 + plan §4.1):**
+> - **Limits are verified.** The probe reads the container's own soft limits back from
+>   its cgroup (`memory.max`, `memory.swap.max`, `pids.max`, `cpu.max`, and the `/tmp`
+>   size). Plain `container` now also requires every applied soft limit to match what was
+>   requested. A mismatch reports `container-degraded`, with detail
+>   `limits not verified: …`.
+> - **cgroup v1 fallback.** cgroup v1 has no readback, so a runtime warning
+>   (`WARNING…`, `WARN[`, `level=warning`) is what degrades the verdict there.
+> - **Random probe filename.** The probe's workspace file is
+>   `.vestibule-probe-<random hex>`. With the old fixed name, one guest could block all
+>   future selections by creating a directory there.
 
 Lazy, once per process (guarded by `asyncio.Lock`), cached; runs on first tool call so the MCP handshake is never delayed. Sequence:
 
