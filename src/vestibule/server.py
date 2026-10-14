@@ -15,10 +15,10 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from vestibule import workspace
+from vestibule import __version__, workspace
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.select import BackendSelector
-from vestibule.config import ALLOWED_LANGUAGES, Limits
+from vestibule.config import ALLOWED_LANGUAGES, ConfigError, Limits
 
 logging.basicConfig(
     stream=sys.stderr,  # NOT stdout
@@ -27,8 +27,30 @@ logging.basicConfig(
 )
 log = logging.getLogger("vestibule")
 
-LIMITS = Limits.from_env()
-server = Server("vestibule")
+
+def _load_limits() -> tuple[Limits, str | None]:
+    """The configured limits, or the defaults plus an error message if a setting is invalid.
+
+    A bad config does not stop the server: the client would only show "failed to
+    connect", with the reason in a log the model never sees. The server starts and every
+    tool call returns the message as `Blocked:`, so the agent can tell the user what to
+    fix (golden rules 4 and 6). The defaults only render the tool schema; nothing runs.
+    """
+    try:
+        return Limits.from_env(), None
+    except ConfigError as e:
+        msg = (
+            "Vestibule's configuration is invalid: " + "; ".join(e.problems) + ". Fix the "
+            "setting in the MCP client's config for this server, then restart it. "
+            "Nothing was run."
+        )
+        log.error("%s", msg)
+        return Limits(), msg
+
+
+LIMITS, CONFIG_ERROR = _load_limits()
+# Without version= the SDK reports its own package version as the server's.
+server = Server("vestibule", version=__version__)
 SELECTOR = BackendSelector()
 
 
@@ -113,6 +135,9 @@ async def list_tools() -> list[Tool]:
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         args = arguments or {}
+        if CONFIG_ERROR is not None:
+            # The defaults standing in for a bad config are not what the user asked for.
+            return _blocked(CONFIG_ERROR)
         if name == "run_code":
             return await _handle_run_code(args)
         if name == "read_workspace":

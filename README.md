@@ -82,7 +82,7 @@ Dev install and hand-editing the MCP config: [`docs/GETTING_STARTED.md`](docs/GE
 
 ## Configuration
 
-Set these as environment variables in Vestibule's entry in your MCP client's config ([how](docs/GETTING_STARTED.md#register-the-server-with-an-agent)). They are read once, when the agent starts the server, so restart it after a change. Use positive whole numbers. The server does not validate them yet: an unparseable value is silently replaced by the default, and `0` is used as given, which can lift a limit or refuse every run.
+Set these as environment variables in Vestibule's entry in your MCP client's config ([how](docs/GETTING_STARTED.md#register-the-server-with-an-agent)). They are read once, when the agent starts the server, so restart it after a change. Numbers must be positive whole numbers, and on/off settings take `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; a blank value counts as unset. If any setting is invalid, the server still starts, but it refuses every tool call with a `Blocked:` message that names the setting, so your agent can tell you what to fix. Nothing runs until you fix it and restart the server.
 
 | Variable | Default | What it does |
 | --- | --- | --- |

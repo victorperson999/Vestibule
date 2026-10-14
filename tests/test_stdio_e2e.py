@@ -55,10 +55,11 @@ class StdioServer:
         ]
 
     @classmethod
-    async def start(cls, workspace: Path) -> "StdioServer":
+    async def start(cls, workspace: Path, settings: dict[str, str] | None = None) -> "StdioServer":
         # The dev shell's own VESTIBULE_* settings must not leak into the server under test.
         env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")}
         env["VESTIBULE_WORKSPACE"] = str(workspace)
+        env.update(settings or {})
         proc = await asyncio.create_subprocess_exec(
             str(SERVER_EXE),
             stdin=asyncio.subprocess.PIPE,
@@ -115,13 +116,14 @@ class StdioServer:
         await self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         return fut
 
-    async def initialize(self) -> None:
-        await self.request("initialize", {
+    async def initialize(self) -> dict:
+        result = await self.request("initialize", {
             "protocolVersion": LATEST_PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {"name": "vestibule-e2e", "version": "0"},
         })
         await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return result
 
     async def call(self, tool: str, arguments: dict, timeout: float = 90) -> str:
         result = await self.request(
