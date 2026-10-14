@@ -8,6 +8,7 @@ container-degraded reporting for unverified limits (S7-D3).
 """
 import asyncio
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -555,6 +556,45 @@ async def test_cancelled_run_hands_its_cli_to_a_tracked_reap(monkeypatch, tmp_pa
     assert await b.drain(timeout=2) is True
 
 
+async def test_cli_reap_removes_a_bind_source_recreated_after_cleanup(monkeypatch, tmp_path):
+    """7b gate finding: a run cancelled at spawn whose container starts only after
+    cleanup removed its temp dir makes Docker Desktop re-create that dir as the
+    (missing) bind source, `-v` and `--mount` alike. Only removal after the CLI has
+    exited is final, so the CLI reap removes the dir once more."""
+    b = ContainerBackend()
+    limits = Limits(max_concurrent=1, workspace_dir=str(tmp_path / "ws"))
+    monkeypatch.setattr(b, "_schedule_reap", lambda: None)
+    monkeypatch.setattr(b, "_preflight_image", _ok_preflight)
+    cleaned: list[str] = []
+
+    async def cleanup(name, tmpdir):  # the finisher: kill and rm -f both missed
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        cleaned.append(tmpdir)
+
+    monkeypatch.setattr(b, "_cleanup", cleanup)
+    proc = FakeCliProc()
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+
+    task = asyncio.create_task(b.run("python", "print(1)", 30, limits))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(100):  # let the finisher's cleanup run first
+        if cleaned:
+            break
+        await asyncio.sleep(0.01)
+    tmpdir = Path(cleaned[0])
+    tmpdir.mkdir()  # the late container's start re-creates its bind source ...
+    proc.exit(2)  # ... finds no script, and its CLI exits
+    assert await b.drain(timeout=2) is True
+    assert not tmpdir.exists()
+
+
 # ----------------------------------------------- S7-D5 self-deadline + S7-D3 reporting
 
 
@@ -566,6 +606,14 @@ def test_guest_runs_under_its_own_deadline():
     tail = cmd[cmd.index(lim.image_node):]
     assert tail == [lim.image_node, "timeout", "-s", "KILL",
                     str(30 + container_mod._DEADLINE_SLACK_S), "node", "/sandbox/main.js"]
+
+
+def test_profile_environment_is_exactly_four_variables():
+    """Only these reach the guest (no host env). HOME must exist at start: /tmp is the
+    tmpfs mount point, while the old /tmp/home never existed (M1 criterion 9, 7b)."""
+    cmd = ContainerBackend()._build_command("c4", "python", Limits(), "/h/sbx", "/h/ws", 1, 30)
+    env = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-e"]
+    assert env == ["HOME=/tmp", "TMPDIR=/tmp", "PYTHONDONTWRITEBYTECODE=1", "NODE_OPTIONS="]
 
 
 def test_unverified_limits_are_reported_degraded():

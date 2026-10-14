@@ -29,7 +29,7 @@ Goal: prove the end-to-end plumbing with zero isolation.
   Registered with Claude Code.
 - Post-M0: Codex adversarial review of the M1 design — 20 ranked findings
   (`docs/reviews/M1-codex-adversarial-review.md`), all folded into the M1 contract
-  (`docs/plans/M1-container-backend.md`: decisions D1–D4, 7 build steps, 14 acceptance
+  (`docs/plans/M1/M1-container-backend.md`: decisions D1–D4, 7 build steps, 14 acceptance
   criteria).
 
 ---
@@ -117,7 +117,7 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   ruff + mypy clean. Deferred to step 4 by design: cancellation-shielded cleanup,
   orphan reaping, concurrency semaphore.
 - **Step 4 — done 2026-07-04.** Run lifecycle hardening (plan:
-  `docs/plans/M1-step4-lifecycle.md`, adversarially reviewed by Codex before
+  `docs/plans/M1/M1-step4-lifecycle.md`, adversarially reviewed by Codex before
   implementation). Cleanup (container kill/rm + temp dir) now runs as an *independent*
   shielded task, so a cancelled request — outer deadline or MCP client cancel — can never
   orphan a container or leak a temp dir. Orphan reaping per S4-D3: a detached,
@@ -187,7 +187,7 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   pending tasks. +25 tests (15 Docker-free selection suite, 6 Docker-free
   preflight/honesty, 4 Docker-marked: real selection verdict, probe leaves no trace,
   RO-workspace selection, failed-selection drain) ⇒ 103 total, ruff + mypy clean.
-- **Step 6 planned — 2026-07-06** (`docs/plans/M1-step6-pinning.md`, two Codex
+- **Step 6 planned — 2026-07-06** (`docs/plans/M1/M1-step6-pinning.md`, two Codex
   adversarial passes). Four decisions: S6-D1 (pin the multi-arch manifest-list digest,
   proven through the real preflight + `--pull never` path), S6-D2 (un-pinned image
   override ⇒ loud warning, never refusal), S6-D3 (no standalone doctor CLI in M1),
@@ -319,3 +319,68 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   - **A test-hygiene leak** in a step-4 test (two `%TEMP%` dirs per suite run) was found
     and fixed.
   - **Totals:** 122 → 175 tests, ruff + mypy clean.
+- **Plan files moved** (Victor's renames, committed with 7a; references fixed in 7b). The M1
+  plans live in `docs/plans/M1/`, and each milestone gets its own folder. Every live
+  reference now points there: README, PLAN, BUILD_LOG, these bullets, the plans' cross-references
+  and the `src/` docstrings. The workflow docs name `docs/plans/<milestone>/<step>.md`. A new
+  `tests/test_docs.py` fails on any stale link or `docs/…` path. Dated records (the CLAUDE.md
+  changelog, `docs/reviews/`) stay verbatim.
+- **D1 amended — 2026-10-14 (S7-D2, as approved 2026-10-11).** Guest code's blast radius is
+  still the workspace, but a symlink a guest plants there is a real symlink on the host, and
+  host tools that follow it reach past the workspace. `read_workspace` refuses links, the
+  `run_code` description steers the model to Vestibule's own tools (7a), and the README now
+  tells the user to treat the workspace like an untrusted download. The D1 bullet above
+  stays as written. The amendment is in the contract.
+- **`HOME=/tmp` — approved 2026-10-14.** The acceptance suite's criterion 9 found that
+  `$HOME` (`/tmp/home`) never existed in the guest: `/tmp` is a fresh empty tmpfs, so writing
+  `~/anything`, `cd ~` or `git config --global` failed. `HOME` is now `/tmp`, which always
+  exists and counts against the same 64 MiB cap. Rejected: a second tmpfs at `/tmp/home`, and a
+  `mkdir` shell wrapper in front of every guest. Contract §3 amended.
+- **Step 7b — done 2026-10-14** (acceptance suite + docs; the live-agent check is next).
+  - **A flaky 7a test, found by the first baseline run.** The test for runs cancelled at spawn
+    failed once. Docker's own event log showed the product had done its job: the three
+    late containers were each killed 34–67 ms after they started and were gone within 0.9 s.
+    The test's poll had passed on its first, empty `docker ps`, taken before the containers
+    existed, so its final check caught one mid-life. The test now waits until every `docker run`
+    process has exited before an empty listing counts. It passed 5 times in a row afterwards.
+  - **A small leak the gate turned up, older than step 7.** A run cancelled while
+    its container was still being created could leave one empty temp dir behind. Docker
+    Desktop re-creates a deleted bind-mount folder when such a late container starts.
+    The task that waits for the `docker run` process now removes the dir again once that
+    process has exited. The race occurred 4 times in the next 6 test runs, and no dir
+    was left.
+  - **The exam.** `tests/test_acceptance.py` holds one test per criterion, plus one that checks
+    every isolation control from inside the guest. Each goes through the real tool handler
+    against real Docker. All 14 pass. A few of the results:
+    - a memory bomb is OOM-killed and the cgroup's own counter says so
+    - forks are refused at 125 of 128 pids, and the classic bash fork bomb is contained
+    - `/tmp` takes exactly 64 MiB, then reports "no space left"
+    - the root filesystem refuses writes with `EROFS`, proof of the read-only mount itself
+    - the guest sees uid 1000, all capabilities empty, `NoNewPrivs`, seccomp filtering, the
+      exact cgroup limits, only `lo`, and none of the server's environment
+  - **Docs.**
+    - README: a Configuration table (all 15 `VESTIBULE_*` settings), a "Know the limits"
+      section (not a VM; the workspace is writable and uncapped; treat it like an untrusted
+      download; a hostile run can outlive its deadline; Podman is experimental), and the full
+      set of isolation values.
+    - A new short developer guide in `docs/GETTING_STARTED.md`. The M0 walkthrough is
+      archived verbatim in `docs/archive/`.
+    - The contract carries the acceptance record (criterion → test → what was observed).
+  - **Criterion 14:** with Docker hidden from `PATH`, every Docker test skips with its reason and
+    the rest pass (159 passed, 38 skipped). Proven on Windows only; Linux comes with M2.
+  - **Review:** `critic` ran twice, and `verifier` checked every finding (none refuted).
+    - Round 1 had one medium, which `verifier` lowered to low: "Know the limits" overclaimed.
+      Under `container-degraded`, a hostile run is held only by the limits its result
+      reported.
+    - The other round-1 findings were low:
+      - `test_docs` missed wrong-case paths, rejected plan forward references, and skipped
+        `CLAUDE.md` and `tests/`
+      - two tests could be fooled by a live Vestibule server sharing the machine
+      - nothing without Docker guarded `HOME=/tmp`
+      - three stale doc lines
+    - All were fixed except config validation (`0` values, a Unicode digit stopping
+      startup). That is now its own small fix in the known issues, because it changes config
+      behavior.
+    - Round 2: 4 low findings on the fixes, all fixed.
+  - **Totals:** 175 → 197 tests, ruff + mypy clean, and no leftover containers or temp dirs
+    before or after the run.

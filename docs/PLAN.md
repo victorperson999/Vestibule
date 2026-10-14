@@ -50,7 +50,7 @@ Prove the plumbing end-to-end with zero isolation.
 
 **Acceptance:** a live agent calls `run_code` and you see `print("hi")` execute and the output come back. Smoke test passes. `ruff`/`mypy` clean.
 
-**All starter code for this milestone is in `GETTING_STARTED.md`.**
+**All starter code for this milestone is in the M0 walkthrough, now archived at `docs/archive/M0-scaffold-walkthrough.md`.**
 
 ### Milestone 1 — Container backend + cross-platform floor · ~week 1
 
@@ -62,7 +62,9 @@ Make it *usable by ~80% of the audience* on day one.
 
 **Acceptance:** on macOS/Windows (with Docker) an agent runs code that is genuinely network-isolated and memory-capped; a fork bomb and a memory bomb are both contained; `read_workspace` cannot read outside the workspace. Result reports `isolation: container`.
 
-**Detailed contract:** `docs/plans/M1-container-backend.md` — written after the pre-implementation adversarial review (`docs/reviews/M1-codex-adversarial-review.md`); its sharpened acceptance criteria supersede the list above.
+**Detailed contract:** `docs/plans/M1/M1-container-backend.md` — written after the pre-implementation adversarial review (`docs/reviews/M1-codex-adversarial-review.md`); its sharpened acceptance criteria supersede the list above.
+
+**Status (2026-10-14):** built (steps 1–7). The acceptance suite, `tests/test_acceptance.py`, passes all 14 criteria on Windows with Docker Desktop. M1 is accepted after the live-agent check.
 
 ### Milestone 2 — Native Linux isolation core · ~weeks 2–3 · **the differentiator**
 

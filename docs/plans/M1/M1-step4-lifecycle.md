@@ -1,7 +1,7 @@
 # M1 step 4 plan — run lifecycle: cancellation-resistant cleanup, orphan reaping, concurrency
 
 Status: **signed off and implemented 2026-07-04** (S4-D1/S4-D2 approved with v1; S4-D3 approved with v2 after the Codex adversarial review; built the same day — see `docs/HISTORY.md`).
-Parent contract: `docs/plans/M1-container-backend.md` §4 (binding, amended by S4-D1/S4-D3 below).
+Parent contract: `docs/plans/M1/M1-container-backend.md` §4 (binding, amended by S4-D1/S4-D3 below).
 Review history: v1's age-based reaper was rejected by a Codex adversarial review (finding: a
 reaper using *local* `max_timeout_s` can kill legitimate live runs of another Vestibule server
 with a larger configured timeout). v2 adopts the review's deadline-label remedy and documents
@@ -197,7 +197,7 @@ None. `_SEM_WAIT_S = 5`, `_REAP_MARGIN_S = 60`, deadline slack `+90`, and the ex
 | `src/vestibule/backends/container.py` | `run()` restructure, `_cleanup`, `_reap_orphans` + `_reap_decision`, semaphore, deadline/owner labels in `_build_command`, S4-D2 fix |
 | `src/vestibule/server.py` | catch `RunRefusedError` in `_handle_run_code` ⇒ `Blocked:` content (~4 lines) |
 | `tests/test_container.py` (± a new module) | tests below |
-| `docs/plans/M1-container-backend.md` | §3 label list + §4.6 annotated as amended by this doc |
+| `docs/plans/M1/M1-container-backend.md` | §3 label list + §4.6 annotated as amended by this doc |
 
 ## 5. Edge cases handled
 

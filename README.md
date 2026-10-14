@@ -15,7 +15,7 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 │   AI agent   │ ─────────────► ║   generated code runs here  ║ ────── ✕ ────►│  files, secrets,  │
 │  (via MCP)   │ ◄───────────── ║                             ║ no way through │  network, shell  │
 │              │  output only   ║  no network · no host files ║                │   — untouched    │
-└──────────────┘                ║  capped cpu · memory · disk ║                └──────────────────┘
+└──────────────┘                ║  capped cpu · memory · /tmp ║                └──────────────────┘
                                 ╚══════════════╤══════════════╝
                                                │
                   the one doorway: /workspace (a dedicated folder for files)
@@ -44,12 +44,12 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 ## Status
 
 > ⚠️ **Early development — do not rely on this for hostile code yet.**
-> The container backend is built: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. Its acceptance suite (M1 step 7) has not landed yet. Not yet published to PyPI.
+> The container backend is built and passes its acceptance suite (M1 step 7, on Windows with Docker Desktop): each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. M1 is marked accepted after one more check from a live agent session. Not yet published to PyPI.
 
 | Milestone | What                                                                                         | Status                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                |
-| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔨 steps 1–6 of 7 done (backend, `read_workspace`, backend selection, digest-pinned images); acceptance suite next — see [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) |
+| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔨 built; acceptance suite passes (all 14 criteria); live-agent check next — see [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) |
 | M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                |
 | M3        | Audit log + resource reporting                                                               | planned                                                                                                |
 | M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                |
@@ -80,9 +80,39 @@ Then ask your agent to run some code. The first `run_code` call checks your setu
 
 Dev install and hand-editing the MCP config: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
+## Configuration
+
+Set these as environment variables in Vestibule's entry in your MCP client's config ([how](docs/GETTING_STARTED.md#register-the-server-with-an-agent)). They are read once, when the agent starts the server, so restart it after a change. Use positive whole numbers. The server does not validate them yet: an unparseable value is silently replaced by the default, and `0` is used as given, which can lift a limit or refuse every run.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `VESTIBULE_WORKSPACE` | `~/.vestibule/workspace` | Host folder mounted at `/workspace`, the one place runs can keep files. Created on first use. |
+| `VESTIBULE_WORKSPACE_RO` | off | `1`/`true`/`yes`/`on` mounts the workspace read-only. |
+| `VESTIBULE_RUNTIME` | `auto` | `auto` (Docker, then Podman), `docker`, or `podman`. |
+| `VESTIBULE_BACKEND` | `auto` | `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
+| `VESTIBULE_IMAGE_PYTHON` | pinned `python:3.12-slim` | Image for `python` and `bash` runs. See the override rules above. |
+| `VESTIBULE_IMAGE_NODE` | pinned `node:22-slim` | Image for `node` runs. |
+| `VESTIBULE_DEFAULT_TIMEOUT_S` | `10` | Timeout when a call doesn't set `timeout_seconds`. |
+| `VESTIBULE_MAX_TIMEOUT_S` | `60` | Ceiling on `timeout_seconds`. |
+| `VESTIBULE_MAX_CODE_BYTES` | `262144` | Larger code is refused before anything runs. |
+| `VESTIBULE_MAX_OUTPUT_BYTES` | `20000` | Output returned per stream. Longer output is truncated, and a run printing more than twice this is stopped. |
+| `VESTIBULE_MEM_MB` | `256` | Memory cap, with no swap on top. |
+| `VESTIBULE_CPU_PCT` | `75` | CPU cap, as a percentage of one core. |
+| `VESTIBULE_PIDS_MAX` | `128` | Cap on processes and threads inside a run. |
+| `VESTIBULE_TMPFS_MB` | `64` | Size of the run's `/tmp`, which is also its `$HOME`. |
+| `VESTIBULE_MAX_CONCURRENT` | `4` | Runs at once. A further call waits up to 5 s for a slot, then is `Blocked:`. |
+
+## Know the limits
+
+- **Not a VM.** On Linux the sandbox shares your host's kernel, so a kernel exploit could in principle escape it. On Windows and macOS, Docker Desktop runs it inside its own Linux VM. The full threat model ships as `SECURITY.md` in M4.
+- **The workspace is writable, and its size is not capped.** Code can create, change, and delete anything in `/workspace`; that is what it's for. The root filesystem is read-only and `/tmp` is capped, but nothing limits how much a run writes to the workspace. `VESTIBULE_WORKSPACE_RO=1` makes it read-only.
+- **Treat the workspace like an untrusted download.** Sandboxed code can leave symlinks in it, and on your machine they are real symlinks: any tool that follows one can read or write outside the workspace (picture `report.txt` pointing at `~/.ssh/id_ed25519`). Vestibule's own `read_workspace` refuses symlinks, and the `run_code` description tells the agent to use it. Never point `VESTIBULE_WORKSPACE` at a folder other tools use, and don't give your agent's own file tools blanket access to it.
+- **A deliberately hostile run can outlive its deadline.** Every container ends itself at its deadline even if the server is killed, but code written to stop that timer (it runs as the same user) can keep its container alive until a later Vestibule run removes it. Meanwhile it stays inside the caps its result reported: all of them for `isolation: container`, only the ones still applied for `container-degraded`.
+- **Podman is experimental.** It is used only if it passes the setup check, and only Docker is tested.
+
 ## How it works (design)
 
-Two halves: the **MCP server** decides *whether/what* (validation, limits, schemas, audit), and a **warden** backend decides *how* to isolate and run. Every result carries an `isolation:` field stating what actually protected the run — `native`, `container`, or `none` — and the tool never claims protection that wasn't applied.
+Two halves: the **MCP server** decides *whether/what* (validation, limits, schemas, audit), and a **warden** backend decides *how* to isolate and run. Every result carries an `isolation:` field stating what actually protected the run — `container`, `container-degraded` (contained, but some resource limits could not be applied or verified; the result names them), `none`, and from M2 `native` — and the tool never claims protection that wasn't applied.
 
 Honest scope, stated up front: this is namespace/container isolation sharing the host kernel, **not** a hardened VM boundary. The goal is to make the common, realistic agent risks — prompt-injected exfiltration, destructive commands, resource exhaustion — structurally impossible, not to defend against kernel 0-days. The full threat model ships as `SECURITY.md` in M4.
 
@@ -92,10 +122,13 @@ Honest scope, stated up front: this is namespace/container isolation sharing the
 | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                             | Deep technical design: the warden lifecycle, layered isolation, MCP server design.         |
 | [`docs/PLAN.md`](docs/PLAN.md)                                             | Roadmap: milestones 0–4 with acceptance criteria.                                         |
-| [`docs/plans/M1-container-backend.md`](docs/plans/M1-container-backend.md) | The detailed M1 contract (container profile,`read_workspace` jail, acceptance criteria). |
+| [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) | The detailed M1 contract (container profile,`read_workspace` jail, acceptance criteria). |
+| [`docs/plans/`](docs/plans/)                                               | Per-milestone folders of step plans, each with its decisions and review findings.         |
+| [`docs/HISTORY.md`](docs/HISTORY.md)                                       | The build story in plain language: every decision, sign-off, and finished step.           |
+| [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md)                                   | Regression index: per step, its commits, files, guarding tests, and known open issues.    |
 | [`docs/reviews/`](docs/reviews/)                                           | Pre-implementation adversarial design reviews.                                             |
 | [`CLAUDE.md`](CLAUDE.md)                                                   | Invariants and operating rules for AI-assisted development of this repo.                   |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                       | Dev setup and the original M0 scaffold walkthrough.                                        |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                       | Developer guide: dev install, registration, running the checks, troubleshooting.          |
 
 ## License
 

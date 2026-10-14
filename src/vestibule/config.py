@@ -11,7 +11,7 @@ from pathlib import Path
 ALLOWED_LANGUAGES: tuple[str, ...] = ("python", "bash", "node")
 
 # Sandbox images, pinned by multi-platform index digest (D2, M1 step 6 —
-# docs/plans/M1-step6-pinning.md S6-D1). Tagless and fully qualified on purpose: Docker
+# docs/plans/M1/M1-step6-pinning.md S6-D1). Tagless and fully qualified on purpose: Docker
 # does not verify a tag that sits next to a digest, so the tag lives here instead, and
 # tests/test_container.py checks the interpreter version inside each pinned image.
 #   python  <- python:3.12-slim    node  <- node:22-slim
@@ -41,7 +41,7 @@ class Limits:
     pids_max: int = 128
     cpu_pct: int = 75
 
-    # M1: workspace + container backend (docs/plans/M1-container-backend.md §8)
+    # M1: workspace + container backend (docs/plans/M1/M1-container-backend.md §8)
     workspace_dir: str = "~/.vestibule/workspace"
     workspace_ro: bool = False
     runtime: str = "auto"             # auto | docker | podman

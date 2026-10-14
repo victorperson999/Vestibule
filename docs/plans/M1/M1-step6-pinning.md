@@ -4,7 +4,7 @@ Status: **built 2026-10-10 — signed off v2. S6-D1 (amended), S6-D2 (amended), 
 2026-10-10; S6-D4 approved 2026-07-06 (procedure tightened 2026-10-10, approved with S6-D1).
 Proof gate passed in both image stores; gate green (122 passed); critic ×2 + verifier, all
 findings fixed (§10).**
-Parent contract: `docs/plans/M1-container-backend.md` §2-D2 and §8 (binding).
+Parent contract: `docs/plans/M1/M1-container-backend.md` §2-D2 and §8 (binding).
 
 Review history:
 - *Codex pass 1, 2026-07-06* (1 high, 2 medium, 2 low; "sound with amendments") — all
@@ -301,7 +301,7 @@ This is a read-and-align pass, not a rewrite. Tests assert the load-bearing *sha
 | `tests/test_pins.py` (new) | Docker-free: per-constant ref format (§7 test 1) + README-copy test (§7 test 2). |
 | `tests/test_lifecycle.py` | Preflight-refusal test asserts the configured ref *verbatim* (today's `pull python:3\.12-slim` regex would break on a tagless ref) + the §4.2 hedge; exit-125 test asserts the retry hint. |
 | `tests/test_select.py` | S6-D2: unpinned override warns (both refs checked), pinned defaults silent, naive skips the check; §4.3 shapes: env-var refusals say restart, all-not-installed says install + restart, cached refusal carries the cooldown annotation, neutral probe-failure wording. |
-| `docs/plans/M1-container-backend.md` | §8 amendment note: digests pinned on the capture date per this plan; tagless fully qualified form. |
+| `docs/plans/M1/M1-container-backend.md` | §8 amendment note: digests pinned on the capture date per this plan; tagless fully qualified form. |
 | `docs/HISTORY.md` | Sign-off + build bullets. |
 
 No new config knobs, no new dependencies, no new tools.

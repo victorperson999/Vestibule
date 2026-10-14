@@ -45,6 +45,21 @@ async def backend():
             await b._reap_task
 
 
+@pytest.fixture()
+def run_dirs(monkeypatch) -> list[Path]:
+    """The temp dirs this test's runs create. Checks look at these, never at the shared
+    %TEMP% as a whole: a live Vestibule server on this machine writes there too."""
+    made: list[Path] = []
+    real = tempfile.mkdtemp
+
+    def spy(*args, **kwargs):
+        made.append(Path(real(*args, **kwargs)))
+        return str(made[-1])
+
+    monkeypatch.setattr(tempfile, "mkdtemp", spy)
+    return made
+
+
 # ---------------------------------------------------------------- step 3: happy path
 
 @docker_required
@@ -164,12 +179,9 @@ async def test_output_flood_is_capped_and_killed(backend, limits):
 # ------------------------------------------------------------- step 4: lifecycle (§4)
 
 @docker_required
-async def test_cancellation_cleans_up_container_and_tmpdir(backend, limits):
+async def test_cancellation_cleans_up_container_and_tmpdir(backend, limits, run_dirs):
     """Plan §6 test 6 — the headline §4.5 behavior: a cancelled request still gets
     its container removed and its temp dir deleted (detached, shielded cleanup)."""
-    tmp_root = Path(tempfile.gettempdir())
-    before = set(tmp_root.glob("vestibule-run-*"))
-
     task = asyncio.create_task(
         backend.run("python", "import time; time.sleep(300)", 60, limits)
     )
@@ -188,12 +200,11 @@ async def test_cancellation_cleans_up_container_and_tmpdir(backend, limits):
     deadline = time.time() + 20  # poll: the detached cleanup + --rm/rm -f settle
     while time.time() < deadline:
         gone = ps_names(f"label=vestibule.owner={backend._owner}") == ""
-        no_new_dirs = not (set(tmp_root.glob("vestibule-run-*")) - before)
-        if gone and no_new_dirs:
+        if gone and not any(d.exists() for d in run_dirs):
             break
         await asyncio.sleep(0.5)
     assert ps_names(f"label=vestibule.owner={backend._owner}") == ""
-    assert set(tmp_root.glob("vestibule-run-*")) - before == set()
+    assert run_dirs and [d for d in run_dirs if d.exists()] == []
 
 
 @docker_required
@@ -382,7 +393,9 @@ async def test_container_ends_itself_without_a_server(tmp_path, monkeypatch):
 
 
 @docker_required
-async def test_run_cancelled_at_spawn_leaves_no_container(backend, limits, monkeypatch):
+async def test_run_cancelled_at_spawn_leaves_no_container(
+    backend, limits, monkeypatch, run_dirs
+):
     """7a critic round 2: a run cancelled while `docker run` is still creating its
     container can have the finisher's `kill` and `rm -f` both miss, after which the
     CLI starts the container anyway. What stops that late guest is `_cleanup`
@@ -408,7 +421,15 @@ async def test_run_cancelled_at_spawn_leaves_no_container(backend, limits, monke
         with pytest.raises(asyncio.CancelledError):
             await task
 
+    # An empty listing proves nothing while a cancelled `docker run` CLI may still
+    # create its container: wait until every CLI has exited (drain covers the tracked
+    # CLI reaps). Before this, the poll could pass on its first, vacuous `ps` and the
+    # assert below then catch a late container in its sub-second life (2026-10-14).
+    assert await backend.drain(60)
     deadline = time.time() + 20
     while ps_names(f"label=vestibule.owner={backend._owner}") and time.time() < deadline:
         await asyncio.sleep(0.5)
     assert ps_names(f"label=vestibule.owner={backend._owner}") == ""
+    # A late container's start re-creates its deleted bind source on Docker Desktop;
+    # the CLI reap removes it again once the CLI has exited (7b gate finding).
+    assert len(run_dirs) == 3 and [d for d in run_dirs if d.exists()] == []

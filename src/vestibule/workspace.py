@@ -1,6 +1,6 @@
 """Path jail + read/list logic for the `read_workspace` tool.
 
-Contract: docs/plans/M1-container-backend.md §6 (review findings 8/9). All string
+Contract: docs/plans/M1/M1-container-backend.md §6 (review findings 8/9). All string
 validation happens BEFORE touching the filesystem; resolution then walks the path
 component-by-component refusing symlinks/reparse points anywhere in the chain
 (guest-planted symlinks are the headline attack). Lives in its own module so the

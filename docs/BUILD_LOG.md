@@ -34,8 +34,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 4 | Run lifecycle: cleanup, reaping, concurrency cap | 2026-07-04 | `b4019a7` (+ fix in `5ce882a`) | 78 |
 | M1 step 5 | Backend selection + capability probing | 2026-07-05 | `522606f` `5ce882a` `d6a9df8` `7ebd28b` | 103 (104 after `99a7f99`) |
 | M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | `a0827fd` | 122 |
-| M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | *pending (Victor commits)* | 175 |
-| M1 step 7b | Acceptance suite (14 criteria) + docs | pending | — | — |
+| M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | `938056f` | 175 |
+| M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | *pending (Victor commits)* | 197 |
 
 ## Known open issues
 
@@ -43,21 +43,94 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 |---|---|---|---|
 | 2026-10-11 (7a review) | `server.py` `_main` | Linux/macOS: a client that sends SIGTERM *without* closing stdin first skips shutdown cleanup (Python's default SIGTERM exits at once). The in-flight container lives until its S7-D5 self-deadline (`timeout + 90` s). The installed MCP Python client always closes stdin first; Claude Code's behavior is unmeasured. | M2 (needs a Linux host to test a SIGTERM handler) |
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
-| 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids. | Documented residual (M4 `SECURITY.md`) |
+| 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
-| 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Docs in 7b; M2 / M4 |
+| 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
+| 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
+| 2026-10-14 (7b docs) | `config.py` `Limits.from_env` | Numeric settings are not validated. An unparseable value (for example `VESTIBULE_MEM_MB=256m`) is silently replaced by the default, against golden rule 6 (degrade loudly). `0` is used as given: `VESTIBULE_MAX_CONCURRENT=0` refuses every run, the probe included, with "retry shortly" forever, and `VESTIBULE_MAX_OUTPUT_BYTES=0` kills every run at its first output byte. A Unicode digit such as `²` passes `isdigit()` but not `int()`, so the server fails to start. Documented in the README's Configuration section (7b review). | Own small fix (validate at startup: positive integers, loud on anything else); M4 at the latest |
 
 **Closed:** the 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
 shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite shutdown hang.
 
----|---|---|---|
-| 2026-10-10 (step-6 review, pre-existing since steps 4–5) | `select.py` `BackendSelector.note_result`; `server.py` `_main` | A selection dropped by `note_result` is never `drain()`ed, and the live warden is not drained at server shutdown either (`asyncio.run` mass-cancels leftovers). Cleanup tasks caught mid-spawn can hit the Windows proactor deadlock `drain()` exists for; the replacement backend's fresh semaphore briefly doesn't count the dropped one's still-cleaning containers. | Step-7 plan (needs design + `skeptic`) |
-
 ---
+
+## M1 step 7b — Acceptance suite + docs pass (2026-10-14)
+
+- **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) v2
+  §2 (criteria), §5.1 (test layout), §6 (docs pass), S7-D2 (README half), S7-D4 (dev guide).
+  New decision: `HOME=/tmp` (contract §3 amendment, approved 2026-10-14).
+- **What:**
+  - `tests/test_acceptance.py`: one test per contract §9 criterion (`test_c01`…`test_c12`),
+    plus `test_hard_and_soft_controls_apply_inside_the_guest`. Each test drives
+    `server.call_tool` with a fresh `BackendSelector` and a temp workspace, and checks every
+    result against the honest isolation values. The module docstring maps each criterion to
+    its tests.
+  - Profile fix: `HOME=/tmp` (was `/tmp/home`, which never existed).
+  - `tests/test_docs.py`: every relative Markdown link target (badges and titled links
+    included) and every `docs/….md` path in README, CLAUDE.md (up to its changelog), `docs/`,
+    `.claude/`, `src/` and `tests/` must exist, with exact case. Exempt: `docs/reviews/`,
+    `docs/archive/`, `.claude/worktrees/`. A plan may name a file its step will create
+    through the `_NOT_YET_BUILT` allowlist.
+  - Docs: README Configuration table + "Know the limits" + status; new
+    `docs/GETTING_STARTED.md`; M0 walkthrough archived; PLAN M1 status; contract status, D1
+    amendment (S7-D2), §3 HOME amendment, §9 acceptance record; plan-path references fixed
+    everywhere live.
+  - Test fix: `test_run_cancelled_at_spawn_leaves_no_container` drains before polling,
+    and now also checks for leftover temp dirs.
+  - Leak fix: `ContainerBackend._reap_cli` removes the run's temp dir once more after the
+    `docker run` CLI has exited (it already receives every CLI that can outlive the result).
+- **Files:**
+  - Source: `backends/container.py` (HOME; the CLI reap's final temp-dir removal); docstring paths in `config.py`, `workspace.py`,
+    `backends/container.py`, `backends/select.py`.
+  - Tests: `tests/test_acceptance.py` (new), `tests/test_docs.py` (new), `tests/test_container.py`,
+    `tests/test_lifecycle.py`.
+  - Docs: `README.md`, `docs/GETTING_STARTED.md` (rewritten),
+    `docs/archive/M0-scaffold-walkthrough.md` (new), `docs/PLAN.md`, `docs/HISTORY.md`, this
+    file, the M1 plans in `docs/plans/M1/`, `.claude/WORKFLOW.md`, `.claude/WORKFLOWDIAGRAM.md`.
+- **Guarded by:** all of `tests/test_acceptance.py` (criterion → test map in its docstring and in
+  contract §9); `tests/test_docs.py`;
+  `test_lifecycle.py::test_profile_environment_is_exactly_four_variables` (`HOME=/tmp`, Docker-free);
+  `test_lifecycle.py::test_cli_reap_removes_a_bind_source_recreated_after_cleanup` (Docker-free,
+  deterministic; mutation-checked: fails with the final removal disabled);
+  `test_container.py::test_run_cancelled_at_spawn_leaves_no_container` (live race, now also
+  checking temp dirs).
+- **Red first:** criterion 9 failed on the unchanged profile (`FileNotFoundError:
+  '/tmp/home/.vestibule-c09'`) and passed after the `HOME` fix. The other 13 passed on
+  their first run.
+- **Bugs found and fixed:**
+  1. *`$HOME` never existed in the guest* (criterion 9): `/tmp` is a fresh empty tmpfs, so
+     `/tmp/home` was missing, and `~/x` writes, `cd ~` and `git config --global` failed ⇒
+     `HOME=/tmp`.
+  2. *Flaky 7a test* (first baseline run, 174/175): `test_run_cancelled_at_spawn_leaves_no_container`
+     passed its poll on a `docker ps` taken before the late containers existed. Its final
+     check then caught one in its 0.74 s life. Docker's event log showed every container
+     killed 34–67 ms after start. The product was fine; the test now drains (every
+     `docker run` CLI exited) before polling.
+  3. *Empty temp dir left per lost cancel-at-spawn race* (gate, pre-existing since step 4):
+     when a cancelled run's container starts only after cleanup removed its temp dir, Docker
+     Desktop re-creates the missing bind source (checked: `-v` and `--mount` alike), the
+     guest exits 2 with no script, `--rm` removes the container, and the empty
+     `%TEMP%\vestibule-run-*` dir stays. Found as the gate's "3 before, 4 after" count,
+     traced through Docker's event log (exit 2, no kill). The CLI reap now removes the dir
+     again after the CLI exits. Live check: the race occurred 4 times in 6 test runs, with 0
+     dirs left. The 4 empty leftovers from earlier runs were deleted.
+- **Criterion 14:** gate green; with Docker removed from `PATH`, 159 passed and 38 skipped
+  ("docker CLI not found"). Windows host only; the Linux run comes with M2.
+- **If it breaks, start here:**
+  - **An acceptance test fails:** the test name says which criterion. Treat it as a finding
+    and diagnose before touching the assertion (plan §8).
+  - **A memory or fork bomb test fails after a Docker update:** compare the guest's cgroup
+    readback (`test_hard_and_soft_controls_apply_inside_the_guest`) with `Limits()`. A runtime
+    that stopped applying a limit shows up there first.
+  - **`test_docs.py` fails:** a doc or docstring names a path that moved. Fix the
+    reference, not the test; dated records belong in `docs/reviews/` or `docs/archive/`.
+  - **`$HOME` problems in guests:** the profile sets `HOME=/tmp` (`_build_command`), and
+    custom images must not depend on a different home.
 
 ## M1 step 7a — Shutdown & lifetime hardening, verified limits (2026-10-11)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `938056f` (its subject line says "M7" by typo; it is M1 step 7a).
 - **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) v2:
   S7-D1 (shutdown + one concurrency budget), S7-D5 (in-container self-deadline), S7-D3
   (cgroup readback), S7-D2 (description sentence), §4.1 (random probe name), §4.2 (import
@@ -145,7 +218,7 @@ shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
 ## M1 step 6 — Digest-pinned images + setup UX (2026-10-10)
 
 - **Commit:** `a0827fd`.
-- **Plan:** [`docs/plans/M1-step6-pinning.md`](plans/M1-step6-pinning.md) v2 — S6-D1
+- **Plan:** [`docs/plans/M1/M1-step6-pinning.md`](plans/M1/M1-step6-pinning.md) v2 — S6-D1
   (tagless, fully qualified index digests), S6-D2 (unpinned override ⇒ stderr warning),
   S6-D3 (no doctor CLI in M1), S6-D4 (proof under both image stores). §9 = skeptic
   dispositions, §10 = critic dispositions (two rounds).
@@ -205,7 +278,7 @@ shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
 
 - **Commits:** `522606f` (plan draft), `5ce882a` (plan final + step-4 budget fix),
   `d6a9df8` (selection build), `7ebd28b` (CRLF + task-leak fixes).
-- **Plan:** [`docs/plans/M1-step5-selection.md`](plans/M1-step5-selection.md) — S5-D1
+- **Plan:** [`docs/plans/M1/M1-step5-selection.md`](plans/M1/M1-step5-selection.md) — S5-D1
   (30 s failure cooldown), S5-D2 (all-soft-off degraded retry), S5-D3 (per-run image
   preflight + `--pull never`).
 - **What:** on the first tool call, `BackendSelector` picks a runtime (`auto` prefers
@@ -240,7 +313,7 @@ shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
 ## M1 step 4 — Run lifecycle (2026-07-04)
 
 - **Commits:** `b4019a7`; follow-up budget fix in `5ce882a` (2026-07-05).
-- **Plan:** [`docs/plans/M1-step4-lifecycle.md`](plans/M1-step4-lifecycle.md) — S4-D1
+- **Plan:** [`docs/plans/M1/M1-step4-lifecycle.md`](plans/M1/M1-step4-lifecycle.md) — S4-D1
   (5 s bounded wait, then `Blocked:`), S4-D2 (missing runtime reports `isolation: none`),
   S4-D3 (deadline-label reaping).
 - **What:** cleanup (container kill → `rm -f` → temp dir) runs as a detached finisher
@@ -278,7 +351,7 @@ shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
 ## M1 step 3 — `ContainerBackend` happy path (2026-07-03)
 
 - **Commit:** `4f765e9`.
-- **Plan:** [`docs/plans/M1-container-backend.md`](plans/M1-container-backend.md) §3
+- **Plan:** [`docs/plans/M1/M1-container-backend.md`](plans/M1/M1-container-backend.md) §3
   (exact container profile).
 - **What:** each run gets a fresh, named, labeled container: `--network none`,
   `--cap-drop ALL`, `no-new-privileges`, `--read-only`, non-root `--user`, memory = swap,
@@ -328,7 +401,8 @@ shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
 ## M0 — Skeleton that runs, unsafely (2026-07-02)
 
 - **Commit:** `aabd935`; acceptance recorded in `c70bca6`.
-- **Plan:** [`docs/PLAN.md`](PLAN.md) Milestone 0; scaffold in `docs/GETTING_STARTED.md`.
+- **Plan:** [`docs/PLAN.md`](PLAN.md) Milestone 0; scaffold walkthrough in
+  `docs/archive/M0-scaffold-walkthrough.md` (it was `docs/GETTING_STARTED.md` until 7b).
 - **What:** MCP server over stdio with `run_code`; `Warden` ABC + `RunResult`;
   `NaiveBackend` (plain subprocess, honestly `isolation: none`); stderr-only logging.
 - **Files:** `server.py`, `config.py`, `backends/base.py`, `backends/naive.py`,
