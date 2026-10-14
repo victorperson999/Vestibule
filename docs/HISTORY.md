@@ -441,3 +441,41 @@ floor — plus the persistent workspace and the `read_workspace` tool.
     5000-digit value leaned on Python's adjustable digit limit. It is now an explicit
     18-digit cap.
   - **Totals:** 197 → 240 tests, ruff + mypy clean.
+
+---
+
+## M2 — Native Linux isolation (in planning)
+
+Goal: on Linux, run each sandbox with the kernel's own isolation (namespaces, a filesystem
+jail, cgroup limits, seccomp) without root and without Docker, faster than the container
+backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-warden.md)
+(draft; decisions N1–N5 wait on review and sign-off).
+
+### Decision sign-offs
+
+- **E1 — approved 2026-10-14.** One copy of the code, the Windows repo. Claude edits it and
+  Victor commits from Windows as before. The Linux tests run in WSL Ubuntu from a venv kept
+  outside the repo (`~/.venvs/vestibule`), so test temp dirs, the workspace and the rootfs
+  live on WSL's own disk and see real Linux behaviour. Rejected: a second clone inside WSL
+  (two copies to sync), and moving all daily work into WSL.
+- **E2 — approved 2026-10-14.** M2's live-agent check uses Linux Claude Code installed
+  inside WSL, because that is what a Linux user runs. Windows Claude Code launching the
+  server through `wsl.exe` would give Windows users native isolation without Docker, but it
+  is a separate path to design; it is noted as an M4 candidate.
+- **E3 — approved 2026-10-14.** Plan shape like M1: one contract with a numbered step list
+  now, and a detailed plan per step written just before that step is built, reviewed by
+  `skeptic` and signed off by Victor.
+- **Review choices on N4/N5 — approved 2026-10-14.** The `skeptic` review of the first
+  draft (1 high, 10 medium, 13 low findings, all accepted; record in the contract's §12)
+  raised three questions for Victor:
+  - **seccomp is required for native.** A filter that blocks nested namespaces changes
+    what hostile code can reach, which D3 calls hard. Without libseccomp, native is
+    unavailable and the container backend is used. `CLAUDE.md`/`PLAN.md` will say
+    "required for native" instead of "optional".
+  - **The filter is an allowlist derived from Docker's default profile**, not a denylist.
+    M1 already proved these images run under it, and syscalls a future kernel adds are
+    denied by default.
+  - **Ubuntu's restricted user namespaces** (stock 23.10+) are tested by injection in M2
+    and on a real stock-Ubuntu VM in M4's fresh-machine test. The README lists which
+    distros get native; no AppArmor profile is documented, because it would grant user
+    namespaces to every `python3` on the system.
