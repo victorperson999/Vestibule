@@ -2,7 +2,7 @@
 
 Status: **signed off & built 2026-07-05** (S5-D1/D2/D3 approved as recommended; see
 `docs/HISTORY.md`).
-Parent contract: `docs/plans/M1-container-backend.md` §5 (binding; S5-D1/S5-D3 amend it slightly).
+Parent contract: `docs/plans/M1/M1-container-backend.md` §5 (binding; S5-D1/S5-D3 amend it slightly).
 Review history: Codex adversarial review 2026-07-05 — two high findings. (1) The step-4
 timeout path could still eat the whole outer deadline; fixed in code the same day (see the
 step-4 plan's 2026-07-05 amendment). (2) The original S5-D3 deferred image preflight to
@@ -125,7 +125,7 @@ in step 6:
 | `src/vestibule/server.py` | `get_warden()` → async, returns the cached selection; selection failure raises `RunRefusedError` (built in step 4 for exactly this) → existing `Blocked:` path. Called *outside* the outer deadline. Outer deadline `timeout+20` → `timeout+30` (§2 budget). `note_result` hook: a container-tier run reporting `isolation: none` drops the cached selection (fresh backend + empty image cache on the next call). |
 | `tests/test_select.py` | **New** — Docker-free suite (§6). |
 | `tests/test_container.py` | +2 Docker-marked selection tests. |
-| `docs/plans/M1-container-backend.md` | §5 annotated as amended by this doc. |
+| `docs/plans/M1/M1-container-backend.md` | §5 annotated as amended by this doc. |
 | `docs/HISTORY.md` | Sign-off + build bullets. |
 
 No new config knobs. New module constants: probe timeout 10 s, failure cooldown 30 s.

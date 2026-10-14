@@ -1,7 +1,7 @@
 """M1 container backend: one throwaway Docker/Podman container per run.
 
-Contract: docs/plans/M1-container-backend.md (§3 execution profile, §4 lifecycle,
-D9 script delivery, D10 stdio rules), amended by docs/plans/M1-step4-lifecycle.md
+Contract: docs/plans/M1/M1-container-backend.md (§3 execution profile, §4 lifecycle,
+D9 script delivery, D10 stdio rules), amended by docs/plans/M1/M1-step4-lifecycle.md
 (S4-D1 bounded-wait busy refusal, S4-D3 deadline-label reaping). The runtime CLI is
 driven via asyncio.create_subprocess_exec — async-safe, no blocking of the event loop.
 
@@ -16,7 +16,7 @@ Step-4 lifecycle guarantees:
 - At most `max_concurrent` containers in flight; a bounded wait for a slot, then a
   legible RunRefusedError (S4-D1).
 
-Step-5 additions (docs/plans/M1-step5-selection.md):
+Step-5 additions (docs/plans/M1/M1-step5-selection.md):
 - Per-run image preflight + `--pull never`: a missing image is a legible refusal
   carrying the exact pull command, never an in-call download (S5-D3, upholding D2).
 - `soft_disabled` omits soft limits the step-5 probe proved unenforceable; such runs
@@ -186,7 +186,9 @@ class ContainerBackend(Warden):
         tmpfs_size = "" if "tmpfs-size" in self._soft_disabled else f",size={limits.tmpfs_mb}m"
         cmd += [
             "--tmpfs", f"/tmp:rw,nosuid,nodev{tmpfs_size}",
-            "-e", "HOME=/tmp/home",
+            # HOME must exist at start: a path under the fresh tmpfs (the old
+            # /tmp/home) never did, so `~/x` writes failed (M1 criterion 9, step 7b).
+            "-e", "HOME=/tmp",
             "-e", "TMPDIR=/tmp",
             "-e", "PYTHONDONTWRITEBYTECODE=1",
             "-e", "NODE_OPTIONS=",
@@ -325,18 +327,18 @@ class ContainerBackend(Warden):
                 cli_wedged = True
                 log.error("run %s: output complete but the %s CLI did not exit; detaching",
                           run_id, self._runtime)
-                self._detach_cli_reap(proc, run_id)
+                self._detach_cli_reap(proc, run_id, tmpdir)
         except asyncio.TimeoutError:
             timed_out = True
             log.warning("run %s: timeout after %ds; container kill detached", run_id, timeout_s)
             collectors.cancel()
-            self._detach_cli_reap(proc, run_id)
+            self._detach_cli_reap(proc, run_id, tmpdir)
         except asyncio.CancelledError:
             # The request was cancelled (client cancel or shutdown, S7-D1): the finisher
             # kills the container, and this tracked task collects its CLI, so drain()
             # sees the CLI process too instead of leaving it to loop-close cleanup.
             collectors.cancel()
-            self._detach_cli_reap(proc, run_id)
+            self._detach_cli_reap(proc, run_id, tmpdir)
             raise
         finally:
             killer.cancel()
@@ -458,32 +460,43 @@ class ContainerBackend(Warden):
         if names:
             await self._cli_status("rm", "-f", *names, timeout=timeout)
 
-    def _detach_cli_reap(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+    def _detach_cli_reap(
+        self, proc: asyncio.subprocess.Process, run_id: str, tmpdir: str
+    ) -> None:
         """Collect a `docker run` CLI process off the result path (Codex budget fix).
 
-        Used when the result must return NOW (guest timeout) or when the CLI is
-        wedged after the guest already finished. The finisher's kill/rm makes the
-        CLI exit on its own; this task only reaps it — or kills it as a last resort.
+        Used when the result must return NOW (guest timeout), when the CLI is wedged
+        after the guest already finished, or when the request was cancelled. The
+        finisher's kill/rm makes the CLI exit on its own; this task only reaps it — or
+        kills it as a last resort — and then removes the run's temp dir once more.
         """
-        task = asyncio.create_task(self._reap_cli(proc, run_id))
+        task = asyncio.create_task(self._reap_cli(proc, run_id, tmpdir))
         self._finishers.add(task)
         task.add_done_callback(self._finishers.discard)
 
-    async def _reap_cli(self, proc: asyncio.subprocess.Process, run_id: str) -> None:
+    async def _reap_cli(self, proc: asyncio.subprocess.Process, run_id: str, tmpdir: str) -> None:
         try:
-            # Outlasts the finisher's kill (5 s) + rm -f (5 s), with slack.
-            await asyncio.wait_for(proc.wait(), timeout=3 * _CLEANUP_STEP_S)
-            return
-        except asyncio.TimeoutError:
-            pass
-        except Exception:  # detached task — never propagate
-            log.exception("run %s: CLI reap failed", run_id)
-            return
-        log.error("run %s: %s CLI still alive after container removal; killing it",
-                  run_id, self._runtime)
-        with contextlib.suppress(Exception):
-            proc.kill()
-            await proc.wait()
+            try:
+                # Outlasts the finisher's kill (5 s) + rm -f (5 s), with slack.
+                await asyncio.wait_for(proc.wait(), timeout=3 * _CLEANUP_STEP_S)
+                return
+            except asyncio.TimeoutError:
+                pass
+            except Exception:  # detached task — never propagate
+                log.exception("run %s: CLI reap failed", run_id)
+                return
+            log.error("run %s: %s CLI still alive after container removal; killing it",
+                      run_id, self._runtime)
+            with contextlib.suppress(Exception):
+                proc.kill()
+                await proc.wait()
+        finally:
+            # The finisher already removed the temp dir, but a container the CLI
+            # creates or starts after that (a run cancelled at spawn) makes Docker
+            # Desktop re-create its missing bind source, `-v` and `--mount` alike, and
+            # nothing else would remove it. Only after the CLI is gone is removal final.
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(shutil.rmtree, tmpdir, ignore_errors=True)
 
     async def _finish_run(self, sem: asyncio.Semaphore, name: str, tmpdir: str) -> None:
         """Detached post-run task (Codex P2): cleans up, then hands back the slot."""
@@ -503,8 +516,9 @@ class ContainerBackend(Warden):
         `kill` and `rm -f` miss ("No such container"), after which the CLI starts the
         container anyway (seen in 7 of 12 live tries, 7a critic round 2). Removing
         the script dir (mounted at /sandbox) at once is what stops that late guest:
-        it finds no script, exits 127, and `--rm` removes it. Deferring or moving
-        this rmtree would let it run until its S7-D5 deadline.
+        it finds no script, exits at once (python: 2), and `--rm` removes it. Deferring or moving
+        this rmtree would let it run until its S7-D5 deadline. (Starting it re-creates
+        the dir as an empty bind source; `_reap_cli` removes that once the CLI exits.)
         """
         await self._force_remove(name)
         await asyncio.to_thread(shutil.rmtree, tmpdir, ignore_errors=True)

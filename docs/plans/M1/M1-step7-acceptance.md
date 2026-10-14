@@ -1,6 +1,6 @@
 # M1 step 7 plan — shutdown & lifetime hardening, acceptance suite, docs pass
 
-Status: **signed off v2, 2026-10-11; 7a built 2026-10-11 (gate green, critic ×2 + verifier, §12). S7-D1…D5 all approved as recommended, along with the
+Status: **signed off v2, 2026-10-11; 7a built 2026-10-11 (gate green, critic ×2 + verifier, §12); 7b built 2026-10-14 (gate green, critic ×2 + verifier, §13). S7-D1…D5 all approved as recommended, along with the
 7a/7b split + live check (Victor commits each part himself).** v1 was reviewed by
 `skeptic` ("rework needed for S7-D1"; 2 high, 6 medium, 10 low). `verifier` checked the
 11 code claims: **11 confirmed, 0 refuted**, with corrections on three. Every finding and
@@ -369,6 +369,10 @@ criterion 9 exists for.
   `src/**/*.py` must point at existing files. This is a path pattern, backticked or not;
   `verifier` found the `src/` mentions are plain text. Dated records are allowlisted: the
   `CLAUDE.md` changelog and `docs/reviews/`.
+  *Amended in review (§13 round 1 #5–7, round 2 #1–2):* the scan also covers the rest of
+  `CLAUDE.md` and `tests/**/*.py`, checks exact case, sees badge-wrapped and titled links and
+  `./docs/…` paths, exempts `docs/archive/` and `.claude/worktrees/` as well, and takes
+  forward references through an explicit `_NOT_YET_BUILT` allowlist.
 
 ### 5.2 The stdio end-to-end test
 It spawns the console script `vestibule-mcp` from the venv, the same binary Claude Code is
@@ -585,3 +589,51 @@ description sentence, the readback's cgroup branch) plus tests.
 
 **7a end state:** gate green, **175 passed, 0 skipped** (122 at baseline), with no
 leftover containers or temp dirs after a full run.
+
+## 13. Critic findings on the 7b diff — dispositions
+
+**Two source changes beyond this plan, each approved by Victor during the build (2026-10-14):**
+- `HOME=/tmp` (contract §3 amendment), found by criterion 9.
+- The CLI reap's final temp-dir removal. The first full gate found an empty
+  `vestibule-run-*` dir left by a lost cancel-at-spawn race: Docker Desktop re-creates a
+  deleted bind source, with `-v` and `--mount` alike, when the late container starts.
+
+The first baseline run also showed a flaky 7a test (BUILD_LOG 7b, bug 2).
+
+**Round 1** (2026-10-14): `critic` found no high issues, 1 medium and 9 low. `verifier`
+confirmed 9, marked 1 plausible (#4), refuted none, and lowered #1 to low. Every finding
+is fixed or recorded, as below. Verifier severities are in brackets.
+
+| # | Sev | Finding (short) | Verifier | Disposition |
+|---|---|---|---|---|
+| 1 | med | README "Know the limits": a hostile run "stays inside its memory, CPU, and process caps" is false under `container-degraded` (all-soft-off) | CONFIRMED [low] (needs degraded + server death + deliberate SIGSTOP) | **Fixed:** the caps are those the result reported, all of them only for plain `container`. The BUILD_LOG known-issue row got the same correction (it dates from 7a) |
+| 2 | low | README "whole numbers" implies `0` is fine; `MAX_CONCURRENT=0` refuses every run with "retry shortly" forever; `MAX_OUTPUT_BYTES=0` kills every run | CONFIRMED [low]; also checked that `²` passes `isdigit()` but crashes `int()`, so the server fails to start | **Docs fixed** ("positive whole numbers… not validated yet"). **Code deferred:** folded into the config-validation known issue as its own small fix (validate at startup, loud on anything else). It changes config semantics, which deserves its own review |
+| 3 | low | GETTING_STARTED: "a container ends itself at that deadline" ignores the Created-state and SIGSTOP residuals | CONFIRMED [low] | **Fixed:** "a running container normally ends itself"; the reaper covers every state; `docker rm -f` for at once |
+| 4 | low | Temp-dir checks diff the shared `%TEMP%`, which a live Vestibule server also writes to; c08 can pass by another server's reaper | PLAUSIBLE [low] | **Fixed:** a `run_dirs` fixture records the dirs this test's runs create (`mkdtemp` spy), and both cancel tests check only those. The older step-4 test had the same pattern. c08 also asserts this tool's own reaper log line |
+| 5 | low | `test_docs` existence checks are case-insensitive on Windows | CONFIRMED [low], repro | **Fixed:** `_exists_exactly` matches every component's case, with its own test |
+| 6 | low | Forward references in plans fail the gate | CONFIRMED [low] | **Fixed:** an explicit `_NOT_YET_BUILT` allowlist. A listed path that exists fails a test, so entries can't go stale |
+| 7 | low | The scan omits CLAUDE.md (the plan exempts only its changelog) and `tests/` | CONFIRMED [low] | **Fixed:** CLAUDE.md up to its `## Changelog` heading, and `tests/**/*.py`, are scanned. `test_docs.py` itself is excluded because its tests name broken paths on purpose |
+| 8 | low | Nothing Docker-free guards `HOME=/tmp` | CONFIRMED [low] | **Fixed:** `test_profile_environment_is_exactly_four_variables` (exact `-e` list; mutation-checked against `/tmp/home`) |
+| 9 | low | BUILD_LOG M0 entry still says the scaffold is in GETTING_STARTED | CONFIRMED [low] | **Fixed:** points at the archive |
+| 10 | low | README hero diagram "capped … disk" contradicts the uncapped workspace | CONFIRMED [low] (pre-existing; 7b made it explicit) | **Fixed:** "capped cpu · memory · /tmp" (same width) |
+
+**Round 2** (2026-10-14): `critic` re-reviewed the round-1 changes and confirmed each closes its
+finding. It found 4 more, all low. `verifier` confirmed all 4, refuted none, and found
+`.claude/worktrees/` absent today and not covered by `.gitignore`.
+
+| # | Sev | Finding (short) | Verifier | Disposition |
+|---|---|---|---|---|
+| 1 | low | A git worktree under `.claude/` (Claude Code's `.claude/worktrees/`) would be scanned as live docs, so its reviews and changelog fail the gate | CONFIRMED [low]; repro: 8 failures from a worktree copy, none outside it | **Fixed:** `.claude/worktrees/` joins the exempt list |
+| 2 | low | Links never checked: the outer link of a badge (README's `LICENSE`), titled links, plain `./docs/…` paths; and `test_docs.py` excluded itself whole | CONFIRMED [low]; nothing is missed today | **Fixed:** the link pattern takes every `](target)`, with an optional title. The path pattern accepts a `./` prefix. `test_docs.py` is scanned like any file, so its must-not-resolve examples are built from parts. Pattern test added |
+| 3 | low | c08's reaper assertion matched a log line that carries a count, not names, so another server's reaper plus some other stale container could still pass it | CONFIRMED [low] | **Fixed:** c08 spies on this tool's own `_reap_decision` and requires that it selected the planted container by name. Test-only; no new log line in `src/` |
+| 4 | low | BUILD_LOG's 7b entry and §5.1 still describe the old `test_docs` scope | CONFIRMED [low] | **Fixed:** the BUILD_LOG entry is rewritten, and §5.1 carries an amendment note pointing here |
+
+No third `critic` round: every round-2 fix stays inside the flagged sites, which are two regexes
+and the exempt list in `test_docs.py`, one assertion in c08, and two doc passages. The final
+gate then flagged this section's own prose: the round-2 #2 row quotes link syntax inside
+backticks, and the broadened pattern read it as a link. Inline code spans are now dropped
+before links are matched (link text written as code still works), with a pattern test.
+
+**7b end state:** gate green with **197 passed, 0 skipped** (175 at the start of 7b), and no
+leftover containers or `vestibule-run-*` dirs before or after. With Docker hidden from `PATH`:
+159 passed and 38 skipped, each skip with its reason.

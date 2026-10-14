@@ -1,6 +1,7 @@
 # M1 contract — ContainerBackend + `read_workspace`
 
 Status: **signed off — D1–D4 all approved by the user 2026-07-03 (see `docs/HISTORY.md`). This contract is now binding for M1 implementation.**
+Steps 1–7 built; the acceptance suite passes every §9 criterion (record in §9, 2026-10-14). M1 is **accepted** after the live-agent check ([`M1-step7-acceptance.md`](M1-step7-acceptance.md) §8).
 Inputs: `docs/PLAN.md` §Milestone 1, `docs/ARCHITECTURE.md`, `CLAUDE.md`, and the Codex adversarial review (`docs/reviews/M1-codex-adversarial-review.md`, 2026-07-02) whose 20 findings this contract incorporates. Finding numbers below refer to that document.
 
 ---
@@ -25,6 +26,15 @@ Inputs: `docs/PLAN.md` §Milestone 1, `docs/ARCHITECTURE.md`, `CLAUDE.md`, and t
 ### D1 (PROVISIONAL) — Workspace is a writable dedicated directory
 Default `~/.vestibule/workspace` (created on first use), override via `VESTIBULE_WORKSPACE`. Mounted read-write at `/workspace` (container workdir). `VESTIBULE_WORKSPACE_RO=1` mounts it read-only. The `run_code` tool description states plainly: *"code may create, modify, or delete files in the workspace directory."* (Finding 3: the blast radius is now declared policy, and it defaults to a sandbox-owned dir, not user data.)
 - Rejected: read-only + tmpfs-scratch-only (kills the persistent file output channel); per-call `workspace_write` param (grows the tool surface).
+
+> **Amendment 2026-10-14 (M1 step 7, S7-D2):** guest code's blast radius is still the
+> workspace, but host tools that follow links reach past it. A symlink a guest plants in
+> `/workspace` is a real symlink on the host: on Windows with Docker Desktop, a relative
+> target becomes a native NTFS symlink that a host `open()` follows out of the workspace.
+> `read_workspace` refuses links. The `run_code` description tells the model to read and
+> change workspace files only through Vestibule's tools, and the README tells the user to
+> treat the workspace like an untrusted download and never point `VESTIBULE_WORKSPACE` at a
+> folder other tools use. A structural fix (seccomp `symlink` denial) is an M2 candidate.
 
 ### D2 (PROVISIONAL) — Two pinned official images, no auto-pull
 - `python` and `bash` run in **`python:3.12-slim`** (Debian-based; ships bash).
@@ -69,7 +79,7 @@ Backend code is runtime-agnostic (capability probes, not binary-name checks); `V
   --cpus <cpu_pct/100>
   --pids-limit <pids_max>
   --tmpfs /tmp:rw,nosuid,nodev,size=<tmpfs_mb>m # finding 2: disk cap; finding 15: writable /tmp
-  -e HOME=/tmp/home -e TMPDIR=/tmp -e PYTHONDONTWRITEBYTECODE=1 -e NODE_OPTIONS=
+  -e HOME=/tmp -e TMPDIR=/tmp -e PYTHONDONTWRITEBYTECODE=1 -e NODE_OPTIONS=  # HOME: step-7b amendment
   -v <workspace_host>:/workspace[:ro]
   -v <run_tmp_host>:/sandbox:ro
   --workdir /workspace
@@ -90,13 +100,20 @@ Backend code is runtime-agnostic (capability probes, not binary-name checks); `V
 > The residual risk is documented: the watchdog runs as the guest's uid, so a deliberately
 > malicious guest can `SIGSTOP` it. Custom images must ship `timeout`.
 
+> **Amendment 2026-10-14 (M1 step 7b, found by acceptance criterion 9; signed off by
+> Victor):** `HOME=/tmp`, not `/tmp/home`. `/tmp` is a fresh, empty tmpfs, so `/tmp/home`
+> never existed: `~/x` writes, `cd ~` and `git config --global` failed with ENOENT. `/tmp`
+> always exists (it is the mount point) and is writable, and dotfiles count against the
+> same capped tmpfs. Rejected: a second tmpfs at `/tmp/home` (another mount and size cap to
+> verify), and a `sh -c 'mkdir -p'` wrapper (another process in front of every guest).
+
 Never present: `--privileged`, `--device`, host PID/IPC/UTS/user namespaces, any socket mount (Docker socket, SSH agent), `-i`/`-t`. Environment is only what we pass with `-e` — no host env inheritance; proxy/credential vars are therefore structurally absent (finding 16). Writable-layer quota (`--storage-opt size=`) is **not** used in M1 — it's storage-driver-dependent; the read-only rootfs + capped tmpfs already bound non-workspace writes (finding 2).
 
 Windows host note: the workspace path is passed as a native `C:\...` path (Docker Desktop translates); the fixed in-container path is always `/workspace` (finding 10).
 
 ## 4. Run lifecycle
 
-> **Amended by `docs/plans/M1-step4-lifecycle.md` (2026-07-04):** step 1's semaphore acquire is a
+> **Amended by `docs/plans/M1/M1-step4-lifecycle.md` (2026-07-04):** step 1's semaphore acquire is a
 > *bounded* wait (5 s) ending in a legible `RunRefusedError` ⇒ `Blocked:` message (S4-D1), and
 > step 6's age-based orphan reaping is replaced by owner-stamped `vestibule.deadline` labels
 > after a Codex adversarial review found the age heuristic could kill live runs of servers with
@@ -130,7 +147,7 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 
 ## 5. Backend selection & capability probing
 
-> **Amended by `docs/plans/M1-step5-selection.md` (signed off & built 2026-07-05):** failed
+> **Amended by `docs/plans/M1/M1-step5-selection.md` (signed off & built 2026-07-05):** failed
 > selections are cached only 30 s, then re-checked (S5-D1 — "start Docker Desktop, then retry"
 > works without an MCP session restart); the degraded retry drops all four soft limits at once
 > (S5-D2); per-run image preflight + `--pull never` land in step 5, not step 6 (S5-D3, after a
@@ -199,7 +216,7 @@ Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable wi
 
 (`Limits.from_env` grows a string-valued getter alongside `_i`.)
 
-> **Amendment 2026-10-10 (M1 step 6, `docs/plans/M1-step6-pinning.md` S6-D1):** the image
+> **Amendment 2026-10-10 (M1 step 6, `docs/plans/M1/M1-step6-pinning.md` S6-D1):** the image
 > defaults shipped **tagless and fully qualified** —
 > `docker.io/library/python@sha256:a6e34c59…` (from `python:3.12-slim`) and
 > `docker.io/library/node@sha256:c3de60bf…` (from `node:22-slim`), full digests in
@@ -224,6 +241,36 @@ Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable wi
 12. No runtime/daemon/image ⇒ `run_code` returns an actionable Blocked/setup message; never silent naive fallback; never `native` (finding 17).
 13. Malformed args (`timeout_seconds: "abc"`, non-string code) ⇒ `Blocked:` messages, session survives (finding 18).
 14. `ruff` + `mypy` clean; non-Docker tests run everywhere; Docker-marked tests pass on this machine (Docker Desktop 28.5.1).
+
+**Acceptance record (2026-10-14, M1 step 7b).** Every criterion has a passing test, on
+Windows 11 with Docker Desktop 28.5.1 (containerd image store). The Docker tests go through
+`server.call_tool`, the dispatch an agent's call reaches, with a fresh selector each, so
+selection, preflight, the run and result formatting are all in the path. Every result is
+checked against the honest isolation values (`native` can never appear).
+
+| # | Evidence (`tests/`) | What was observed |
+|---|---|---|
+| 1 | `test_acceptance.py::test_c01_*`; `test_stdio_e2e.py::test_stdio_happy_path_and_clean_exit` | python, bash, node ⇒ `isolation: container`, also over a real stdio pipe |
+| 2 | `test_c02_*` | TCP to an IP, `getaddrinfo`, and a UDP send all fail; the only interface is `lo` |
+| 3 | `test_c03_*` | a forked child touching ~1 GiB dies by SIGKILL, `memory.events` `oom_kill` ≥ 1, the parent reports, the next run works on the same selection |
+| 4 | `test_c04_*` | forks refused with `EAGAIN` at 125 of 128 pids (tini, `timeout` and the interpreter hold 3); the classic bash bomb hits the cap, the run returns, no container survives, the next run works |
+| 5 | `test_c05_*` | `/tmp` takes exactly 64 MiB, then `ENOSPC`; creating a file in world-writable `/var/tmp` and in `/sandbox` fails with `EROFS`; `/` is mounted `ro` |
+| 6 | `test_c06_*` | a busy loop with a 3 s timeout returns `[timed out …]` in ~8 s (≤ 23 s), and no container survives |
+| 7 | `test_c07_*` | 4 concurrent calls succeed with 4 distinct container hostnames |
+| 8 | `test_c08_*` | a planted container with a past deadline is removed after one ordinary call |
+| 9 | `test_c09_*` | a package saved to `/workspace` imports with the documented idiom, Node `require('/workspace/…')` works, stdlib imports, `$HOME` and `/tmp` are writable, and no `__pycache__` is written. **Found the `$HOME` bug amended in §3.** |
+| 10 | `test_workspace.py` (unit suite); `test_c10_*` | guest-planted relative, absolute and `..` links are listed as `symlink` and refused, and the host canary never appears |
+| 11 | `test_c11_*` | a real injection (a 1 MB memory limit Docker refuses) ⇒ `container-degraded (limits not applied: cpu, memory, pids, tmpfs-size)` |
+| 12 | `test_c12_*` (2 tests) | a missing runtime ⇒ install-and-restart `Blocked:`; a never-pulled digest ⇒ `Blocked:` with its exact `docker pull`, and no `run` or `pull` is ever spawned |
+| 13 | `test_validation.py` | malformed arguments ⇒ `Blocked:` (mapped; unchanged) |
+| 14 | the gate | ruff + mypy clean, full suite green; with Docker hidden from `PATH`, every Docker test skips with its reason and everything else passes |
+| — | `test_hard_and_soft_controls_apply_inside_the_guest` | from inside: uid 1000; CapEff/Prm/Bnd/Amb all 0; `NoNewPrivs: 1`; `Seccomp: 2`; env = the profile's 4 + the image's own + `HOSTNAME`; no runtime socket; `/` read-only; `memory.max` 256 MiB, `memory.swap.max` 0, `pids.max` 128, `cpu.max` `75000 100000`, `/tmp` 64 MiB |
+
+"Host unaffected" (criteria 3–4) is asserted as what can be observed from here: on Docker
+Desktop the guest runs in a Linux VM, so host memory and PIDs are not measurable. The
+guest was stopped and the cgroup says why, the server returned a normal result, the next
+run works, and no container survived. Criterion 14 is proven on a Windows host only; the
+Linux-only paths (`os.getuid`, `O_NOFOLLOW`) first run when M2 work moves to Linux/WSL.
 
 ## 10. Implementation order (each step ≈ one commit)
 

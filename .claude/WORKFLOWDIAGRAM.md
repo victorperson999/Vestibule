@@ -11,7 +11,7 @@ flowchart TD
 
     subgraph MAIN["MAIN SESSION — Opus 5.5 · xhigh (architect + implementer)"]
         CTX[1. Read context<br/>CLAUDE.md · docs/plans · HISTORY]
-        PLAN[2. Write plan<br/>docs/plans/&lt;step&gt;.md<br/>files · approach · edge cases]
+        PLAN[2. Write plan<br/>docs/plans/&lt;milestone&gt;/&lt;step&gt;.md<br/>files · approach · edge cases]
         WEIGH[Address each plan finding<br/>accept · amend · reject + reason]
         BUILD[5. Build the change]
         DOCS[9. Update README/docs<br/>+ HISTORY bullet + BUILD_LOG entry]
@@ -61,7 +61,7 @@ flowchart TD
  │  1. read context (CLAUDE.md, plans, HISTORY) ◄───────────┼─────►│ scout · Haiku    │
  │                     │                                    │      │ file:line only   │
  │                     ▼                                    │      └──────────────────┘
- │  2. write plan → docs/plans/<step>.md                    │
+ │  2. write plan → docs/plans/<milestone>/<step>.md        │
  └─────────────────────┬────────────────────────────────────┘
                        ▼
         milestone/step plan? ──yes──► 3. skeptic · Opus (read-only)

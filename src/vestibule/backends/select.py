@@ -1,7 +1,7 @@
 """M1 step 5: backend selection & capability probing.
 
-Contract: docs/plans/M1-container-backend.md §5, amended by
-docs/plans/M1-step5-selection.md (S5-D1 failure-retry cooldown, S5-D2 all-soft-off
+Contract: docs/plans/M1/M1-container-backend.md §5, amended by
+docs/plans/M1/M1-step5-selection.md (S5-D1 failure-retry cooldown, S5-D2 all-soft-off
 degraded retry, S5-D3 per-run image preflight). On the first tool call — never
 during the MCP handshake — the selector test-drives the full locked-down container
 profile through the SAME code path real runs use, then commits to an honest verdict:

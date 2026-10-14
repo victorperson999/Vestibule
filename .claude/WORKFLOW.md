@@ -11,7 +11,7 @@ you
  ▼
 MAIN SESSION — Opus 5.5 (architect + implementer)
  │  1. read context (CLAUDE.md, docs/plans/, HISTORY, BUILD_LOG) ──► scout (Haiku): file:line lookups
- │  2. write plan → docs/plans/<milestone-step>.md
+ │  2. write plan → docs/plans/<milestone>/<step>.md
  │  3. [plan review] skeptic (Opus) on milestone/step plans → main session weighs findings
  │  4. you sign off → bullet in docs/HISTORY.md
  │  5. build the change
