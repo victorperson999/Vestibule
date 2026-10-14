@@ -37,7 +37,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | `938056f` | 175 |
 | M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | `3c2dab9` | 197 |
 | M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
-| M1 follow-up | Config validation + server version | 2026-10-14 | *pending (Victor commits)* | 240 |
+| M1 follow-up | Config validation + server version | 2026-10-14 | `9a4f15e` | 240 |
 
 ## Known open issues
 
@@ -62,7 +62,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M1 follow-up — config validation + server version (2026-10-14)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `9a4f15e`.
 - **Plan:** [`docs/plans/M1/M1-followup-config-version.md`](plans/M1/M1-followup-config-version.md)
   (approved by Victor 2026-10-14; review record in its §Review).
 - **What:**
