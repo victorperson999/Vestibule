@@ -64,7 +64,7 @@ Make it *usable by ~80% of the audience* on day one.
 
 **Detailed contract:** `docs/plans/M1/M1-container-backend.md` — written after the pre-implementation adversarial review (`docs/reviews/M1-codex-adversarial-review.md`); its sharpened acceptance criteria supersede the list above.
 
-**Status (2026-10-14):** built (steps 1–7). The acceptance suite, `tests/test_acceptance.py`, passes all 14 criteria on Windows with Docker Desktop. M1 is accepted after the live-agent check.
+**Status (2026-10-14):** ✅ accepted. Built in steps 1–7; the acceptance suite, `tests/test_acceptance.py`, passes all 14 criteria on Windows with Docker Desktop, and the live-agent check from a Claude Code session passed (results in `docs/HISTORY.md`).
 
 ### Milestone 2 — Native Linux isolation core · ~weeks 2–3 · **the differentiator**
 

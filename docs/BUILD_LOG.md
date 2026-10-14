@@ -35,28 +35,50 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 5 | Backend selection + capability probing | 2026-07-05 | `522606f` `5ce882a` `d6a9df8` `7ebd28b` | 103 (104 after `99a7f99`) |
 | M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | `a0827fd` | 122 |
 | M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | `938056f` | 175 |
-| M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | *pending (Victor commits)* | 197 |
+| M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | `3c2dab9` | 197 |
+| M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | *pending (Victor commits)* | 197 |
 
 ## Known open issues
 
 | Found | Where | Issue | Owner |
 |---|---|---|---|
-| 2026-10-11 (7a review) | `server.py` `_main` | Linux/macOS: a client that sends SIGTERM *without* closing stdin first skips shutdown cleanup (Python's default SIGTERM exits at once). The in-flight container lives until its S7-D5 self-deadline (`timeout + 90` s). The installed MCP Python client always closes stdin first; Claude Code's behavior is unmeasured. | M2 (needs a Linux host to test a SIGTERM handler) |
+| 2026-10-11 (7a review) | `server.py` `_main` | Linux/macOS: a client that sends SIGTERM *without* closing stdin first skips shutdown cleanup (Python's default SIGTERM exits at once). The in-flight container lives until its S7-D5 self-deadline (`timeout + 90` s). The installed MCP Python client always closes stdin first, and so does Claude Code on Windows (live check 2026-10-14: "Closing MCP server stdin", then the server exited on its own 0.11 s later with exit code 0). Claude Code on Linux/macOS is unmeasured. | M2 (needs a Linux host to test a SIGTERM handler) |
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 | 2026-10-14 (7b docs) | `config.py` `Limits.from_env` | Numeric settings are not validated. An unparseable value (for example `VESTIBULE_MEM_MB=256m`) is silently replaced by the default, against golden rule 6 (degrade loudly). `0` is used as given: `VESTIBULE_MAX_CONCURRENT=0` refuses every run, the probe included, with "retry shortly" forever, and `VESTIBULE_MAX_OUTPUT_BYTES=0` kills every run at its first output byte. A Unicode digit such as `²` passes `isdigit()` but not `int()`, so the server fails to start. Documented in the README's Configuration section (7b review). | Own small fix (validate at startup: positive integers, loud on anything else); M4 at the latest |
+| 2026-10-14 (live check) | `server.py` `Server("vestibule")` | The server reports its version as `1.28.1`, the MCP SDK's version, because no `version=` is passed (Claude Code's log shows `serverVersion: 1.28.1`). Cosmetic, but a client or a bug report sees the wrong number. One-line fix: `Server("vestibule", version=__version__)`. | Small fix (can ride with the config-validation fix) |
 
 **Closed:** the 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
 shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite shutdown hang.
 
 ---
 
-## M1 step 7b — Acceptance suite + docs pass (2026-10-14)
+## M1 accepted — live-agent check (2026-10-14)
 
 - **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) §8 step 9.
+- **What:** no code. A restarted Claude Code session ran the plan's live checks against the
+  registered server, all `isolation: container`. Shutdown was measured from outside: a
+  detached watcher logged each server process's exit time and code, compared against Claude
+  Code's own MCP log. Then the status docs were switched to **M1 accepted**.
+- **Files:** `README.md`, `docs/PLAN.md`, `docs/HISTORY.md`, this file,
+  `docs/plans/M1/M1-container-backend.md`, `docs/plans/M1/M1-step7-acceptance.md`.
+- **Found:** the server reports the SDK's version (`1.28.1`), now a known issue above. Claude
+  Code closes stdin before anything else, which narrows the SIGTERM known issue to other
+  clients and to Linux/macOS.
+- **Where to start if shutdown regresses:** `tests/test_stdio_e2e.py` (real stdio, Docker
+  needed). Claude Code keeps a per-session MCP log at
+  `%LOCALAPPDATA%\claude-cli-nodejs\Cache\<project>\mcp-logs-vestibule\*.jsonl`; its last
+  line, "Closing MCP server stdin", marks when Claude Code let go of the server.
+
+---
+
+## M1 step 7b — Acceptance suite + docs pass (2026-10-14)
+
+- **Commit:** `3c2dab9`.
 - **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) v2
   §2 (criteria), §5.1 (test layout), §6 (docs pass), S7-D2 (README half), S7-D4 (dev guide).
   New decision: `HOME=/tmp` (contract §3 amendment, approved 2026-10-14).

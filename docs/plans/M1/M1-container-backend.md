@@ -1,7 +1,7 @@
 # M1 contract — ContainerBackend + `read_workspace`
 
-Status: **signed off — D1–D4 all approved by the user 2026-07-03 (see `docs/HISTORY.md`). This contract is now binding for M1 implementation.**
-Steps 1–7 built; the acceptance suite passes every §9 criterion (record in §9, 2026-10-14). M1 is **accepted** after the live-agent check ([`M1-step7-acceptance.md`](M1-step7-acceptance.md) §8).
+Status: **accepted 2026-10-14.** Signed off 2026-07-03 (D1–D4 all approved by the user; see `docs/HISTORY.md`) and binding for M1 implementation.
+Steps 1–7 built; the acceptance suite passes every §9 criterion (record in §9, 2026-10-14), and the live-agent check passed the same day ([`M1-step7-acceptance.md`](M1-step7-acceptance.md) §8; results in `docs/HISTORY.md`).
 Inputs: `docs/PLAN.md` §Milestone 1, `docs/ARCHITECTURE.md`, `CLAUDE.md`, and the Codex adversarial review (`docs/reviews/M1-codex-adversarial-review.md`, 2026-07-02) whose 20 findings this contract incorporates. Finding numbers below refer to that document.
 
 ---
@@ -271,6 +271,13 @@ Desktop the guest runs in a Linux VM, so host memory and PIDs are not measurable
 guest was stopped and the cgroup says why, the server returned a normal result, the next
 run works, and no container survived. Criterion 14 is proven on a Windows host only; the
 Linux-only paths (`os.getuid`, `O_NOFOLLOW`) first run when M2 work moves to Linux/WSL.
+
+**Live-agent check (2026-10-14).** A restarted Claude Code session called the registered
+server over real stdio: hellos in all three languages, the network attempt, a memory bomb
+(`oom_kill` read from `memory.events`), `read_workspace` on a produced file and on a
+guest-planted link (refused), all `isolation: container`. Ending the session, Claude Code
+closed stdin first and the server exited on its own 0.11 s later (exit code 0), with no
+container left. Details in `docs/HISTORY.md`. **M1 accepted.**
 
 ## 10. Implementation order (each step ≈ one commit)
 

@@ -34,7 +34,7 @@ Goal: prove the end-to-end plumbing with zero isolation.
 
 ---
 
-## M1 — Container backend + workspace (🔨 in progress)
+## M1 — Container backend + workspace (✅ accepted 2026-10-14)
 
 Goal: real isolation via a throwaway Docker container per run — the cross-platform
 floor — plus the persistent workspace and the `read_workspace` tool.
@@ -384,3 +384,41 @@ floor — plus the persistent workspace and the `read_workspace` tool.
     - Round 2: 4 low findings on the fixes, all fixed.
   - **Totals:** 175 → 197 tests, ruff + mypy clean, and no leftover containers or temp dirs
     before or after the run.
+- **Live-agent check (plan §8 step 9) — passed 2026-10-14.** A fresh Claude Code
+  session called the registered server over real stdio (step-7b code, `3c2dab9`). Every run
+  reported `isolation: container`:
+  - **Hello world** in python 3.12.15, bash 5.2.37 and node v22.23.3. The guest ran as uid
+    1000 with `HOME=/tmp`, cwd `/workspace`, a writable workspace, and a root filesystem that
+    refused writes (`Read-only file system`).
+  - **Network:** `example.com` failed name resolution, `1.1.1.1:80` was `Network is
+    unreachable`, and the only interface was `lo`.
+  - **Memory bomb:** a run that kept allocating died with exit 137 after printing 192 MB. A
+    second bomb ran in a child process: the child got SIGKILL, and the parent read
+    `oom_kill: 1` from `memory.events` against `memory.max` = 256 MiB. So the memory cgroup
+    did the kill, and the sandbox kept working.
+  - **`read_workspace`:** it read back a file a run had written. It refused a link the run
+    planted inside the workspace ("path traverses a symlink or reparse point"), and the
+    listing labeled the link `symlink`. On the host the link was a real Windows
+    `SymbolicLink`, as S7-D2 says. A follow-up run deleted the link and its directory, and
+    the host workspace was empty afterwards.
+  - **No containers left between runs**, checked with `docker ps -a` on the owner label.
+  - **Shutdown:** the session was ended idle, as the plan specifies, and a detached watcher
+    recorded the exits from outside. Claude Code's MCP log shows "Closing MCP server stdin"
+    at 19:35:37.546 UTC. The server's Python process exited 0.11 s later, and the
+    console-script launcher and the venv redirector within 0.18 s, all with exit code 0. A
+    forced kill on Windows (Node's `kill`, `taskkill /F`) leaves exit code 1, so the server
+    shut itself down on stdin EOF. Claude Code itself exited 0.96 s after closing stdin, and
+    no Vestibule container was left. So Claude Code closes stdin first, and an idle server
+    needs about a tenth of a second. How long Claude Code waits for a server that is slow to
+    exit (a run in flight) was not measured (S7-D1 point 4). If it kills sooner than the
+    server's ~2 s shutdown budget, the S7-D5 self-deadline still ends the container.
+  - **Seen on the way (not M1 blockers):** the server reports the MCP SDK's version
+    (`1.28.1`) as its own, because `Server("vestibule")` gets no `version=`. Logged in the
+    BUILD_LOG known issues. Claude Code's `server/discover` probe produces a harmless stderr
+    warning from the SDK, after which Claude Code treats the server as a legacy peer.
+- **M1 accepted — 2026-10-14.** The acceptance suite passes all 14 criteria (step 7b), and
+  the live-agent check above passed, shutdown included. Proven on a Windows host with Docker
+  Desktop; the container backend first runs on Linux with M2. What carries forward is in the
+  BUILD_LOG known issues: config validation and the version string (small fixes), the
+  workspace's missing size cap and guest-made symlinks (documented), and the Linux SIGTERM
+  path (M2).
