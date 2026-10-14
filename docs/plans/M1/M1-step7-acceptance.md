@@ -1,6 +1,6 @@
 # M1 step 7 plan — shutdown & lifetime hardening, acceptance suite, docs pass
 
-Status: **signed off v2, 2026-10-11; 7a built 2026-10-11 (gate green, critic ×2 + verifier, §12); 7b built 2026-10-14 (gate green, critic ×2 + verifier, §13). S7-D1…D5 all approved as recommended, along with the
+Status: **signed off v2, 2026-10-11; 7a built 2026-10-11 (gate green, critic ×2 + verifier, §12); 7b built 2026-10-14 (gate green, critic ×2 + verifier, §13); live check passed 2026-10-14, so M1 is accepted. S7-D1…D5 all approved as recommended, along with the
 7a/7b split + live check (Victor commits each part himself).** v1 was reviewed by
 `skeptic` ("rework needed for S7-D1"; 2 high, 6 medium, 10 low). `verifier` checked the
 11 code claims: **11 confirmed, 0 refuted**, with corrections on three. Every finding and

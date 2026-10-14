@@ -44,12 +44,12 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 ## Status
 
 > ⚠️ **Early development — do not rely on this for hostile code yet.**
-> The container backend is built and passes its acceptance suite (M1 step 7, on Windows with Docker Desktop): each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. M1 is marked accepted after one more check from a live agent session. Not yet published to PyPI.
+> The container backend (M1) is accepted, on Windows with Docker Desktop: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. It passed its 14-criterion acceptance suite and a check from a live Claude Code session. Not yet published to PyPI.
 
 | Milestone | What                                                                                         | Status                                                                                                 |
 | --------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
 | M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                |
-| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | 🔨 built; acceptance suite passes (all 14 criteria); live-agent check next — see [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) |
+| M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) |
 | M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                |
 | M3        | Audit log + resource reporting                                                               | planned                                                                                                |
 | M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                |
