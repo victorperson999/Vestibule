@@ -46,7 +46,10 @@ async def test_missing_args_are_blocked():
     assert out[0].text.startswith("Blocked:")
 
 
-async def test_call_tool_survives_none_arguments():
+async def test_call_tool_survives_none_arguments(monkeypatch):
+    # Computed at import from the dev shell; a bad setting there would block before the
+    # `arguments or {}` path this test exists for.
+    monkeypatch.setattr(server, "CONFIG_ERROR", None)
     out = await server.call_tool("run_code", None)
     assert out[0].text.startswith("Blocked:")
 

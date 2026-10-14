@@ -121,6 +121,8 @@ async def make_tool(tmp_path, monkeypatch):
         limits = Limits(**{"workspace_dir": str(tmp_path / "ws"), **overrides})
         tool = Tool(limits, BackendSelector())
         monkeypatch.setattr(srv, "LIMITS", limits)
+        # Computed at import from the dev shell's VESTIBULE_* settings; these limits replace them.
+        monkeypatch.setattr(srv, "CONFIG_ERROR", None)
         monkeypatch.setattr(srv, "SELECTOR", tool.selector)
         made.append(tool)
         return tool

@@ -36,7 +36,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 6 | Digest-pinned images + setup UX | 2026-10-10 | `a0827fd` | 122 |
 | M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | `938056f` | 175 |
 | M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | `3c2dab9` | 197 |
-| M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | *pending (Victor commits)* | 197 |
+| M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
+| M1 follow-up | Config validation + server version | 2026-10-14 | *pending (Victor commits)* | 240 |
 
 ## Known open issues
 
@@ -48,17 +49,56 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
-| 2026-10-14 (7b docs) | `config.py` `Limits.from_env` | Numeric settings are not validated. An unparseable value (for example `VESTIBULE_MEM_MB=256m`) is silently replaced by the default, against golden rule 6 (degrade loudly). `0` is used as given: `VESTIBULE_MAX_CONCURRENT=0` refuses every run, the probe included, with "retry shortly" forever, and `VESTIBULE_MAX_OUTPUT_BYTES=0` kills every run at its first output byte. A Unicode digit such as `²` passes `isdigit()` but not `int()`, so the server fails to start. Documented in the README's Configuration section (7b review). | Own small fix (validate at startup: positive integers, loud on anything else); M4 at the latest |
-| 2026-10-14 (live check) | `server.py` `Server("vestibule")` | The server reports its version as `1.28.1`, the MCP SDK's version, because no `version=` is passed (Claude Code's log shows `serverVersion: 1.28.1`). Cosmetic, but a client or a bug report sees the wrong number. One-line fix: `Server("vestibule", version=__version__)`. | Small fix (can ride with the config-validation fix) |
 
-**Closed:** the 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
-shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite shutdown hang.
+**Closed:**
+- The 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
+  shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
+  shutdown hang.
+- The 2026-10-14 config-validation issue (bad values silently replaced by the default, `0`
+  accepted, `²` crashing startup) and the server-version issue (`1.28.1` reported) were
+  fixed in the M1 follow-up below.
+
+---
+
+## M1 follow-up — config validation + server version (2026-10-14)
+
+- **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M1/M1-followup-config-version.md`](plans/M1/M1-followup-config-version.md)
+  (approved by Victor 2026-10-14; review record in its §Review).
+- **What:**
+  - `Limits.from_env` validates every setting and raises `ConfigError` naming each bad one.
+    Numbers: ASCII digits, ≥ 1, at most 18 significant digits. On/off: `1/true/yes/on` or
+    `0/false/no/off`. Blank = unset = default (unchanged). Strings unchanged.
+  - The server starts on a bad config and refuses every tool call with `Blocked:
+    Vestibule's configuration is invalid: …`, also logged to stderr at startup
+    (`server._load_limits`, `CONFIG_ERROR`). The defaults only render the tool schema.
+  - `Server("vestibule", version=__version__)`: the server reports `0.0.1`, not the SDK's
+    `1.28.1`.
+- **Files:**
+  - Source: `config.py` (`ConfigError`, `_shown`, `_MAX_DIGITS`, `from_env`), `server.py`
+    (`_load_limits`, `CONFIG_ERROR`, the `call_tool` guard, `version=`).
+  - Tests: `tests/test_config.py` (new), `tests/test_stdio_e2e.py` (`StdioServer.start`
+    takes `settings`, `initialize` returns the result), `tests/test_acceptance.py` and
+    `tests/test_validation.py` (pin `CONFIG_ERROR` to `None`).
+  - Docs: `README.md` (Configuration paragraph), the plan, `docs/HISTORY.md`, this file.
+- **Guarded by:** all of `tests/test_config.py`, including
+  `test_stdio_bad_config_starts_and_blocks`. That test runs the real console script with
+  `VESTIBULE_MEM_MB=²` and `VESTIBULE_MAX_CONCURRENT=0` and needs no Docker. It checks that
+  the server starts, `initialize` reports `0.0.1`, both tools are `Blocked:` naming both
+  settings, nothing spawns or gets created, stdout stays JSON-RPC, and the exit code is 0.
+- **Red first** (old code): `VESTIBULE_MEM_MB=²` crashed `import vestibule.server` with
+  `ValueError`; `512m` silently became 256; `MAX_CONCURRENT=0` was accepted;
+  `WORKSPACE_RO=ture` read as off; the reported version was `1.28.1`.
+- **Bugs found in review:** 6 low findings over two `critic` rounds, all confirmed by
+  `verifier` except one refuted half, and all fixed. The notable one: the first guard
+  against a 5000-digit value relied on Python's adjustable digit limit; it's now an explicit
+  18-digit cap.
 
 ---
 
 ## M1 accepted — live-agent check (2026-10-14)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `e7aaae5`.
 - **Plan:** [`docs/plans/M1/M1-step7-acceptance.md`](plans/M1/M1-step7-acceptance.md) §8 step 9.
 - **What:** no code. A restarted Claude Code session ran the plan's live checks against the
   registered server, all `isolation: container`. Shutdown was measured from outside: a

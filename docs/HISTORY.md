@@ -422,3 +422,22 @@ floor — plus the persistent workspace and the `read_workspace` tool.
   BUILD_LOG known issues: config validation and the version string (small fixes), the
   workspace's missing size cap and guest-made symlinks (documented), and the Linux SIGTERM
   path (M2).
+- **Follow-up: config validation + server version — approved and done 2026-10-14.** The
+  two small fixes above, in one change
+  ([plan](plans/M1/M1-followup-config-version.md), approved by Victor the same day).
+  - **Settings are validated now.** Before, a bad value was quietly swapped for the default
+    (`VESTIBULE_MEM_MB=512m` meant 256), `0` was accepted (`MAX_CONCURRENT=0` refused every
+    run with "retry shortly"), `²` crashed the server at startup, and a typo in
+    `VESTIBULE_WORKSPACE_RO` meant a writable workspace. Now numbers must be positive whole
+    numbers in ASCII digits (at most 18), on/off settings take `1/true/yes/on` or
+    `0/false/no/off`, and blank still means unset.
+  - **A bad config doesn't stop the server.** It starts, and every tool call returns a
+    `Blocked:` message naming each bad setting, so the agent can tell the user what to fix.
+    Two options were rejected. Refusing to start: the client only says "failed to
+    connect". Starting with the defaults: that is the silent substitution again.
+  - **Version:** the server reports `0.0.1`, not the SDK's `1.28.1`.
+  - **Review:** two `critic` rounds found 6 low issues. `verifier` confirmed them all except
+    one refuted half, and all are fixed. The notable one: the first guard against a
+    5000-digit value leaned on Python's adjustable digit limit. It is now an explicit
+    18-digit cap.
+  - **Totals:** 197 → 240 tests, ruff + mypy clean.
