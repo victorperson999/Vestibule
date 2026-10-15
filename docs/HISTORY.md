@@ -441,3 +441,99 @@ floor — plus the persistent workspace and the `read_workspace` tool.
     5000-digit value leaned on Python's adjustable digit limit. It is now an explicit
     18-digit cap.
   - **Totals:** 197 → 240 tests, ruff + mypy clean.
+
+---
+
+## M2 — Native Linux isolation (in planning)
+
+Goal: on Linux, run each sandbox with the kernel's own isolation (namespaces, a filesystem
+jail, cgroup limits, seccomp) without root and without Docker, faster than the container
+backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-warden.md)
+(draft; decisions N1–N5 wait on review and sign-off).
+
+### Decision sign-offs
+
+- **E1 — approved 2026-10-14.** One copy of the code, the Windows repo. Claude edits it and
+  Victor commits from Windows as before. The Linux tests run in WSL Ubuntu from a venv kept
+  outside the repo (`~/.venvs/vestibule`), so test temp dirs, the workspace and the rootfs
+  live on WSL's own disk and see real Linux behaviour. Rejected: a second clone inside WSL
+  (two copies to sync), and moving all daily work into WSL.
+- **E2 — approved 2026-10-14.** M2's live-agent check uses Linux Claude Code installed
+  inside WSL, because that is what a Linux user runs. Windows Claude Code launching the
+  server through `wsl.exe` would give Windows users native isolation without Docker, but it
+  is a separate path to design; it is noted as an M4 candidate.
+- **E3 — approved 2026-10-14.** Plan shape like M1: one contract with a numbered step list
+  now, and a detailed plan per step written just before that step is built, reviewed by
+  `skeptic` and signed off by Victor.
+- **Review choices on N4/N5 — approved 2026-10-14.** The `skeptic` review of the first
+  draft (1 high, 10 medium, 13 low findings, all accepted; record in the contract's §12)
+  raised three questions for Victor:
+  - **seccomp is required for native.** A filter that blocks nested namespaces changes
+    what hostile code can reach, which D3 calls hard. Without libseccomp, native is
+    unavailable and the container backend is used. `CLAUDE.md`/`PLAN.md` will say
+    "required for native" instead of "optional".
+  - **The filter is an allowlist derived from Docker's default profile**, not a denylist.
+    M1 already proved these images run under it, and syscalls a future kernel adds are
+    denied by default.
+  - **Ubuntu's restricted user namespaces** (stock 23.10+) are tested by injection in M2
+    and on a real stock-Ubuntu VM in M4's fresh-machine test. The README lists which
+    distros get native; no AppArmor profile is documented, because it would grant user
+    namespaces to every `python3` on the system.
+- **N1–N5 — approved 2026-10-14** (the revised contract as a whole):
+  - **N1:** each run gets a fresh helper process instead of a fork of the server.
+  - **N2:** the sandbox's filesystem is M1's pinned images, fetched once by
+    `vestibule-mcp setup` without Docker.
+  - **N3:** resource limits come from a systemd-delegated cgroup. A per-run scope is
+    preferred unless the step-0 spike shows it adds more than 50 ms per run.
+  - **N4:** seccomp is our own small libseccomp binding running a Docker-derived allowlist,
+    required for native.
+  - **N5:** selection on Linux takes the strongest verified guarantee first (native,
+    container, native-degraded, container-degraded, then Blocked), and every run is
+    checked, not only the probe.
+  - Next: step 0, a throwaway spike that tests the kernel facts these decisions rest on.
+
+- **Step-1 decisions — approved 2026-10-14** ([plan](plans/M2/M2-step1-linux-baseline.md)).
+  Building the Linux venv showed that a fresh install today gets mcp 2.3.0, whose new server
+  API stops Vestibule from starting, on any platform. The skeptic, confirmed by the
+  verifier, showed that real clients allow far less shutdown time than M1 assumed: Claude
+  Code on Linux sends `SIGINT`, then `SIGTERM` 100 ms later; on Windows it allows 300 ms.
+  Today's server hangs on that `SIGINT`.
+  - **S1-D1 — a version range plus a constraints file.** `pyproject.toml` states what users
+    get (`mcp>=1.28.1,<2`). A constraints file frozen from the Windows venv pins every
+    package exactly for both dev venvs, and both gates check it. Moving to mcp 2.x is a
+    planned task before the PyPI release. Rejected: migrating now (mid-M2 churn in the
+    protocol layer) and a lock-file tool (more than step 1 needs).
+  - **S1-D5 — shutdown hands off and exits fast on Linux; Windows keeps M1's path
+    (revised the same day).** On Linux and other POSIX systems, any trigger (stdin closed,
+    `SIGINT`, `SIGTERM`, `SIGHUP`) runs one synchronous path. It kills this server's
+    `docker run` processes, starts a detached cleaner that removes its containers and temp
+    dirs (with later sweeps for late starters), and exits within ~50 ms, inside every
+    client's window. The first version used the same hand-off on Windows too. The second
+    skeptic review showed the cleaner dies there with the Python SDK's kill-on-close Job
+    Object on every session. A measurement showed Claude Code's Windows server chain sits in
+    such jobs too. So Windows keeps M1's in-process cleanup, which fits the Python SDK's
+    2 s. Claude Code's 300 ms Windows window stays a documented gap: the container's
+    self-deadline ends it. A container-side liveness lease is logged as the later fix for
+    every platform. Rejected: adding the lease now (changes M1's container profile
+    mid-step) and keeping the hand-off on Windows (worse than M1 for Python SDK clients).
+
+### Build steps (8 planned: 0–7)
+
+- **Step 0 — spike, done 2026-10-14 (no repo code;
+  [report](plans/M2/M2-step0-spike.md)).** Throwaway scripts in WSL built the whole sandbox
+  by hand and tried it out.
+  - **It works:** python, bash and node run with no host files, no network, an empty
+    capability set, `NoNewPrivs`, Docker's seccomp allowlist, and PID 1 locked away from
+    the guest. Blocked calls come back as "not permitted" and are reported by name.
+  - **Containment:** a memory bomb is OOM-killed inside its own cgroup. A fork bomb stops
+    at 128 processes. A stopped or looping guest is killed in ~2 ms. Killing the server
+    mid-run leaves nothing behind (gone within 12 ms).
+  - **Cold start:** about 75 ms per run with the per-run systemd scope, against ~387 ms for
+    a bare `docker run`. The per-run scope adds ~21 ms, under the 50 ms line, so N3 uses it.
+  - **No decision changed.** Six corrections went into the contract as amendments. The
+    main one: the helper must not share init's mount namespace, because `pivot_root` pulled
+    it into the sandbox too.
+  - **Left for the step-5 plan:** Node probes `io_uring` on every start, so it must be
+    denied silently. Docker allows `ptrace`, which our plan denies; Victor decides in step 5.
+  - **Benchmark expectation:** on this host native is ~5× faster than a bare `docker run`,
+    not the 10–50× `PLAN.md` hoped for. The README will report measured numbers only.

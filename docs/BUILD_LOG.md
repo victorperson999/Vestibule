@@ -37,7 +37,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 7a | Shutdown & lifetime hardening, verified limits | 2026-10-11 | `938056f` | 175 |
 | M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | `3c2dab9` | 197 |
 | M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
-| M1 follow-up | Config validation + server version | 2026-10-14 | *pending (Victor commits)* | 240 |
+| M1 follow-up | Config validation + server version | 2026-10-14 | `9a4f15e` | 240 |
+| M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
 
 ## Known open issues
 
@@ -60,9 +61,29 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M2 step 0 — spike (2026-10-14)
+
+- **Commit:** `4509d35`.
+- **Plan:** [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-warden.md) §10 step 0;
+  report [`docs/plans/M2/M2-step0-spike.md`](plans/M2/M2-step0-spike.md).
+- **What:** no repo code. Throwaway helper/harness/libseccomp-binding scripts proved the
+  contract's kernel facts on the WSL host. The contract gained amendments A1–A6.
+- **Files:** docs only: the spike report, contract amendments, HISTORY.
+- **Where the evidence is:** WSL `~/m2spike/scripts/` (`warden.py`, `sc.py`, `server.py`,
+  `run.sh`) and `~/m2spike/logs/`. The rootfs trees used are in `~/m2spike/rootfs-*`.
+  Re-run with `wsl -d Ubuntu -- bash ~/m2spike/scripts/run.sh <smoke|cg scope|bench 30|…>`.
+- **Broke along the way:**
+  - The helper shared init's mount namespace, so `pivot_root` moved the helper into the
+    sandbox root too (A1).
+  - An import after `pivot_root` failed. Init reported it and never ran the guest, which is
+    the abort behaviour N5 requires (A5).
+  - moby's profile moved to the `moby/profiles` repo.
+
+---
+
 ## M1 follow-up — config validation + server version (2026-10-14)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `9a4f15e`.
 - **Plan:** [`docs/plans/M1/M1-followup-config-version.md`](plans/M1/M1-followup-config-version.md)
   (approved by Victor 2026-10-14; review record in its §Review).
 - **What:**
