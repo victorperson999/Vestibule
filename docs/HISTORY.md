@@ -492,6 +492,31 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     checked, not only the probe.
   - Next: step 0, a throwaway spike that tests the kernel facts these decisions rest on.
 
+- **Step-1 decisions — approved 2026-10-14** ([plan](plans/M2/M2-step1-linux-baseline.md)).
+  Building the Linux venv showed that a fresh install today gets mcp 2.3.0, whose new server
+  API stops Vestibule from starting, on any platform. The skeptic, confirmed by the
+  verifier, showed that real clients allow far less shutdown time than M1 assumed: Claude
+  Code on Linux sends `SIGINT`, then `SIGTERM` 100 ms later; on Windows it allows 300 ms.
+  Today's server hangs on that `SIGINT`.
+  - **S1-D1 — a version range plus a constraints file.** `pyproject.toml` states what users
+    get (`mcp>=1.28.1,<2`). A constraints file frozen from the Windows venv pins every
+    package exactly for both dev venvs, and both gates check it. Moving to mcp 2.x is a
+    planned task before the PyPI release. Rejected: migrating now (mid-M2 churn in the
+    protocol layer) and a lock-file tool (more than step 1 needs).
+  - **S1-D5 — shutdown hands off and exits fast on Linux; Windows keeps M1's path
+    (revised the same day).** On Linux and other POSIX systems, any trigger (stdin closed,
+    `SIGINT`, `SIGTERM`, `SIGHUP`) runs one synchronous path. It kills this server's
+    `docker run` processes, starts a detached cleaner that removes its containers and temp
+    dirs (with later sweeps for late starters), and exits within ~50 ms, inside every
+    client's window. The first version used the same hand-off on Windows too. The second
+    skeptic review showed the cleaner dies there with the Python SDK's kill-on-close Job
+    Object on every session. A measurement showed Claude Code's Windows server chain sits in
+    such jobs too. So Windows keeps M1's in-process cleanup, which fits the Python SDK's
+    2 s. Claude Code's 300 ms Windows window stays a documented gap: the container's
+    self-deadline ends it. A container-side liveness lease is logged as the later fix for
+    every platform. Rejected: adding the lease now (changes M1's container profile
+    mid-step) and keeping the hand-off on Windows (worse than M1 for Python SDK clients).
+
 ### Build steps (8 planned: 0–7)
 
 - **Step 0 — spike, done 2026-10-14 (no repo code;

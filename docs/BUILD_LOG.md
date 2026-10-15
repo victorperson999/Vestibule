@@ -38,7 +38,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 step 7b | Acceptance suite (14 criteria) + docs | 2026-10-14 | `3c2dab9` | 197 |
 | M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
 | M1 follow-up | Config validation + server version | 2026-10-14 | `9a4f15e` | 240 |
-| M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | *pending (Victor commits)* | 240 |
+| M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
 
 ## Known open issues
 
@@ -63,7 +63,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M2 step 0 — spike (2026-10-14)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `4509d35`.
 - **Plan:** [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-warden.md) §10 step 0;
   report [`docs/plans/M2/M2-step0-spike.md`](plans/M2/M2-step0-spike.md).
 - **What:** no repo code. Throwaway helper/harness/libseccomp-binding scripts proved the
