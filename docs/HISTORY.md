@@ -479,3 +479,36 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     and on a real stock-Ubuntu VM in M4's fresh-machine test. The README lists which
     distros get native; no AppArmor profile is documented, because it would grant user
     namespaces to every `python3` on the system.
+- **N1–N5 — approved 2026-10-14** (the revised contract as a whole):
+  - **N1:** each run gets a fresh helper process instead of a fork of the server.
+  - **N2:** the sandbox's filesystem is M1's pinned images, fetched once by
+    `vestibule-mcp setup` without Docker.
+  - **N3:** resource limits come from a systemd-delegated cgroup. A per-run scope is
+    preferred unless the step-0 spike shows it adds more than 50 ms per run.
+  - **N4:** seccomp is our own small libseccomp binding running a Docker-derived allowlist,
+    required for native.
+  - **N5:** selection on Linux takes the strongest verified guarantee first (native,
+    container, native-degraded, container-degraded, then Blocked), and every run is
+    checked, not only the probe.
+  - Next: step 0, a throwaway spike that tests the kernel facts these decisions rest on.
+
+### Build steps (8 planned: 0–7)
+
+- **Step 0 — spike, done 2026-10-14 (no repo code;
+  [report](plans/M2/M2-step0-spike.md)).** Throwaway scripts in WSL built the whole sandbox
+  by hand and tried it out.
+  - **It works:** python, bash and node run with no host files, no network, an empty
+    capability set, `NoNewPrivs`, Docker's seccomp allowlist, and PID 1 locked away from
+    the guest. Blocked calls come back as "not permitted" and are reported by name.
+  - **Containment:** a memory bomb is OOM-killed inside its own cgroup. A fork bomb stops
+    at 128 processes. A stopped or looping guest is killed in ~2 ms. Killing the server
+    mid-run leaves nothing behind (gone within 12 ms).
+  - **Cold start:** about 75 ms per run with the per-run systemd scope, against ~387 ms for
+    a bare `docker run`. The per-run scope adds ~21 ms, under the 50 ms line, so N3 uses it.
+  - **No decision changed.** Six corrections went into the contract as amendments. The
+    main one: the helper must not share init's mount namespace, because `pivot_root` pulled
+    it into the sandbox too.
+  - **Left for the step-5 plan:** Node probes `io_uring` on every start, so it must be
+    denied silently. Docker allows `ptrace`, which our plan denies; Victor decides in step 5.
+  - **Benchmark expectation:** on this host native is ~5× faster than a bare `docker run`,
+    not the 10–50× `PLAN.md` hoped for. The README will report measured numbers only.

@@ -1,10 +1,12 @@
 # M2 contract — Native Linux warden
 
-Status: **DRAFT v2 (2026-10-14), revised after the `skeptic` review (§12).**
-- **Signed off by Victor 2026-10-14:** E1–E3, plus three choices the review raised (in N4
-  and N5): seccomp is a hard control, the filter is an allowlist derived from Docker's, and
-  Ubuntu's user-namespace restriction is tested by injection in M2 and on a real VM in M4.
-- **Waiting on Victor's sign-off of this revision:** N1–N5 as a whole.
+Status: **signed off by Victor 2026-10-14** (v2, revised after the `skeptic` review, §12).
+- **Signed off:** E1–E3; the three choices the review raised (in N4 and N5): seccomp is a
+  hard control, the filter is an allowlist derived from Docker's, and Ubuntu's
+  user-namespace restriction is tested by injection in M2 and on a real VM in M4; and N1–N5
+  as a whole.
+- **Step 0 done 2026-10-14:** [`M2-step0-spike.md`](M2-step0-spike.md). No decision reversed;
+  the corrections are recorded below as amendments.
 - **Step 0 (a spike) tests the kernel facts N1, N3, N4 and N7 rest on.** If it contradicts
   a signed-off decision, that decision comes back to Victor before any step builds on it.
 - **Inputs:** `docs/PLAN.md` §Milestone 2, `docs/ARCHITECTURE.md` Part 2, `CLAUDE.md`, the M1
@@ -65,7 +67,7 @@ Status: **DRAFT v2 (2026-10-14), revised after the `skeptic` review (§12).**
 - **E3 — Plan shape like M1.** This contract and its step list now, then a detailed plan
   for each step just before it's built, reviewed by `skeptic` and signed off by Victor.
 
-### N1 (PROVISIONAL) — The warden is a fresh helper process per run, not a fork of the server
+### N1 (signed off 2026-10-14) — The warden is a fresh helper process per run, not a fork of the server
 
 For each run the server starts a new, single-threaded Python interpreter, the **warden
 helper**. It uses `asyncio.create_subprocess_exec` with `-I` (isolated mode) and a **minimal
@@ -95,7 +97,7 @@ proxy settings.
 - **Doc impact on sign-off:** `CLAUDE.md` (Async bullet) and `ARCHITECTURE.md` ("Sync warden
   vs. async server").
 
-### N2 (PROVISIONAL) — The rootfs is M1's pinned images, fetched once by an explicit setup command
+### N2 (signed off 2026-10-14) — The rootfs is M1's pinned images, fetched once by an explicit setup command
 
 `vestibule-mcp setup` (exact CLI shape in the step-2 plan) downloads the two images M1
 already pins by digest (`DEFAULT_IMAGE_PYTHON` and `DEFAULT_IMAGE_NODE` in `config.py`). It
@@ -127,7 +129,7 @@ call.** A missing rootfs gives an actionable message (§5).
   - Private registries. Only anonymous token auth is supported; `HTTPS_PROXY` works because
     `urllib` honors it.
 
-### N3 (PROVISIONAL) — Resource limits come from a systemd-delegated cgroup; the spike's numbers pick the mechanism
+### N3 (signed off 2026-10-14) — Resource limits come from a systemd-delegated cgroup; the spike's numbers pick the mechanism
 
 An unprivileged process can create cgroups only inside a subtree delegated to its user. The
 measurements: anything launched through `wsl.exe` lands in `/init.scope`, which is
@@ -175,6 +177,14 @@ Layout. "Run cgroup" means the per-run scope in (i), or `run-<id>` inside the se
   notifications), without taking it from the guest's own budget.
 - **Every run, the server reads every limit file back.** `native` is claimed only for
   limits the kernel actually holds (S7-D3's rule, carried over).
+
+> **Amendment 2026-10-14 (step 0, spike A2 and the N3 timing):**
+> - **Mechanism (i) is chosen by the rule.** The per-run scope via `busctl` measured a
+>   75.4 ms median, against 54.8 ms with no cgroup and 51.3 ms for (ii). That's under the
+>   50 ms threshold.
+> - **A2:** systemd removes an emptied per-run scope together with our sub-cgroups, so no
+>   `rmdir` is needed. The helper reads `memory.events` and `memory.peak` before it exits and
+>   reports them in the status document.
 - **Rejected:**
   - `/sys/fs/cgroup/vestibule/<name>` (`ARCHITECTURE.md`): not writable without root.
   - `setrlimit` in place of cgroups: nothing in rlimits caps a process tree's total memory,
@@ -184,7 +194,7 @@ Layout. "Run cgroup" means the per-run scope in (i), or `run-<id>` inside the se
   `pids_max` there as a fork-bomb backstop, so a bomb can't exhaust the user's own process
   table.
 
-### N4 (PROVISIONAL; three points decided by Victor 2026-10-14) — seccomp: our own libseccomp binding, an allowlist derived from Docker's, required for native
+### N4 (signed off 2026-10-14) — seccomp: our own libseccomp binding, an allowlist derived from Docker's, required for native
 
 - **Binding:** a small `ctypes` module over the system's `libseccomp.so.2`
   (`seccomp_init`, `seccomp_rule_add`, `seccomp_load`, the `seccomp_notify_*` calls).
@@ -234,13 +244,24 @@ Layout. "Run cgroup" means the per-run scope in (i), or `run-<id>` inside the se
     (N3).
   - If the spike shows notification is unworkable, the fallback is plain `EPERM` with no
     names, and the "denied syscalls reported" criterion is amended with Victor.
+
+> **Step 0 (2026-10-14):**
+> - **Notification works** through the libseccomp ctypes binding, with init handing the
+>   listener fd to the helper. The cap and dedup were verified, and 256 notifications stop
+>   cleanly.
+> - **The profile now lives in `moby/profiles`.** Spike pin: commit `6fe7deb`.
+> - **Two questions go to the step-5 plan:**
+>   - Node probes `io_uring_setup` at every start, so `io_uring_*` must be denied
+>     *silently*, or every node result reports it.
+>   - Moby allows `ptrace` and `process_vm_*` on kernels ≥ 4.8; this subset denies them.
+>     Victor decides in step 5.
 - **Guest-planted symlinks (BUILD_LOG S7-D2): no seccomp change.** Denying
   `symlink`/`symlinkat` everywhere is the only structural fix, and it breaks `python -m venv`
   and npm's `.bin` links inside the workspace. M1's measures stay: `read_workspace` refuses
   links, the tool description warns, and the README says to treat the workspace as untrusted.
   Revisit in M4's `SECURITY.md`.
 
-### N5 (PROVISIONAL; the Ubuntu point decided by Victor 2026-10-14) — Tiers, labels and selection order on Linux
+### N5 (signed off 2026-10-14) — Tiers, labels and selection order on Linux
 
 Same idea as D3: hard controls block, soft controls degrade loudly.
 
@@ -406,6 +427,16 @@ server: collect stdout/stderr (2× cap; overflow ⇒ cgroup.kill); timeout ⇒ c
 
 Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after the spike.
 
+> **Amendment 2026-10-14 (step 0, [`M2-step0-spike.md`](M2-step0-spike.md) A1, A3–A5):**
+> - **A1:** the helper unshares only `NEWUSER|NEWPID`, and **init** unshares
+>   `NEWNS|NEWNET|NEWUTS|NEWIPC|NEWCGROUP` (step 8 above). `pivot_root` moves the root of
+>   every process in its mount namespace, so a helper that shared init's namespace was
+>   pulled into the sandbox root and lost the host cgroup files.
+> - **A3:** `/workspace` is bind-mounted `nosuid,nodev`.
+> - **A4:** the helper is self-contained stdlib code fed through a pipe and run under the
+>   neutral `argv[0]` `vestibule-warden`, so `/proc/1/cmdline` shows no host path.
+> - **A5:** every import happens before `pivot_root`.
+
 ## 4. Run lifecycle
 
 1. **Concurrency:** the selector's single shared semaphore (S7-D1) covers native runs, with
@@ -468,7 +499,8 @@ fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux ho
   to the CDN never carry it. The review checked that `urllib` otherwise copies it, and that
   presigned URLs can reject it.
 - **Cache integrity:** a completed tree carries a marker naming its manifest digest; partial
-  trees are ignored and replaced. Files are made read-only after unpacking, as hygiene;
+  trees are ignored and replaced. The marker lives *beside* the tree, never inside it, or the
+  guest would see it in `/` (spike A6). Files are made read-only after unpacking, as hygiene;
   N5's mount check is the real guard.
 - **Trust statement:** the cache belongs to the user, so anything running as the user can
   change it, just as with the user's own Docker images. The digest check proves what was
