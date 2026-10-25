@@ -1,20 +1,22 @@
-"""M1 step 7a (plan §5.2): the real `vestibule-mcp` process over stdio, driven the way an
-MCP client drives it — the venv's console script, raw JSON-RPC on stdin/stdout.
+"""The real `vestibule-mcp` process over stdio, driven the way MCP clients drive it: the
+venv's console script, raw JSON-RPC on stdin/stdout (M1 step 7a, plan §5.2; extended in
+M2 step 1b for the POSIX shutdown hand-off, docs/plans/M2/M2-step1-linux-baseline.md §4.2).
 
 What only this level can prove:
 - golden rule 1 over a real pipe: every stdout line is a JSON-RPC 2.0 message;
-- shutdown: closing stdin (what a client does first) makes the server exit on its own
-  inside the client's 2 s grace — the tests kill it at 2 s exactly as the MCP client
-  SDK does (S7-D1) — and a run still in flight has its container removed BEFORE the
-  process exits.
+- shutdown, with each client's real sequence (tests/stdioutil.py): the server exits in the
+  client's FIRST phase, before any escalation, and a run in flight has its container
+  removed.
+  - Windows: by the server itself before it exits (S7-D1).
+  - POSIX: by the detached cleaner the server hands it to (S1-D5). The cleaner's trace
+    (VESTIBULE_CLEANUP_TRACE) proves it was the cleaner, and the guest ignores SIGTERM, so
+    `docker run`'s signal proxy and `--rm` cannot remove it on the server's behalf.
 
 Containers are identified by the server's own `run <id>: spawning` stderr lines, never by
 label, so a live Vestibule server elsewhere on this machine is never confused with this
 one; cleanup removes only those exact names.
 """
 import asyncio
-import json
-import os
 import re
 import sys
 import time
@@ -22,154 +24,29 @@ from pathlib import Path
 
 import pytest
 from dockerutil import docker_required, ps_names, remove
-from mcp.types import LATEST_PROTOCOL_VERSION
+from stdioutil import (
+    CLIENT_GRACE_S,
+    SERVER_EXE,
+    SIGINT,
+    STDIN,
+    StdioServer,
+    cleaner_removed,
+    read_trace,
+)
 
 pytestmark = pytest.mark.docker
 
-SERVER_EXE = Path(sys.executable).parent / (
-    "vestibule-mcp.exe" if os.name == "nt" else "vestibule-mcp"
+POSIX = sys.platform != "win32"
+_ISOLATION_CONTAINER = re.compile(r"^isolation: container$", re.MULTILINE)
+# The cleaner's first pass runs within a second; its later sweeps at +5 s and +20 s.
+_CLEANER_WINDOW_S = 30
+# A guest only a forced removal can end: SIGTERM is ignored, and it sleeps for an hour.
+_STUBBORN_GUEST = (
+    "import signal, time\n"
+    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+    "print('ready', flush=True)\n"
+    "time.sleep(3600)\n"
 )
-# Real clients close stdin, wait 2 s, then kill the process tree (S7-D1; the MCP
-# Python SDK's PROCESS_TERMINATION_TIMEOUT). The tests behave the same way, so a
-# server that only cleans up after 2 s fails here exactly as it would in real use.
-# Measured 2026-10-11: shutdown takes ~0.2-0.4 s, with or without a run in flight.
-CLIENT_GRACE_S = 2.0
-_SPAWN = re.compile(r"run ([0-9a-f]{16}): spawning")
-_ISOLATION_CONTAINER = re.compile(r"^isolation: container$", re.M)
-
-
-class StdioServer:
-    """A `vestibule-mcp` subprocess plus a minimal JSON-RPC client."""
-
-    def __init__(self, proc: asyncio.subprocess.Process) -> None:
-        self.proc = proc
-        self.stderr_lines: list[str] = []
-        self.bad_stdout: list[str] = []  # anything on stdout that is not JSON-RPC 2.0
-        self.run_ids: list[str] = []  # in spawn order (the probe is a run too)
-        self._spawned = asyncio.Event()
-        self._pending: dict[int, asyncio.Future[dict]] = {}
-        self._next_id = 1
-        self._readers = [
-            asyncio.create_task(self._read_stdout()),
-            asyncio.create_task(self._read_stderr()),
-        ]
-
-    @classmethod
-    async def start(cls, workspace: Path, settings: dict[str, str] | None = None) -> "StdioServer":
-        # The dev shell's own VESTIBULE_* settings must not leak into the server under test.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")}
-        env["VESTIBULE_WORKSPACE"] = str(workspace)
-        env.update(settings or {})
-        proc = await asyncio.create_subprocess_exec(
-            str(SERVER_EXE),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-        )
-        return cls(proc)
-
-    async def _read_stdout(self) -> None:
-        assert self.proc.stdout is not None
-        async for raw in self.proc.stdout:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except ValueError:
-                self.bad_stdout.append(line)
-                continue
-            if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
-                self.bad_stdout.append(line)
-                continue
-            fut = self._pending.pop(msg.get("id"), None) if "id" in msg else None
-            if fut is not None and not fut.done():
-                fut.set_result(msg)
-
-    async def _read_stderr(self) -> None:
-        # Drained continuously: a full stderr pipe would otherwise block the server.
-        assert self.proc.stderr is not None
-        async for raw in self.proc.stderr:
-            line = raw.decode("utf-8", errors="replace").rstrip()
-            self.stderr_lines.append(line)
-            m = _SPAWN.search(line)
-            if m:
-                self.run_ids.append(m.group(1))
-                self._spawned.set()
-
-    async def _send(self, msg: dict) -> None:
-        assert self.proc.stdin is not None
-        self.proc.stdin.write((json.dumps(msg) + "\n").encode())
-        await self.proc.stdin.drain()
-
-    async def request(self, method: str, params: dict, timeout: float = 90) -> dict:
-        fut = await self.send_request(method, params)
-        msg = await asyncio.wait_for(fut, timeout)
-        assert "error" not in msg, msg
-        return msg["result"]
-
-    async def send_request(self, method: str, params: dict) -> "asyncio.Future[dict]":
-        rid, self._next_id = self._next_id, self._next_id + 1
-        fut: asyncio.Future[dict] = asyncio.get_running_loop().create_future()
-        self._pending[rid] = fut
-        await self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        return fut
-
-    async def initialize(self) -> dict:
-        result = await self.request("initialize", {
-            "protocolVersion": LATEST_PROTOCOL_VERSION,
-            "capabilities": {},
-            "clientInfo": {"name": "vestibule-e2e", "version": "0"},
-        })
-        await self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        return result
-
-    async def call(self, tool: str, arguments: dict, timeout: float = 90) -> str:
-        result = await self.request(
-            "tools/call", {"name": tool, "arguments": arguments}, timeout
-        )
-        return "\n".join(c.get("text", "") for c in result["content"])
-
-    async def wait_for_new_spawn(self, seen: int, timeout: float = 60) -> str:
-        """The id of the first run spawned after `seen` spawns."""
-        deadline = time.monotonic() + timeout
-        while len(self.run_ids) <= seen:
-            self._spawned.clear()
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise AssertionError("no new run was spawned:\n" + self.stderr_tail())
-            try:
-                await asyncio.wait_for(self._spawned.wait(), remaining)
-            except asyncio.TimeoutError:
-                pass
-        return self.run_ids[seen]
-
-    async def close_like_a_client(self) -> tuple[int | None, float]:
-        """Shut down the way an MCP client does: close stdin, and if the server has not
-        exited after CLIENT_GRACE_S, kill it. Returns (exit code, seconds to exit), or
-        (None, elapsed) if it had to be killed."""
-        assert self.proc.stdin is not None
-        t0 = time.monotonic()
-        self.proc.stdin.close()
-        try:
-            await asyncio.wait_for(self.proc.wait(), CLIENT_GRACE_S)
-        except asyncio.TimeoutError:
-            self.proc.kill()
-            await self.proc.wait()
-            return None, time.monotonic() - t0
-        return self.proc.returncode, time.monotonic() - t0
-
-    def stderr_tail(self, n: int = 25) -> str:
-        return "\n".join(self.stderr_lines[-n:])
-
-    async def kill(self) -> None:
-        if self.proc.returncode is None:
-            self.proc.kill()
-            await self.proc.wait()
-        for t in self._readers:
-            t.cancel()
-        await asyncio.gather(*self._readers, return_exceptions=True)
 
 
 def _container_gone(name: str, within_s: float) -> bool:
@@ -182,15 +59,41 @@ def _container_gone(name: str, within_s: float) -> bool:
         time.sleep(0.25)
 
 
+async def _wait_running(name: str, within_s: float = 60) -> None:
+    deadline = time.monotonic() + within_s
+    while ps_names(f"name=^{name}$", all_states=False) != name:
+        assert time.monotonic() < deadline, f"{name} never started"
+        await asyncio.sleep(0.25)
+
+
 @pytest.fixture()
-async def server(tmp_path):
-    srv = await StdioServer.start(tmp_path / "ws")
+def trace_file(tmp_path: Path) -> Path:
+    return tmp_path / "cleanup-trace.jsonl"
+
+
+@pytest.fixture()
+async def server(tmp_path, trace_file):
+    srv = await StdioServer.start(
+        tmp_path / "ws", {"VESTIBULE_CLEANUP_TRACE": str(trace_file)}
+    )
     try:
         yield srv
     finally:
         await srv.kill()
         for rid in srv.run_ids:  # exact names only — never label-wide
             remove(f"vestibule-{rid}")
+
+
+async def _start_stubborn_run(server: StdioServer) -> str:
+    """A warm-up call (selection), then a run that stays in flight; its container name."""
+    await server.call("run_code", {"language": "python", "code": "print('warm')"})
+    seen = len(server.run_ids)
+    await server.send_request("tools/call", {"name": "run_code", "arguments": {
+        "language": "python", "code": _STUBBORN_GUEST, "timeout_seconds": 60,
+    }})
+    name = f"vestibule-{await server.wait_for_new_spawn(seen)}"
+    await _wait_running(name)
+    return name
 
 
 @docker_required
@@ -214,54 +117,137 @@ async def test_stdio_happy_path_and_clean_exit(server):
     })
     assert "round-trip" in await server.call("read_workspace", {"path": "e2e.txt"})
 
-    code, elapsed = await server.close_like_a_client()
-    assert code == 0, f"exit={code} (None = killed at the 2 s grace) after {elapsed:.2f}s\n{server.stderr_tail()}"
+    code, elapsed, phase = await server.close_like_sdk()
+    await server.finish_reading()
+    assert (code, phase) == (0, STDIN), (
+        f"exit={code} phase={phase} after {elapsed:.2f}s\n{server.stderr_tail()}"
+    )
+    if POSIX:  # the stdin wrapper, not the SDK, saw the EOF first
+        assert any("vestibule shutdown (stdin closed):" in ln for ln in server.stderr_lines)
     assert server.bad_stdout == []  # golden rule 1
 
 
 @docker_required
-async def test_stdio_shutdown_with_run_in_flight_removes_its_container(server):
+async def test_stdio_shutdown_with_run_in_flight_removes_its_container(server, trace_file):
     await server.initialize()
-    await server.call("run_code", {"language": "python", "code": "print('warm')"})
+    name = await _start_stubborn_run(server)
 
-    seen = len(server.run_ids)
-    await server.send_request("tools/call", {"name": "run_code", "arguments": {
-        "language": "python", "code": "import time; time.sleep(3600)", "timeout_seconds": 60,
-    }})
-    name = f"vestibule-{await server.wait_for_new_spawn(seen)}"
-    deadline = time.monotonic() + 60
-    while ps_names(f"name=^{name}$", all_states=False) != name:
-        assert time.monotonic() < deadline, "the in-flight container never started"
-        await asyncio.sleep(0.25)
-
-    code, elapsed = await server.close_like_a_client()
-    assert code == 0, f"exit={code} (None = killed at the 2 s grace) after {elapsed:.2f}s\n{server.stderr_tail()}"
-    # Removed by the server before it exited — not by --rm at the guest's natural end
-    # (the guest sleeps for an hour), so a short poll for daemon bookkeeping is all.
-    assert _container_gone(name, within_s=2), f"{name} outlived the server"
-    assert any("shutdown: removing 1 container(s)" in ln for ln in server.stderr_lines)
+    code, elapsed, phase = await server.close_like_sdk()
+    await server.finish_reading()
+    assert (code, phase) == (0, STDIN), (
+        f"exit={code} phase={phase} after {elapsed:.2f}s\n{server.stderr_tail()}"
+    )
+    if POSIX:
+        assert _container_gone(name, within_s=_CLEANER_WINDOW_S), f"{name} outlived the cleaner"
+        assert cleaner_removed(read_trace(trace_file), name), read_trace(trace_file)
+        # The trigger label proves the stdin wrapper caught EOF before the SDK did (a
+        # bypassed wrapper would log "server stopped", after the SDK cancelled the run).
+        assert any("shutdown (stdin closed): handed 1 container(s)" in ln
+                   for ln in server.stderr_lines), server.stderr_tail()
+    else:
+        # Removed by the server before it exited, not by --rm at the guest's natural end
+        # (the guest sleeps for an hour), so a short poll for daemon bookkeeping is all.
+        assert _container_gone(name, within_s=2), f"{name} outlived the server"
+        assert any("shutdown: removing 1 container(s)" in ln for ln in server.stderr_lines)
     assert server.bad_stdout == []
 
 
 @docker_required
-async def test_stdio_shutdown_during_first_probe(server):
-    """The first call's selection probe is in flight when the client goes away: the
-    SDK cancels the handler through its anyio scope mid-selection (S7-D1, skeptic
-    finding 1). What this proves is the process side: a prompt, clean exit with the
-    selection cut off mid-probe. It cannot prove container removal — the probe guest
-    ends by itself within a second and --rm removes it either way; removal of an
-    in-flight container is proven by the run-in-flight test above."""
+async def test_stdio_shutdown_during_first_probe(server, trace_file):
+    """The first call's selection probe is in flight when the client goes away (S7-D1,
+    skeptic finding 1). What this proves is the process side: a prompt, clean exit with the
+    selection cut off mid-probe. It cannot prove container removal: the probe guest ends by
+    itself within a second and --rm removes it either way. Removal of an in-flight container
+    is proven by the run-in-flight tests."""
     await server.initialize()
     await server.send_request("tools/call", {"name": "run_code", "arguments": {
         "language": "python", "code": "print('never mind')",
     }})
     probe = f"vestibule-{await server.wait_for_new_spawn(0)}"
 
-    code, elapsed = await server.close_like_a_client()
-    assert code == 0, f"exit={code} (None = killed at the 2 s grace) after {elapsed:.2f}s\n{server.stderr_tail()}"
+    code, elapsed, phase = await server.close_like_sdk()
+    await server.finish_reading()
+    assert (code, phase) == (0, STDIN), (
+        f"exit={code} phase={phase} after {elapsed:.2f}s\n{server.stderr_tail()}"
+    )
+    if POSIX:  # the stdin wrapper caught EOF before the SDK could cancel the probe
+        assert any("vestibule shutdown (stdin closed):" in ln for ln in server.stderr_lines)
     # The shutdown really did land mid-probe: selection never reached a verdict.
     assert not any("selection: container" in ln for ln in server.stderr_lines), (
         server.stderr_tail()
     )
-    assert _container_gone(probe, within_s=10)  # sanity only (see docstring)
+    assert _container_gone(probe, within_s=10 if not POSIX else _CLEANER_WINDOW_S)
     assert server.bad_stdout == []
+
+
+@docker_required
+@pytest.mark.skipif(not POSIX, reason="POSIX shutdown hand-off (Windows keeps S7-D1; its "
+                    "300 ms Claude Code window is a documented gap in docs/BUILD_LOG.md)")
+async def test_stdio_claude_code_sequence_hands_off_a_run_in_flight(server, trace_file):
+    """Claude Code on POSIX: SIGINT to the PID with stdin open, then SIGTERM after 100 ms,
+    then SIGKILL after 400 ms. Today's server hung on that SIGINT (M2 step 1)."""
+    await server.initialize()
+    name = await _start_stubborn_run(server)
+
+    code, elapsed, phase = await server.close_like_claude_code()
+    await server.finish_reading()
+    assert (code, phase) == (0, SIGINT), (
+        f"exit={code} phase={phase} after {elapsed:.3f}s\n{server.stderr_tail()}"
+    )
+    assert _container_gone(name, within_s=_CLEANER_WINDOW_S), f"{name} outlived the cleaner"
+    assert cleaner_removed(read_trace(trace_file), name), read_trace(trace_file)
+    assert any("shutdown (SIGINT): handed 1 container(s)" in ln for ln in server.stderr_lines)
+    assert server.bad_stdout == []
+
+
+@docker_required
+@pytest.mark.skipif(not POSIX, reason="POSIX shutdown hand-off (the Windows path is S7-D1)")
+async def test_stdio_real_sdk_client_hands_off_a_run_in_flight(tmp_path, trace_file):
+    """The real MCP Python SDK client, with its own shutdown sequence and its default
+    environment for servers (HOME LOGNAME PATH SHELL TERM USER, plus what we pass)."""
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    errlog_path = tmp_path / "server-stderr.log"
+    params = StdioServerParameters(command=str(SERVER_EXE), env={
+        "VESTIBULE_WORKSPACE": str(tmp_path / "ws"),
+        "VESTIBULE_CLEANUP_TRACE": str(trace_file),
+    })
+
+    def spawned() -> list[str]:
+        text = errlog_path.read_text(encoding="utf-8", errors="replace")
+        return re.findall(r"run ([0-9a-f]{16}): spawning", text)
+
+    name = None
+    try:
+        async with asyncio.timeout(180):
+            with errlog_path.open("w", encoding="utf-8") as errlog:
+                async with stdio_client(params, errlog=errlog) as (read, write):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        await session.call_tool(
+                            "run_code", {"language": "python", "code": "print('warm')"}
+                        )
+                        seen = len(spawned())
+                        pending = asyncio.create_task(session.call_tool("run_code", {
+                            "language": "python", "code": _STUBBORN_GUEST,
+                            "timeout_seconds": 60,
+                        }))
+                        while len(spawned()) <= seen:
+                            await asyncio.sleep(0.1)
+                        name = f"vestibule-{spawned()[seen]}"
+                        await _wait_running(name)
+                        t0 = time.monotonic()
+                    # Leaving both contexts is the SDK's own shutdown: close stdin, wait up
+                    # to 2 s, then escalate.
+                elapsed = time.monotonic() - t0
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        stderr = errlog_path.read_text(encoding="utf-8", errors="replace")
+        assert elapsed < CLIENT_GRACE_S, f"needed escalation ({elapsed:.2f}s)\n{stderr[-2000:]}"
+        assert "shutdown (stdin closed): handed 1 container(s)" in stderr, stderr[-2000:]
+        assert _container_gone(name, within_s=_CLEANER_WINDOW_S), f"{name} outlived the cleaner"
+        assert cleaner_removed(read_trace(trace_file), name), read_trace(trace_file)
+    finally:
+        if name is not None:
+            remove(name)

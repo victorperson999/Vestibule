@@ -1,6 +1,6 @@
 # M2 step 1 — Linux baseline (1a) and POSIX shutdown hand-off (1b)
 
-Status: **DRAFT v3 (2026-10-14)**, waiting on Victor's sign-off.
+Status: **signed off by Victor 2026-10-15 (v3).** 1a is built first, then 1b.
 - **Reviews:** `skeptic` reviewed v1 ("rework needed") and v2 ("sound with amendments");
   `verifier` confirmed every claim that drove the rework. The record is in §7.
 - **Victor decided 2026-10-14:**
@@ -108,6 +108,33 @@ kill above. On Windows no child of the server reliably outlives the session.
   `MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash /mnt/c/…/scripts/gate-linux.sh`. Run
   **sequentially** (one Docker Desktop daemon); each platform reported separately.
 
+> **Amendment 2026-10-15 (1a build, critic findings confirmed by `verifier`):**
+> - **`check_env.py` also checks:**
+>   - this project is installed, and `import vestibule` resolves to *this* checkout's
+>     `src/`. The Linux venvs are shared, so a gate run from another clone would otherwise
+>     test the first clone's code.
+>   - with `--expect-python X.Y`, the interpreter version. The gate passes 3.11 and the
+>     system version, so a venv built on the wrong Python fails instead of being mislabelled.
+>   - a distribution without a name in its metadata is reported, not skipped.
+> - **check_env exempts the venv's own bootstrap tools** (`pip`, and `setuptools`/`wheel`,
+>   which `python -m venv` installs on 3.11 at versions fixed by the interpreter build; the
+>   Windows venv has setuptools 65.5.0). The plan's text named only `pip`.
+> - **`--setup`** uses `/usr/bin/python3` and uv's managed 3.11 with `VIRTUAL_ENV` unset, so
+>   an activated venv can't pick the interpreters.
+> - **Every pytest run is bounded** (`timeout -k 30 600`), and `gate.md` tells the agent to
+>   give both platforms' pytest steps a 10-minute tool timeout.
+> - **The skip rule is stricter than the plan said:** any skip fails the Linux gate, except
+>   an explicit, commented allowlist (today only "podman is installed here", a host fact).
+>   Future `native` tests that skip for lack of a rootfs therefore fail the gate too.
+> - **Second critic round** (4 findings, all confirmed by `verifier`, all fixed):
+>   - the gate now has **one 540 s budget**, below the agent's 600 s tool limit; each pytest
+>     run gets what is left, and an EXIT trap kills the running pytest's process group;
+>   - pytest runs with `--color=no` and without `PYTEST_ADDOPTS`, and skips are counted from
+>     the summary line against the allowlisted `-rs` lines, so forced colour can't hide a
+>     skip;
+>   - the checkout binding compares paths by identity (`/mnt/c` is case-insensitive);
+>   - uv's errors stay visible during `--setup`.
+
 ### S1-D4 (fixed) — Line endings
 
 `.gitattributes`: `*.sh text eol=lf`, and `tests/fixtures/** -text`. Step 2 asserts sha256
@@ -141,7 +168,8 @@ interleave, and no request, run or selection resumes after step 1.
 2. **Kill the tracked `docker run` CLIs.** It's instant, and it narrows late container
    creation to requests already at the daemon.
 3. **If there are names or temp dirs, start the cleaner:**
-   `[sys.executable, "-I", "-B", "-m", "vestibule.cleanup", <job JSON>]`, with:
+   `[sys.executable, "-I", "-B", <path of vestibule/cleanup.py>, <job JSON>]`, by file
+   path because `-I` drops `PYTHONPATH` and the user site (build finding), with:
    - `start_new_session=True`;
    - `stdin`, `stdout` and `stderr` all `DEVNULL` (golden rule 1);
    - `cwd=tempfile.gettempdir()`.
@@ -266,8 +294,21 @@ file). `gate-linux.sh` fails if these skipped.
 - **Several runtimes tracked:** one job, grouped by runtime argv.
 - **A selection probe in flight:** its candidate backend is tracked (S7-D1), so its name and
   CLI are in the job.
-- **Naive backend** (dev only): nothing to hand off; its child processes are left to the OS,
-  as today.
+- **Naive backend** (dev only): no containers, but its guests are plain child processes.
+  The interpreter's normal teardown used to kill them, and the hand-off's `os._exit` skips
+  that (corrected during the build: the first draft said "left to the OS, as today").
+  Each naive guest now runs in its own process group. A cancelled, timed-out or failed run
+  kills that group, and the hand-off kills the groups of the guests still running, so a bash
+  guest's children die too.
+- **Per-run dirs live in a private parent on POSIX** (`vestibule-runs-*`, user-owned,
+  not sticky). The first Linux gate run of `test_run_cancelled_at_spawn_leaves_no_container`
+  found the problem: a late container re-creates its deleted run dir as **root** (`-v` and
+  `--mount` alike), and in the sticky `/tmp` the user could never delete it. Inside the
+  parent the user can. The parent is removed when its last run retires, or by the
+  snapshot/cleaner at shutdown.
+- **A CLI still being spawned** (inside `create_subprocess_exec`, no handle yet) is not
+  killed. Its name is already tracked, so the cleaner's `rm -f` and owner sweeps still
+  remove the container. Documented gap.
 
 ## 6. Carried forward
 

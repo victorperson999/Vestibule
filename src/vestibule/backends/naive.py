@@ -6,7 +6,10 @@ wall-clock timeout. Cross-platform (bash may be unavailable on bare Windows -> c
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
 import shutil
+import signal
 import sys
 import tempfile
 from pathlib import Path
@@ -29,7 +32,28 @@ def _command(language: str, script: Path) -> list[str] | None:
     return None
 
 
+def kill_guest(proc: asyncio.subprocess.Process) -> None:
+    """Kill a guest and, on POSIX, everything in its process group. Never raises."""
+    if sys.platform != "win32":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # pgid == pid: started in a new session
+            return
+        except OSError:
+            pass  # already gone, or not (yet) a group leader: fall back to the process
+    with contextlib.suppress(ProcessLookupError, OSError):
+        proc.kill()
+
+
 class NaiveBackend(Warden):
+    def __init__(self) -> None:
+        # Guest processes still running, so the POSIX shutdown hand-off can kill them
+        # (M2 step 1b): it ends with os._exit, which skips the interpreter teardown that
+        # used to kill them.
+        self._procs: set[asyncio.subprocess.Process] = set()
+
+    def live_procs(self) -> list[asyncio.subprocess.Process]:
+        return [p for p in self._procs if p.returncode is None]
+
     async def run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
         workdir = Path(tempfile.mkdtemp(prefix="vestibule-"))
         script = workdir / f"main{_EXT.get(language, '.txt')}"
@@ -51,18 +75,29 @@ class NaiveBackend(Warden):
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # POSIX: its own process group, so a kill reaches the guest's children
+                # too (a bash guest's `sleep`, say), never this server's group.
+                start_new_session=os.name == "posix",
             )
         except FileNotFoundError as e:
             return RunResult(stdout="", stderr=str(e), exit_code=127,
                              timed_out=False, isolation="none")
 
         timed_out = False
+        self._procs.add(proc)
         try:
             out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
         except asyncio.TimeoutError:
             timed_out = True
-            proc.kill()
+            kill_guest(proc)
             out, err = await proc.communicate()
+        except BaseException:
+            # Cancelled (or failed) mid-run: never leave the guest running. The interpreter's
+            # normal teardown used to kill it, but POSIX now exits with os._exit (M2 step 1b).
+            kill_guest(proc)
+            raise
+        finally:
+            self._procs.discard(proc)
 
         return RunResult(
             stdout=out.decode(errors="replace"),

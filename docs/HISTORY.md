@@ -537,3 +537,15 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     denied silently. Docker allows `ptrace`, which our plan denies; Victor decides in step 5.
   - **Benchmark expectation:** on this host native is ~5× faster than a bare `docker run`,
     not the 10–50× `PLAN.md` hoped for. The README will report measured numbers only.
+- **Step 1a — Linux baseline, done 2026-10-15
+  ([plan](plans/M2/M2-step1-linux-baseline.md)).** No server code changed.
+  - **Pinned:** `pyproject.toml` now caps `mcp` below 2, and a constraints file pins every
+    package exactly, so every dev venv is identical on every platform and Python version.
+    A fresh install had been pulling mcp 2.3.0, which can't run Vestibule.
+  - **Checked:** `check_env.py` refuses a venv that differs from the constraints, runs the
+    wrong Python, or is bound to a different checkout.
+  - **Linux gate:** the full suite runs on the system Python 3.14, and the Docker-free and
+    stdio end-to-end tests on a uv-installed 3.11. Every pytest run is time-bounded, and any
+    unexplained skip fails it. The gate agent now runs Windows, then Linux.
+  - **Review:** the `critic` found 11 issues (3 medium), all confirmed by `verifier` and
+    fixed before the step was called done.

@@ -10,12 +10,12 @@ you
  │
  ▼
 MAIN SESSION — Opus 5.5 (architect + implementer)
- │  1. read context (CLAUDE.md, docs/plans/, HISTORY, BUILD_LOG) ──► scout (Haiku): file:line lookups
+ │  1. read context (CLAUDE.md, KARPATHY_EXAMPLES, docs/plans/, HISTORY, BUILD_LOG) ──► scout (Haiku): file:line lookups
  │  2. write plan → docs/plans/<milestone>/<step>.md
  │  3. [plan review] skeptic (Opus) on milestone/step plans → main session weighs findings
  │  4. you sign off → bullet in docs/HISTORY.md
- │  5. build the change
- │  6. gate (Haiku): ruff + mypy + pytest            ── FAIL → back to 5
+ │  5. build the change; self-check the diff against KARPATHY_EXAMPLES before gate
+ │  6. gate (Haiku): check_env + ruff + mypy + pytest, Windows then Linux (WSL) ── FAIL → back to 5
  │  7. critic (Opus): adversarial diff review
  │  8. verifier (Opus): CONFIRMED / PLAUSIBLE / REFUTED per finding ── confirmed high/med → back to 5
  │  9. update README/docs if user-facing; HISTORY bullet + BUILD_LOG entry
@@ -31,7 +31,7 @@ stuck (same failure twice / hang / unclear cause) ──► diagnose (Opus) → 
 |---|---|---|---|---|
 | Main session | Opus 5.5 | xhigh | Plans *and* writes the code | Vestibule's decisions (D1–D4, the S4/S5 sign-offs, budgets, honesty rules) live in this context. Handing implementation to a fresh agent loses them. |
 | `scout` | Haiku 5.5 | low | Lookups that return file:line only | Pure search, no judgment needed. Keeps noise out of the main context. |
-| `gate` | Haiku 5.5 | low | Runs ruff, mypy, pytest and reports pass/fail | Runs commands only. Keeps long test output out of the main context. |
+| `gate` | Haiku 5.5 | low | Runs check_env, ruff, mypy and pytest on Windows, then `scripts/gate-linux.sh` in WSL, and reports pass/fail | Runs commands only. Keeps long test output out of the main context. |
 | `skeptic` | Opus 5.5 | xhigh | Adversarial review of a **plan** | Challenges the design itself before code exists. That is where the step-4 and step-5 redesigns came from. |
 | `critic` | Opus 5.5 | high | Adversarial review of a **diff** | Finds how the change fails. |
 | `verifier` | Opus 5.5 | high | Confirms or refutes each finding with evidence | Separates finding from judging, so false positives don't become code churn and real bugs don't get waved away. |

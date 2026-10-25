@@ -138,6 +138,20 @@ Windows host note: the workspace path is passed as a native `C:\...` path (Docke
 >   returning into `asyncio.run`'s cancel-all. That cancel-all was reproduced hanging
 >   the server indefinitely, with its container still running.
 
+> **Amendment 2026-10-15 (M2 step 1b, [`M2-step1-linux-baseline.md`](../M2/M2-step1-linux-baseline.md)
+> S1-D5): on POSIX, S7-D1's in-process shutdown is replaced.** Claude Code on Linux sends
+> `SIGINT`, then `SIGTERM` 100 ms later, then `SIGKILL`, with stdin left open. The old
+> server hung on that `SIGINT`.
+> - **The new POSIX path:** any trigger (stdin EOF, `SIGINT`, `SIGTERM`, `SIGHUP`) runs one
+>   synchronous path. It snapshots every tracked backend's names, owner tokens, temp dirs
+>   and live `run` CLIs, kills the CLIs, starts the detached `vestibule.cleanup` in its own
+>   session, and exits 0 within milliseconds.
+> - **The cleaner:** `rm -f` by name, owner-label sweeps (now, +5 s, +20 s), and temp-dir
+>   removal right after the first pass and at the end.
+> - **Windows keeps S7-D1 as written above.** There the server sits in kill-on-close Job
+>   Objects, so a detached cleaner would die with the session. Claude Code's 300 ms Windows
+>   window is a documented gap: S7-D5's self-deadline ends the container.
+
 1. Acquire semaphore. Generate run ID; write script to per-run temp dir.
 2. Spawn `docker run …` (D10 stdio rules).
 3. **Collect with streaming caps** (finding 19): read stdout/stderr incrementally; per-stream collection cap = `2 × max_output_bytes` bytes. Cap exceeded ⇒ kill the container early, flag truncation. Display truncation in `server.py` still applies on top.

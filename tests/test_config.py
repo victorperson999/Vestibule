@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
-from test_stdio_e2e import SERVER_EXE, StdioServer
+from stdioutil import SERVER_EXE, STDIN, StdioServer
 
 import vestibule
 import vestibule.server as server
@@ -191,8 +191,10 @@ async def test_stdio_bad_config_starts_and_blocks(tmp_path):
         assert list(home.iterdir()) == []  # no default workspace was created
         assert any("configuration is invalid" in line for line in srv.stderr_lines)
 
-        code, elapsed = await srv.close_like_a_client()
-        assert code == 0, f"exit={code} after {elapsed:.2f}s\n{srv.stderr_tail()}"
+        code, elapsed, phase = await srv.close_like_sdk()
+        assert (code, phase) == (0, STDIN), (
+            f"exit={code} phase={phase} after {elapsed:.2f}s\n{srv.stderr_tail()}"
+        )
         assert srv.bad_stdout == []  # golden rule 1
     finally:
         await srv.kill()

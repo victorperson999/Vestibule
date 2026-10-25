@@ -450,6 +450,18 @@ Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after t
 5. **Shutdown (stdin EOF *or* `SIGTERM`):** write `cgroup.kill` for every live run, then the
    same short, non-cancelling wait as S7-D1.
 
+> **Amendment 2026-10-15 (step 1b, [`M2-step1-linux-baseline.md`](M2-step1-linux-baseline.md)
+> S1-D5):** POSIX shutdown is now a synchronous hand-off: stdin EOF, `SIGINT`, `SIGTERM`
+> or `SIGHUP` → `SELECTOR.cleanup_job()` → kill the tracked CLIs → start the detached
+> `vestibule.cleanup` → `os._exit(0)` within milliseconds. Real clients allow 100 ms
+> (Claude Code) to 2 s (the Python SDK).
+> - **Native runs need no shutdown work** beyond their temp dirs, which go to the cleaner.
+>   When the server dies, the PDEATHSIG chain ends the helper, init and the guest, and
+>   systemd removes the emptied per-run scope (step-0 spike: everything gone within 12 ms).
+>   No `cgroup.kill` at shutdown.
+> - **What step 6 must add:** a native backend's `cleanup_snapshot()` (temp dirs only) for
+>   `cleanup_job()`.
+
 ## 5. Backend selection & probing on Linux
 
 **The probe is a real run through the normal native path**, so it can't drift from what real
@@ -514,7 +526,7 @@ fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux ho
   BUILD_LOG known issue). `_format_result` needs no change.
 - **`select.py`:**
   - generalized from "container backends" to any backend (tracking, the shared semaphore,
-    `aclose`);
+    `cleanup_job()`; `aclose` stays Windows-only and container-only, per step-1b S1-D5);
   - the native probe and N5's order;
   - `note_result` extended to native-tier runs that report `none`.
 - **`config.py`:**
@@ -649,8 +661,9 @@ On WSL Ubuntu 26.04 (kernel 6.6), through `server.call_tool` like M1's suite:
    kill, and notification reporting with bounds.
 6. **Selection on Linux (N5, §5) — native becomes reachable here, with everything it needs:**
    - the `native` and `container` backend values;
-   - the selector generalized beyond containers (tracking, shared semaphore, `aclose`), so
-     shutdown reaches native runs from the first commit that can start one;
+   - the selector generalized beyond containers (tracking, shared semaphore, and
+     `cleanup_job()` per step-1b S1-D5), so shutdown reaches native runs from the first
+     commit that can start one;
    - the native probe, tier order, per-run verification with `note_result`, and the
      actionable messages.
 7. **Acceptance, benchmark and docs:**
