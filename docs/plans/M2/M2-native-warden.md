@@ -129,6 +129,16 @@ call.** A missing rootfs gives an actionable message (§5).
   - Private registries. Only anonymous token auth is supported; `HTTPS_PROXY` works because
     `urllib` honors it.
 
+> **Amendment 2026-10-24 (step 2, [`M2-step2-rootfs.md`](M2-step2-rootfs.md) S2-D2, S2-D5,
+> S2-D10):**
+> - **Item 4:** whiteouts are **refused**, not applied (S2-D2). Neither pinned image has one,
+>   and supporting them means deleting directories inside an untrusted tree. A re-pin that
+>   brings one fails `setup`, which M1's re-pin procedure now runs.
+> - **Layout:** the tree is `~/.vestibule/rootfs/<index-hex>-<arch>/`, with its marker
+>   `<index-hex>-<arch>.json` beside it (S2-D5). Setup adds `workspace/`, `sandbox/` and an
+>   `etc/hosts` with the localhost lines (S2-D10).
+> - **Measured:** about 123 MB to download and 357 MB on disk for both images.
+
 ### N3 (signed off 2026-10-14) — Resource limits come from a systemd-delegated cgroup; the spike's numbers pick the mechanism
 
 An unprivileged process can create cgroups only inside a subtree delegated to its user. The
@@ -520,6 +530,17 @@ fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux ho
 - **Tests:** offline unit tests with fixture layers, plus one `network`-marked test that
   fetches the real pinned python image.
 
+> **Amendment 2026-10-24 (step 2, [`M2-step2-rootfs.md`](M2-step2-rootfs.md) S2-D2, S2-D5,
+> S2-D6, §4.3):**
+> - **Refused, failing the image:** whiteouts, a directory replaced by a non-directory and a
+>   missing parent, alongside device nodes and FIFOs. A hardlink's linkname follows the same
+>   rules as a name.
+> - **Cache:** the marker is `<index-hex>-<arch>.json` beside the tree, written last, after
+>   an `os.sync()`. Setup only ever touches its own names in the directory.
+> - **Tests:** the `network` test fetches **both** pinned images, and a `docker` + `network`
+>   test compares each tree, entry by entry, with `docker export` of the same digest.
+> - Both pins use gzip layers.
+
 ## 7. Server, config and repo changes
 
 - **`server.py`:** a POSIX `SIGTERM` handler that runs the same shutdown as stdin EOF (the
@@ -535,6 +556,11 @@ fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux ho
   - **The workspace and the rootfs directory must not overlap** (neither inside the other):
     a `ConfigError`. Otherwise a guest that owns every file could rewrite the cache and
     defeat the pin.
+
+    > **Amendment 2026-10-24 (step 2, [`M2-step2-rootfs.md`](M2-step2-rootfs.md) S2-D9):**
+    > not a `ConfigError`: that would block every tool for working M1 setups (for example
+    > `VESTIBULE_WORKSPACE=~`). `setup` refuses an overlap, and step 6's native selection
+    > will too, falling back to the container backend.
   - No knob turns seccomp or any hard control off.
 - **`pyproject.toml`:** the `seccomp` extra goes. New pytest markers: `native` (Linux, rootfs
   present, user namespaces working; skips with the reason otherwise) and `network`.

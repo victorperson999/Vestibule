@@ -45,6 +45,8 @@ class ConfigError(ValueError):
 # stores, containerd and classic (S6-D4): pull by this exact ref into an empty store, then
 # `image inspect` + `run --pull never` (python 3.12.15, node v22.23.3) + `pytest -m docker`.
 # To re-pin, follow the plan's "Re-pin cost" (one store mode suffices for the same form).
+# On Linux, also run `vestibule-mcp setup` and `pytest -m network`: native unpacks these
+# images itself and refuses entry kinds they don't use (docs/plans/M2/M2-step2-rootfs.md S2-D2).
 DEFAULT_IMAGE_PYTHON = (
     "docker.io/library/python"
     "@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
@@ -75,9 +77,16 @@ class Limits:
     max_concurrent: int = 4
     tmpfs_mb: int = 64
 
+    # M2: where `vestibule-mcp setup` unpacks the images (docs/plans/M2/M2-step2-rootfs.md)
+    rootfs_dir: str = "~/.vestibule/rootfs"
+
     @property
     def workspace_path(self) -> Path:
         return Path(self.workspace_dir).expanduser()
+
+    @property
+    def rootfs_path(self) -> Path:
+        return Path(self.rootfs_dir).expanduser()
 
     @classmethod
     def from_env(cls) -> "Limits":
@@ -140,6 +149,7 @@ class Limits:
             image_node=_s("VESTIBULE_IMAGE_NODE", DEFAULT_IMAGE_NODE),
             max_concurrent=_i("VESTIBULE_MAX_CONCURRENT", 4),
             tmpfs_mb=_i("VESTIBULE_TMPFS_MB", 64),
+            rootfs_dir=_s("VESTIBULE_ROOTFS_DIR", "~/.vestibule/rootfs"),
         )
         if problems:
             raise ConfigError(problems)

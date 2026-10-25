@@ -39,8 +39,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
 | M1 follow-up | Config validation + server version | 2026-10-14 | `9a4f15e` | 240 |
 | M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
-| M2 step 1a | Linux baseline: version pins, constraints, two-platform gate | 2026-10-15 | *pending (Victor commits)* | 240 (+201 / +3 on Linux 3.11) |
-| M2 step 1b | POSIX shutdown hand-off (detached cleaner) | 2026-10-15 | *pending (Victor commits)* | 261 Linux (0 skipped); 252 + 9 POSIX-only skips on Windows |
+| M2 step 1a | Linux baseline: version pins, constraints, two-platform gate | 2026-10-15 | `d811021` (with 1b) | 240 (+201 / +3 on Linux 3.11) |
+| M2 step 1b | POSIX shutdown hand-off (detached cleaner) | 2026-10-15 | `d811021` (with 1a) | 261 Linux (0 skipped); 252 + 9 POSIX-only skips on Windows |
 
 ## Known open issues
 
@@ -71,7 +71,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M2 step 1b — POSIX shutdown hand-off (2026-10-15)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `d811021` (one commit with 1a, made 2026-10-24).
 - **Plan:** [`docs/plans/M2/M2-step1-linux-baseline.md`](plans/M2/M2-step1-linux-baseline.md)
   S1-D5 (revised by Victor after the second plan review); contract amendments in M1 §4 and
   M2 §4.
@@ -145,7 +145,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M2 step 1a — Linux baseline (2026-10-15)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `d811021` (one commit with 1b, made 2026-10-24).
 - **Plan:** [`docs/plans/M2/M2-step1-linux-baseline.md`](plans/M2/M2-step1-linux-baseline.md)
   (S1-D1 to S1-D4, plus the 1a build amendment).
 - **What:**

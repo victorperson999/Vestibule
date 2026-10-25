@@ -517,6 +517,24 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     every platform. Rejected: adding the lease now (changes M1's container profile
     mid-step) and keeping the hand-off on Windows (worse than M1 for Python SDK clients).
 
+- **Step-2 decisions — approved 2026-10-24** ([plan](plans/M2/M2-step2-rootfs.md), v2 after
+  a `skeptic` review whose 13 findings were all accepted). Before planning, the two pinned
+  images were downloaded and inspected: about 123 MB to download and ~350 MB on disk, plain
+  gzip layers, and no whiteouts, device files or entries that pass through a symlink.
+  - **S2-D1 — `vestibule-mcp setup`.** It fetches and unpacks both images. Any other
+    argument prints a warning and the server starts as before; refusing to start was
+    already rejected in M1, because the client then only says "failed to connect".
+  - **S2-D2 — refuse what the images don't use** (amends the contract's §6). Whiteouts,
+    device files and a folder replaced by a file make setup fail with the entry named,
+    instead of being supported. Supporting whiteouts means deleting folders inside an
+    untrusted tree, the riskiest code in the step, for a feature neither image uses. A
+    re-pin now runs setup, so a future image that needs one fails before it ships.
+  - **S2-D9 — overlapping folders refuse native, not the server** (amends the contract's
+    §7). If the workspace and the image folder overlap, setup (and, from step 6, native
+    selection) refuses to use them, but the server starts and the container backend still
+    works. A config error would have blocked every tool for working M1 setups such as
+    `VESTIBULE_WORKSPACE=~`.
+
 ### Build steps (8 planned: 0–7)
 
 - **Step 0 — spike, done 2026-10-14 (no repo code;
@@ -549,3 +567,19 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     unexplained skip fails it. The gate agent now runs Windows, then Linux.
   - **Review:** the `critic` found 11 issues (3 medium), all confirmed by `verifier` and
     fixed before the step was called done.
+- **Step 1b — POSIX shutdown hand-off, done 2026-10-15
+  ([plan](plans/M2/M2-step1-linux-baseline.md) S1-D5; committed with 1a in `d811021`).**
+  - **The problem:** Claude Code on Linux ends a server with `SIGINT`, then `SIGTERM` 100 ms
+    later, then `SIGKILL`. The old server hung on that `SIGINT`, so a run in flight left its
+    container alive until the container's own deadline.
+  - **Now:** on Linux, closing stdin or any of those signals runs one quick path. The server
+    kills its `docker run` processes, starts a small detached cleaner that removes its
+    containers and temp dirs (and sweeps again for late starters), and exits within
+    milliseconds. Windows keeps M1's in-process cleanup, because a detached cleaner dies
+    with the Windows client's job there.
+  - **Found along the way:** a container that starts late can re-create its deleted run dir
+    as root, which the user can't delete from the shared `/tmp`. Run dirs now live in a
+    private user-owned folder on Linux.
+  - **Review:** two `critic` rounds (2 medium + 3 low, then 1 medium + 3 low), all confirmed
+    by `verifier` and fixed. Among them: the cleaner failed silently in some installs, and
+    naive-backend guests could outlive the server.

@@ -46,6 +46,12 @@ def test_valid_numbers_are_used(monkeypatch):
     assert (lim.mem_mb, lim.max_timeout_s, lim.max_concurrent) == (512, 120, 1)
 
 
+def test_rootfs_dir_default_and_override(monkeypatch, tmp_path):
+    assert Limits.from_env().rootfs_path == Path("~/.vestibule/rootfs").expanduser()
+    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", str(tmp_path / "rootfs"))
+    assert Limits.from_env().rootfs_path == tmp_path / "rootfs"
+
+
 @pytest.mark.parametrize("value, expected", [
     ("1", True), ("TRUE", True), ("yes", True), ("On", True),
     ("0", False), ("false", False), ("No", False), ("OFF", False),

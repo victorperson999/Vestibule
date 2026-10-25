@@ -117,6 +117,31 @@ Git Bash:    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash /mnt/c/<repo>/scripts/
 - **No cache is written into the repo:** ruff runs with `--no-cache`, and mypy's and Python's
   caches go to `~/.cache`.
 
+### The native rootfs: `vestibule-mcp setup`
+
+Native isolation runs each sandbox in an unpacked copy of the same digest-pinned images the
+container backend uses. `setup` downloads them straight from Docker Hub (no Docker needed),
+checks every byte against the pin, and unpacks them. Nothing in the server uses them yet:
+native becomes reachable in M2 step 6.
+
+```bash
+# inside WSL, with a dev venv:
+~/.venvs/vestibule/bin/vestibule-mcp setup
+```
+
+- **Size:** about 123 MB to download and 357 MB on disk, in `~/.vestibule/rootfs` (about
+  10 s here). A second run says "already present" and doesn't touch the network.
+- **Settings:** it reads the same `VESTIBULE_*` settings as the server. If the client's MCP
+  config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for setup too
+  (`VESTIBULE_ROOTFS_DIR=… vestibule-mcp setup`). Setup prints the directory and images it
+  used.
+- **Keep the directory on the Linux disk** (under `~`), not under `/mnt/c`: symlinks, modes
+  and letter case behave differently there.
+- **It refuses a directory that overlaps the workspace,** and it never touches anything in
+  the directory except its own entries. To start over, delete the directory.
+- **Tests:** the ones that fetch the real images are marked `network`; the comparison with
+  `docker export` is marked `docker` too. The Linux gate runs both.
+
 ## Troubleshooting
 
 - **`Blocked: …`**: the message names the fix and says what to do next.

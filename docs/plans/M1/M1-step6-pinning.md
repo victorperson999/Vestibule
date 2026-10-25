@@ -166,6 +166,11 @@ form needs: fresh capture + both acceptance checks + the proof gate in one mode 
 full test suite (which includes the README-copy and interpreter-version tests). This keeps
 re-pinning for upstream CVEs cheap enough that it actually happens.
 
+> **Amendment 2026-10-24 (M2 step 2, [`M2-step2-rootfs.md`](../M2/M2-step2-rootfs.md)
+> S2-D2):** on Linux, a re-pin also runs `vestibule-mcp setup` and `pytest -m network`.
+> Native unpacks these images itself and refuses entry kinds the current pins don't use
+> (whiteouts, device files), so a new pin that brings one must fail here, before it ships.
+
 ### S6-D4 (approved 2026-07-06; procedure tightened 2026-10-10) — gate under *both* image stores
 
 Codex pass 2's high finding: proving the pins in whichever store mode this machine
