@@ -12,8 +12,13 @@ on Windows/macOS, running Linux containers).
 ```bash
 git clone https://github.com/victorperson999/Vestibule.git && cd Vestibule
 python -m venv .venv
-.venv/bin/pip install -e ".[dev]"       # Windows: .venv\Scripts\pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev]" -c requirements/constraints.txt
+# Windows: .venv\Scripts\pip install -e ".[dev]" -c requirements/constraints.txt
 ```
+
+`requirements/constraints.txt` pins every package, transitive ones included, so every dev
+venv is identical on every platform. Without it, pip picks the newest versions allowed by
+`pyproject.toml`. Changing a pin is a deliberate commit; the file's header says how.
 
 Then pull the two pinned sandbox images with the exact commands in the README's
 **One-time setup**. Vestibule never pulls images itself.
@@ -56,13 +61,17 @@ Settings are read once, when the agent starts the server, so restart it after an
 
 ## Run the checks
 
-The definition of done for any change (`CLAUDE.md`) is a clean run of all three:
+The definition of done for any change (`CLAUDE.md`) is a clean run of all four:
 
 ```bash
-.venv/bin/python -m ruff check .        # Windows: .venv\Scripts\python -m ...
+.venv/bin/python scripts/check_env.py   # Windows: .venv\Scripts\python ...
+.venv/bin/python -m ruff check .
 .venv/bin/python -m mypy src
 .venv/bin/python -m pytest -q
 ```
+
+`check_env.py` comes first: it fails if the venv differs from the constraints in any
+package, so a stale or upgraded dependency can't quietly change what the tests run against.
 
 - **Docker-marked tests** (`pytest -m docker`) need a running daemon and both pinned images.
   Anywhere else they *skip*, and `pytest -rs` shows why, including the exact pull commands.
@@ -73,6 +82,65 @@ The definition of done for any change (`CLAUDE.md`) is a clean run of all three:
 - `tests/test_stdio_e2e.py` starts the real `vestibule-mcp` from the venv and talks raw
   JSON-RPC to it, including shutting it down the way a client does.
 - `tests/test_docs.py` fails when a doc link or a `docs/…` path goes stale.
+
+## Linux / WSL development
+
+The native warden (M2) only runs on Linux. On Windows, the code stays in the Windows checkout
+and the Linux checks run inside WSL Ubuntu against those same files. The Linux venvs live in
+the WSL home directory, not in the repo:
+
+```bash
+# inside WSL, from the repo:
+bash scripts/gate-linux.sh --setup   # first time, or after a constraints change: rebuild the venvs
+bash scripts/gate-linux.sh           # check_env, ruff, mypy, and pytest on two Pythons
+```
+
+From Windows, the same script runs through `wsl`:
+
+```text
+PowerShell:  wsl -d Ubuntu -- bash /mnt/c/<repo>/scripts/gate-linux.sh
+Git Bash:    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash /mnt/c/<repo>/scripts/gate-linux.sh
+```
+
+- `--setup` needs `python3` with the `venv` module (Ubuntu: `sudo apt install python3.X-venv`
+  once). It installs `uv` into `~/.venvs/tools` and uses it to fetch a standalone Python
+  3.11, without sudo.
+- It builds two venvs: `~/.venvs/vestibule` (the system `/usr/bin/python3`, which runs the
+  full suite) and `~/.venvs/vestibule311` (3.11, the oldest supported version, which runs
+  the Docker-free tests and the stdio end-to-end tests). `check_env.py` fails if either venv
+  runs the wrong Python, or is bound to a different checkout than the one being checked.
+- **Any skipped test fails the Linux gate**, apart from a short, commented list of
+  host-dependent skips in the script. For the Docker tests, enable Docker Desktop's WSL
+  integration for the distro, or install Docker in it.
+- Each pytest run is stopped after 10 minutes, so a hang fails the gate instead of blocking
+  it.
+- **No cache is written into the repo:** ruff runs with `--no-cache`, and mypy's and Python's
+  caches go to `~/.cache`.
+
+### The native rootfs: `vestibule-mcp setup`
+
+Native isolation runs each sandbox in an unpacked copy of the same digest-pinned images the
+container backend uses. `setup` downloads them straight from Docker Hub (no Docker needed),
+checks every byte against the pin, and unpacks them. Nothing in the server uses them yet:
+native becomes reachable in M2 step 6.
+
+```bash
+# inside WSL, with a dev venv:
+~/.venvs/vestibule/bin/vestibule-mcp setup
+```
+
+- **Size:** about 123 MB to download and 357 MB on disk, in `~/.vestibule/rootfs` (about
+  10 s here). A second run says "already present" and doesn't touch the network.
+- **Settings:** it reads the same `VESTIBULE_*` settings as the server. If the client's MCP
+  config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for setup too
+  (`VESTIBULE_ROOTFS_DIR=… vestibule-mcp setup`). Setup prints the directory and images it
+  used.
+- **Keep the directory on the Linux disk** (under `~`), not under `/mnt/c`: symlinks, modes
+  and letter case behave differently there.
+- **It refuses a directory that overlaps the workspace,** and it never touches anything in
+  the directory except its own entries. To start over, delete the directory.
+- **Tests:** the ones that fetch the real images are marked `network`; the comparison with
+  `docker export` is marked `docker` too. The Linux gate runs both.
 
 ## Troubleshooting
 

@@ -278,6 +278,35 @@ async def test_timed_out_result_returns_before_any_kill(monkeypatch, tmp_path):
     assert proc.killed  # the detached reaper collected the wedged CLI as last resort
 
 
+async def test_unexpected_error_mid_run_still_reaps_the_cli_and_retires_the_record(
+    quiet_backend, monkeypatch, tmp_path
+):
+    """M2 step-1b critic finding 5: an unexpected exception while collecting output must
+    still collect the CLI. Otherwise the run record never retires, and every later POSIX
+    shutdown starts a cleaner for a run that ended long ago."""
+    b = quiet_backend
+    limits = Limits(max_concurrent=1, workspace_dir=str(tmp_path / "ws"))
+    monkeypatch.setattr(container_mod, "_CLEANUP_STEP_S", 0.2)
+    proc = FakeCliProc()  # never exits on its own
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    async def broken_collect(*args, **kwargs):
+        raise RuntimeError("pipe broke")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    monkeypatch.setattr(b, "_collect", broken_collect)
+
+    with pytest.raises(RuntimeError, match="pipe broke"):
+        await b.run("python", "print(1)", 5, limits)
+    await asyncio.gather(*list(b._finishers), return_exceptions=True)
+
+    assert proc.killed  # the detached reap collected the CLI (last resort: kill)
+    assert b._runs == {}  # finisher done + CLI done: the record retired
+    assert b.cleanup_snapshot() == ([], [], [])
+
+
 async def test_cli_wedge_after_guest_finished_is_not_a_timeout(
     quiet_backend, monkeypatch, tmp_path
 ):

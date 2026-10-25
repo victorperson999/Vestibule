@@ -7,16 +7,24 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
+import signal
+import subprocess
 import sys
+import tempfile
+from io import TextIOWrapper
+from typing import Any, cast
 
+import anyio
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from vestibule import __version__, workspace
+from vestibule import __version__, cleanup, rootfs, workspace
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
+from vestibule.backends.naive import kill_guest
 from vestibule.backends.select import BackendSelector
 from vestibule.config import ALLOWED_LANGUAGES, ConfigError, Limits
 
@@ -256,15 +264,119 @@ def _truncate(s: str, limit: int = LIMITS.max_output_bytes) -> str:
 
 
 async def _main() -> None:
+    if sys.platform == "win32":
+        try:
+            async with stdio_server() as (read, write):
+                await server.run(read, write, server.create_initialization_options())
+        finally:
+            await _shutdown()
+        return
+
+    # POSIX (M2 step 1b, S1-D5): every way a client ends the server runs the same
+    # synchronous hand-off. Signal handlers run on the loop thread (never between
+    # bytecodes), and EOF is caught inside the stdin wrapper, BEFORE the SDK sees it and
+    # cancels in-flight handlers (whose finishers would otherwise race the hand-off).
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, _hand_off_and_exit, sig.name)
+    stdin = _HandOffOnEof(
+        anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace"))
+    )
     try:
-        async with stdio_server() as (read, write):
+        async with stdio_server(stdin=cast("anyio.AsyncFile[str]", stdin)) as (read, write):
             await server.run(read, write, server.create_initialization_options())
+    except Exception:
+        log.exception("server stopped with an error")
     finally:
-        await _shutdown()
+        _hand_off_and_exit("server stopped")
+
+
+# --- POSIX shutdown: hand off, then exit (M2 step 1b, S1-D5) ----------------------------
+#
+# Real clients give a stdio server 100 ms (Claude Code on Linux: SIGINT, then SIGTERM, then
+# SIGKILL, to the PID, with stdin still open) up to 2 s (the MCP Python SDK: close stdin,
+# then killpg). Cleaning up in-process cannot fit the short end, and today's SDK stdio task
+# group would hang on SIGINT anyway (its stdin thread never returns). So the server
+# snapshots what it owns, kills its `docker run` CLIs, starts `vestibule.cleanup` in its own
+# session (out of reach of both kinds of kill), and exits within milliseconds.
+
+_handed_off = False
+
+
+def _hand_off_and_exit(trigger: str) -> None:
+    """Snapshot, kill CLIs, start the cleaner, exit 0. Synchronous: no await anywhere, so
+    two triggers cannot interleave and no run or selection resumes after the snapshot.
+    Every step is guarded; the `finally` exits whatever happens. Never touches stdout: the
+    SDK's writer thread may be mid-message, and the client is ending the session anyway."""
+    global _handed_off
+    if _handed_off:
+        return
+    _handed_off = True
+    note = "nothing to clean up"
+    try:
+        job = SELECTOR.cleanup_job()
+        for guest in job.guests:  # naive (dev-only): the guest and its children
+            kill_guest(guest)
+        for proc in job.cli_procs:  # no new create requests reach the daemon
+            with contextlib.suppress(Exception):
+                proc.kill()
+        if not job.empty:
+            _spawn_cleaner(job.payload())
+            note = (f"handed {len(job.names)} container(s) and {len(job.tmpdirs)} temp "
+                    "dir(s) to the cleaner")
+    except BaseException as e:  # noqa: BLE001 - exit regardless; S7-D5 backstops containers
+        note = f"hand-off failed: {e!r}"
+    finally:
+        with contextlib.suppress(Exception):
+            # os.write, not logging: one atomic line, no handler locks.
+            line = f"vestibule shutdown ({trigger}): {note}\n"
+            os.write(2, line.encode(errors="replace"))
+        os._exit(0)
+
+
+def _spawn_cleaner(payload: dict[str, object]) -> None:
+    subprocess.Popen(
+        # By file path, not `-m vestibule.cleanup`: -I drops PYTHONPATH and the user site,
+        # so the package may not be importable there, and the module is stdlib-only anyway.
+        # -B: isolated mode also drops PYTHONPYCACHEPREFIX, so write no bytecode at all.
+        [sys.executable, "-I", "-B", cleanup.__file__, json.dumps(payload)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,  # golden rule 1: nothing may reach the MCP channel
+        stderr=subprocess.DEVNULL,
+        cwd=tempfile.gettempdir(),  # never hold the client's working folder
+        start_new_session=True,  # out of reach of a PID kill and of the SDK's killpg
+        close_fds=True,
+    )
+
+
+class _HandOffOnEof:
+    """The stdin `stdio_server` iterates: on EOF, hand off and exit BEFORE the SDK sees the
+    EOF (S1-D5). The SDK only ever does `async for line in stdin`."""
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __aiter__(self) -> "_HandOffOnEof":
+        return self
+
+    async def __anext__(self) -> str:
+        line: str = await self._inner.readline()
+        if not line:
+            _hand_off_and_exit("stdin closed")
+            raise StopAsyncIteration  # reached only when os._exit is stubbed (tests)
+        return line
+
+
+# --- Windows shutdown: M1's in-process cleanup (S7-D1) -----------------------------------
+#
+# On Windows the server sits in kill-on-close Job Objects (the console-script launcher's,
+# the venv redirector's, the Python SDK client's), so a detached child would die with the
+# session. The in-process cleanup fits the Python SDK's 2 s. Claude Code's 300 ms window is
+# a documented gap (docs/BUILD_LOG.md): S7-D5's self-deadline ends the container.
 
 
 async def _shutdown() -> None:
-    """Client gone (stdin EOF): clean up inside the client's ~2 s grace (S7-D1).
+    """Client gone (stdin EOF): clean up inside the client's ~2 s grace (S7-D1). Windows.
 
     The SDK has already cancelled in-flight handlers; their containers are removed
     here. If cleanup tasks are still pending, exit at once instead of returning into
@@ -295,7 +407,15 @@ def _other_live_tasks() -> list[asyncio.Task]:
 
 
 def run() -> None:
-    """Console entry point (`vestibule-mcp`)."""
+    """Console entry point: `vestibule-mcp` serves MCP on stdio; `vestibule-mcp setup`
+    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1)."""
+    args = sys.argv[1:]
+    if args == ["setup"]:
+        sys.exit(rootfs.setup_main())
+    if args:
+        # Not an error: refusing to start would leave the client saying only "failed to
+        # connect" (the M1 follow-up's rule). A human at a terminal sees this line.
+        log.warning('ignoring unexpected arguments %s; the only subcommand is "setup"', args)
     asyncio.run(_main())
 
 

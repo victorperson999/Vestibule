@@ -53,8 +53,10 @@ def run_dirs(monkeypatch) -> list[Path]:
     real = tempfile.mkdtemp
 
     def spy(*args, **kwargs):
-        made.append(Path(real(*args, **kwargs)))
-        return str(made[-1])
+        path = Path(real(*args, **kwargs))
+        if path.name.startswith("vestibule-run-"):  # not the POSIX per-backend parent
+            made.append(path)
+        return str(path)
 
     monkeypatch.setattr(tempfile, "mkdtemp", spy)
     return made

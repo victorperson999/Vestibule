@@ -39,25 +39,148 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M1 accepted | Live-agent check + status docs (no code) | 2026-10-14 | `e7aaae5` | 197 |
 | M1 follow-up | Config validation + server version | 2026-10-14 | `9a4f15e` | 240 |
 | M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
+| M2 step 1a | Linux baseline: version pins, constraints, two-platform gate | 2026-10-15 | `d811021` (with 1b) | 240 (+201 / +3 on Linux 3.11) |
+| M2 step 1b | POSIX shutdown hand-off (detached cleaner) | 2026-10-15 | `d811021` (with 1a) | 261 Linux (0 skipped); 252 + 9 POSIX-only skips on Windows |
 
 ## Known open issues
 
 | Found | Where | Issue | Owner |
 |---|---|---|---|
-| 2026-10-11 (7a review) | `server.py` `_main` | Linux/macOS: a client that sends SIGTERM *without* closing stdin first skips shutdown cleanup (Python's default SIGTERM exits at once). The in-flight container lives until its S7-D5 self-deadline (`timeout + 90` s). The installed MCP Python client always closes stdin first, and so does Claude Code on Windows (live check 2026-10-14: "Closing MCP server stdin", then the server exited on its own 0.11 s later with exit code 0). Claude Code on Linux/macOS is unmeasured. | M2 (needs a Linux host to test a SIGTERM handler) |
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
+| 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. | Later milestone (liveness lease); M2 step 7 re-measures with a real session |
+| 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
+- The 2026-10-11 `SIGTERM` issue (a POSIX client that signals without closing stdin first
+  skipped cleanup) was closed in M2 step 1b, **Linux verified, macOS untested.** The real
+  case was worse than recorded: Claude Code on Linux sends `SIGINT`, then `SIGTERM` 100 ms
+  later, then `SIGKILL`, and the server *hung* on that `SIGINT`. Now every trigger runs the
+  hand-off and the server exits within milliseconds (S1-D5).
 - The 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
   shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
   shutdown hang.
 - The 2026-10-14 config-validation issue (bad values silently replaced by the default, `0`
   accepted, `²` crashing startup) and the server-version issue (`1.28.1` reported) were
   fixed in the M1 follow-up below.
+
+---
+
+## M2 step 1b — POSIX shutdown hand-off (2026-10-15)
+
+- **Commit:** `d811021` (one commit with 1a, made 2026-10-24).
+- **Plan:** [`docs/plans/M2/M2-step1-linux-baseline.md`](plans/M2/M2-step1-linux-baseline.md)
+  S1-D5 (revised by Victor after the second plan review); contract amendments in M1 §4 and
+  M2 §4.
+- **What:**
+  - **One synchronous path on POSIX** for stdin EOF, `SIGINT`, `SIGTERM` and `SIGHUP`
+    (`server._hand_off_and_exit`):
+    1. `SELECTOR.cleanup_job()` snapshots names, owner tokens, temp dirs and live `run`
+       CLIs;
+    2. the CLIs are killed;
+    3. `vestibule.cleanup` starts in its own session (`-I -B`, stdio `/dev/null`, cwd =
+       temp dir);
+    4. one stderr line, then `os._exit(0)`.
+  - **Signals** go through `loop.add_signal_handler`; **EOF** is caught by a stdin wrapper
+    before the SDK sees it.
+  - **The cleaner:** `rm -f` by name, owner-label sweeps (now, +5 s, +20 s), and temp-dir
+    removal after the first pass and at the end. Each call is bounded; on failure it leaves
+    a log in the temp dir. `VESTIBULE_CLEANUP_TRACE` records its actions.
+  - **Windows unchanged** (S7-D1).
+- **Files:**
+  - Source: `server.py` (`_main` split by platform, `_hand_off_and_exit`, `_spawn_cleaner`,
+    `_HandOffOnEof`), `cleanup.py` (new), `backends/select.py` (`CleanupJob`,
+    `cleanup_job`), `backends/container.py` (`_RunRecord`, `_runs`, `owner`,
+    `cleanup_snapshot`, `_forget_run`).
+  - Tests: `stdioutil.py` (new: the harness moved out of `test_stdio_e2e.py`, with
+    phase-aware closers for each client's real sequence), `test_signals.py`,
+    `test_cleanup.py`, `test_shutdown.py` (new), `test_stdio_e2e.py`, `test_config.py`.
+- **Guarded by:**
+  - `test_stdio_e2e.py::test_stdio_claude_code_sequence_hands_off_a_run_in_flight` and
+    `::test_stdio_real_sdk_client_hands_off_a_run_in_flight`: a `SIGTERM`-ignoring guest; the
+    server exits in the first phase; the cleaner's trace proves it removed the container.
+  - `test_signals.py`: each trigger on an idle server; Docker-free, POSIX.
+  - `test_shutdown.py`, `test_cleanup.py`: units.
+- **Broke along the way:**
+  - The plan went through two `skeptic` rounds. The first found that the target client
+    (Claude Code on Linux) sends `SIGINT` with stdin open, which hung the old server.
+  - The second showed a detached cleaner dies with Windows Job Objects, so Windows keeps
+    S7-D1.
+  - During the build, `test_config.py` still called the harness's old
+    `close_like_a_client`; the Linux gate caught it.
+  - **Critic:** 2 medium and 3 low issues, all confirmed by `verifier` (reproduced against
+    the real daemon) and fixed:
+    - **The cleaner as `-m vestibule.cleanup` under `-I` failed silently** when the package
+      was importable only through `PYTHONPATH` or a `--user` install: the container stayed
+      up, and no log was written. Fix: it now runs by file path (it is stdlib-only); the
+      test runs it with the base interpreter, which can't import the package.
+    - **Naive guests outlived the server on EOF.** They are now on the kill list.
+    - **The trace's exit code could not prove removal** (`rm -f` of a missing container
+      exits 0). The trace now records stdout, the check requires the name there, and the
+      hand-off e2e tests check the trigger label.
+    - **An unexpected exception after the spawn leaked the run record,** so every later
+      shutdown started a cleaner. It now reaps the CLI, and the snapshot retires records
+      whose CLI has exited.
+    - **A CLI still inside `create_subprocess_exec` isn't killed.** Documented gap (the
+      owner sweeps still remove its container).
+  - **Critic, round 2** (on the fixes): 1 medium and 3 low issues, all confirmed and fixed:
+    - a *cancelled* naive guest was dropped from the kill list while still running. Its
+      run now kills it, and each guest runs in its own process group, so its children
+      die too (a bash guest's `sleep`);
+    - two of the new code paths had no test that drives them for real. Real naive-run tests
+      and a lifecycle test for the unexpected-error reap now do;
+    - the happy-path and first-probe e2e tests now check the trigger label as well.
+  - **Linux gate finding (M1 gap, first seen here):** in
+    `test_run_cancelled_at_spawn_leaves_no_container`, two run dirs survived. A late
+    container re-creates its deleted bind source as **root**, and in the sticky `/tmp` the
+    user can't delete that. On POSIX, run dirs now live in a private, user-owned
+    `vestibule-runs-*` parent, which is removed once its last run retires.
+    - Leftovers from runs before this fix (root-owned `/tmp/vestibule-run-*`) need
+      `sudo rm -rf` or a reboot.
+
+---
+
+## M2 step 1a — Linux baseline (2026-10-15)
+
+- **Commit:** `d811021` (one commit with 1b, made 2026-10-24).
+- **Plan:** [`docs/plans/M2/M2-step1-linux-baseline.md`](plans/M2/M2-step1-linux-baseline.md)
+  (S1-D1 to S1-D4, plus the 1a build amendment).
+- **What:**
+  - `pyproject.toml` now says `mcp>=1.28.1,<2` and gives the dev tools ranges.
+    `requirements/constraints.txt` pins every package, transitive ones included, for every
+    dev venv.
+  - `scripts/check_env.py` checks that a venv matches the constraints exactly, runs the
+    expected Python, and is bound to this checkout. Both gates run it first.
+  - `scripts/gate-linux.sh` runs the Linux gate: two venvs (system Python and a uv-managed
+    3.11), time-bounded pytest, any unallowed skip fails, no caches in the repo.
+  - `gate.md` runs Windows, then Linux.
+  - `.gitattributes` keeps `*.sh` LF and `tests/fixtures/**` byte-exact.
+  - mypy now checks against 3.11 on both platforms.
+- **Files:** `pyproject.toml`, `requirements/constraints.txt`, `scripts/check_env.py`,
+  `scripts/gate-linux.sh`, `.gitattributes`, `.claude/agents/gate.md`, `.claude/WORKFLOW.md`,
+  `docs/GETTING_STARTED.md`. No `src/` change.
+- **Guarded by:** the gates themselves. Windows: `check_env` + ruff + mypy + 240 tests.
+  Linux: `check_env` on both venvs, ruff, mypy, 240 tests on 3.14, then 201 Docker-free
+  and 3 stdio end-to-end tests on 3.11.
+- **Broke along the way:**
+  - A fresh install resolved mcp 2.3.0, whose server API change stops Vestibule from
+    starting. The two venvs had also drifted (pydantic, starlette and ~20 more). Both are
+    fixed by the pins and the constraints file.
+  - **Critic, round 1:** 3 medium and 8 low issues, all confirmed by `verifier` and fixed:
+    - no time bound on the Linux gate (the tool's 120 s limit would kill it mid-Docker-test);
+    - `--setup` could build on the wrong Python;
+    - a gate run from a second clone would test the first clone's code;
+    - plus quoting, docs and procedure fixes.
+  - **Critic, round 2:** 2 medium and 2 low issues, all confirmed and fixed:
+    - the per-run bound could never beat the tool's 600 s limit, and a killed `wsl.exe`
+      left `timeout`+pytest running (it leads its own process group). Fix: one 540 s gate
+      budget, plus an EXIT trap that kills the group;
+    - forced colour (or `PYTEST_ADDOPTS=--no-summary`) hid skips from the check;
+    - a differently-cased `/mnt/c` path failed the checkout check;
+    - uv's errors were hidden.
 
 ---
 

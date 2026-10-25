@@ -8,12 +8,15 @@ license = { text = "MIT" }
 authors = [{ name = "Victor" }]
 keywords = ["mcp", "sandbox", "ai-agents", "code-execution", "security", "isolation"]
 dependencies = [
-    "mcp>=1.2.0",
+    # <2: mcp 2.x replaced the low-level Server API this server is written against.
+    # Moving to 2.x is a planned task (docs/BUILD_LOG.md known issues).
+    "mcp>=1.28.1,<2",
 ]
 
 [project.optional-dependencies]
 seccomp = ["pyseccomp>=0.1.2"]                       # optional defense-in-depth (Linux, M2)
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.11"]
+# Ranges for users; exact versions for development live in requirements/constraints.txt.
+dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.15.20,<0.16", "mypy>=2.1,<2.2"]
 
 [project.scripts]
 vestibule-mcp = "vestibule.server:run"
@@ -29,8 +32,14 @@ packages = ["src/vestibule"]
 line-length = 100
 target-version = "py311"
 
+[tool.mypy]
+# Check against the oldest supported Python on every platform: Linux-only code runs on a
+# newer interpreter here and must not use stdlib APIs 3.11 lacks.
+python_version = "3.11"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 markers = [
     "docker: needs a running Docker daemon and both digest-pinned sandbox images; skips (with the pull commands) otherwise",
+    "network: fetches the pinned images from their registry (Linux; about 123 MB per session)",
 ]

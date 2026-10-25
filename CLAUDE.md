@@ -66,6 +66,15 @@ vestibule/
 - **Definition of done for a change:** it runs, it has at least a smoke test, `ruff` and `mypy` are clean, and any new user-facing behavior is reflected in the README/docs.
 - **When you hit a design fork not covered here**, prefer the option that (a) keeps the server process clean, (b) degrades gracefully cross-platform, and (c) is explainable in an interview from first principles. If still unclear, ask.
 
+## Coding discipline (Karpathy guidelines)
+
+The `andrej-karpathy-skills` plugin is installed user-wide; these are its four rules as they apply here. Where one conflicts with the golden rules above, the golden rules win. Concrete before/after examples of each rule live in `.claude/KARPATHY_EXAMPLES.md` — read it before writing a plan, and check your own diff against it before gate (`.claude/WORKFLOW.md` steps 1 and 5).
+
+- **Think before coding.** State assumptions in the plan. If a request has two readings, name both and ask — don't pick silently. Push back when a simpler approach exists.
+- **Simplicity first.** No features, params, config knobs, or abstractions the signed-off plan didn't ask for. *Exception:* defensive code at trust boundaries is not "error handling for impossible scenarios" — malformed model arguments, hostile guest output, and dead/wedged runtimes are all realistic here (golden rules 4, 7, 8).
+- **Surgical changes.** Every changed line traces to the plan. Don't reformat, rename, or "improve" adjacent code or comments; mention unrelated problems instead of fixing them. Clean up only orphans your own change created, and never touch the user's unrelated uncommitted edits.
+- **Goal-driven execution.** Each plan step names how it is verified (a test, a gate run, a live MCP call). A bug gets a failing regression test first, then the fix.
+
 ## What NOT to do
 
 - **Don't add heavy frameworks** (LangChain, agent frameworks, ORMs). Vestibule is infrastructure; keep the dependency tree tiny so it's auditable and installs fast. Every dependency is a trust and adoption cost.

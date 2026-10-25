@@ -32,6 +32,11 @@ Step-7a additions (docs/plans/M1/M1-step7-acceptance.md):
   ends itself at its labeled deadline even when the server was killed.
 - S7-D3: a soft limit the selection probe could not verify inside the container
   makes runs report container-degraded, never plain container.
+
+M2 step 1b (docs/plans/M2/M2-step1-linux-baseline.md, S1-D5): each run is recorded with
+its temp dir and its CLI process until both its finisher and the CLI are done, so the
+POSIX shutdown hand-off can snapshot everything this backend still owns
+(`cleanup_snapshot`).
 """
 from __future__ import annotations
 
@@ -43,6 +48,7 @@ import secrets
 import shutil
 import tempfile
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
@@ -79,6 +85,16 @@ START_HINTS = {
 }
 
 
+@dataclass
+class _RunRecord:
+    """What the shutdown hand-off needs about one run (S1-D5)."""
+
+    tmpdir: str
+    proc: asyncio.subprocess.Process | None = None  # the `<runtime> run` CLI, once spawned
+    finished: bool = False  # the finisher (container + temp dir removal) is done
+    cli_reaped: bool = False  # a detached CLI reap finished (reaped, or gave up)
+
+
 def _container_user() -> str:
     # Linux host: match the invoking user so workspace files have sane ownership.
     # macOS/Windows (Docker Desktop VM): any fixed unprivileged uid works.
@@ -106,6 +122,11 @@ class ContainerBackend(Warden):
         # indistinguishable from a live one without a liveness oracle; S4-D3).
         self._owner = secrets.token_hex(8)
         self._active: set[str] = set()  # names of this process's in-flight containers
+        # S1-D5: name -> temp dir and CLI process, kept until BOTH the finisher is done and
+        # the CLI has exited, so a shutdown snapshot in between still sees them.
+        self._runs: dict[str, _RunRecord] = {}
+        # POSIX: this backend's private parent for the per-run dirs (see _run_dir_parent).
+        self._run_parent: str | None = None
         self._images_ok: set[str] = set()  # images that passed preflight (S5-D3)
         # S7-D1: the selector passes ONE semaphore to every backend it builds, so
         # `max_concurrent` keeps bounding existing containers across re-selection.
@@ -125,6 +146,11 @@ class ContainerBackend(Warden):
     @property
     def runtime(self) -> str:
         return self._runtime
+
+    @property
+    def owner(self) -> str:
+        """The token stamped as `vestibule.owner` on every container this backend starts."""
+        return self._owner
 
     @property
     def inflight(self) -> int:
@@ -245,7 +271,8 @@ class ContainerBackend(Warden):
             # D9: script goes to a per-run host temp dir mounted read-only at /sandbox —
             # not argv (Windows command-line limits), not stdin (-i forbidden), not the
             # workspace (would pollute the persistent channel).
-            tmpdir = tempfile.mkdtemp(prefix="vestibule-run-")
+            tmpdir = tempfile.mkdtemp(prefix="vestibule-run-", dir=self._run_dir_parent())
+            self._runs[name] = _RunRecord(tmpdir)
             self._active.add(name)  # before the container can exist: reaper-proof
             try:
                 return await self._execute(
@@ -290,6 +317,9 @@ class ContainerBackend(Warden):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+            record = self._runs.get(name)
+            if record is not None:
+                record.proc = proc
         except (FileNotFoundError, OSError) as e:
             # S4-D2: nothing ran — never claim container isolation for a non-run.
             return RunResult(
@@ -337,6 +367,12 @@ class ContainerBackend(Warden):
             # The request was cancelled (client cancel or shutdown, S7-D1): the finisher
             # kills the container, and this tracked task collects its CLI, so drain()
             # sees the CLI process too instead of leaving it to loop-close cleanup.
+            collectors.cancel()
+            self._detach_cli_reap(proc, run_id, tmpdir)
+            raise
+        except Exception:
+            # Unexpected (e.g. a pipe read error): still collect the CLI, or its run record
+            # would never retire (step-1b critic finding 5).
             collectors.cancel()
             self._detach_cli_reap(proc, run_id, tmpdir)
             raise
@@ -424,6 +460,66 @@ class ContainerBackend(Warden):
         """Names of this backend's containers that may still exist."""
         return sorted(self._active)
 
+    def _run_dir_parent(self) -> str | None:
+        """POSIX: a user-owned, non-sticky directory that holds this backend's per-run dirs.
+
+        When a run cancelled at spawn starts its container late, the runtime re-creates the
+        missing bind source (the deleted run dir) as root. Directly in the sticky /tmp the
+        user could never remove that dir; inside a parent the user owns, they can (found by
+        the M2 step-1 Linux gate; `-v` and `--mount` behave alike). Windows needs none:
+        Docker Desktop re-creates bind sources there as the user.
+        """
+        if os.name != "posix":
+            return None
+        if self._run_parent is None or not os.path.isdir(self._run_parent):
+            self._run_parent = tempfile.mkdtemp(prefix="vestibule-runs-")
+        return self._run_parent
+
+    def cleanup_snapshot(
+        self,
+    ) -> tuple[list[str], list[str], list[asyncio.subprocess.Process]]:
+        """POSIX shutdown hand-off (S1-D5): container names that may still exist, temp
+        dirs not yet removed for good, and `<runtime> run` CLIs still running.
+
+        Synchronous on purpose: the hand-off runs straight through to os._exit with no
+        await, so nothing can change between this snapshot and the exit.
+
+        Known gap: a CLI still inside `create_subprocess_exec` (the process exists, the
+        await has not returned) has no handle yet, so it is not killed. Its name is
+        already in `_active`, so the cleaner's `rm -f` and owner sweeps still remove the
+        container it creates.
+        """
+        for name in list(self._runs):  # retire records whose CLI has exited since
+            self._forget_run(name)
+        records = list(self._runs.values())
+        tmpdirs = [r.tmpdir for r in records]
+        if self._run_parent is not None:
+            try:
+                os.rmdir(self._run_parent)  # empty (no run left): gone now, nothing to hand off
+            except OSError:
+                tmpdirs.append(self._run_parent)  # after the run dirs: the cleaner's last rmtree
+        procs = [r.proc for r in records if r.proc is not None and r.proc.returncode is None]
+        return sorted(self._active), tmpdirs, procs
+
+    def _forget_run(self, name: str, *, finished: bool = False, cli_reaped: bool = False) -> None:
+        """Drop a run's record once its finisher is done AND its CLI is done (S1-D5)."""
+        record = self._runs.get(name)
+        if record is None:
+            return
+        record.finished = record.finished or finished
+        record.cli_reaped = record.cli_reaped or cli_reaped
+        cli_done = (
+            record.proc is None or record.proc.returncode is not None or record.cli_reaped
+        )
+        if record.finished and cli_done:
+            del self._runs[name]
+            if not self._runs and self._run_parent is not None:
+                # The last run is done: drop the parent until the next run needs one.
+                # Synchronous, like _run's mkdtemp, so the two cannot interleave.
+                with contextlib.suppress(OSError):  # not empty (a re-created dir): keep it
+                    os.rmdir(self._run_parent)
+                    self._run_parent = None
+
     async def drain(self, timeout: float | None = None) -> bool:
         """Wait for this backend's detached tasks; True once none is left pending.
 
@@ -497,6 +593,7 @@ class ContainerBackend(Warden):
             # nothing else would remove it. Only after the CLI is gone is removal final.
             with contextlib.suppress(Exception):
                 await asyncio.to_thread(shutil.rmtree, tmpdir, ignore_errors=True)
+            self._forget_run(f"vestibule-{run_id}", cli_reaped=True)
 
     async def _finish_run(self, sem: asyncio.Semaphore, name: str, tmpdir: str) -> None:
         """Detached post-run task (Codex P2): cleans up, then hands back the slot."""
@@ -506,6 +603,7 @@ class ContainerBackend(Warden):
             log.exception("cleanup for %s failed", name)
         finally:
             self._active.discard(name)  # unconditional — the reaper backstops
+            self._forget_run(name, finished=True)
             sem.release()
 
     async def _cleanup(self, name: str, tmpdir: str) -> None:

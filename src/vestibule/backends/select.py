@@ -11,7 +11,9 @@ via an explicit VESTIBULE_BACKEND=naive.
 
 Step 7a (docs/plans/M1/M1-step7-acceptance.md): the selector tracks every backend it
 builds and shares one concurrency budget between them; aclose() cleans up at shutdown
-without cancelling cleanup tasks (S7-D1). The probe reads its soft limits back from
+without cancelling cleanup tasks (S7-D1). Since M2 step 1b that in-process shutdown is the
+Windows path only; on POSIX the server hands `cleanup_job()` to a detached cleaner instead
+(docs/plans/M2/M2-step1-linux-baseline.md, S1-D5). The probe reads its soft limits back from
 the container's cgroup, so `container` is claimed only for verified limits (S7-D3),
 and its workspace file name is random per probe.
 """
@@ -24,7 +26,7 @@ import math
 import re
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, START_HINTS, ContainerBackend
@@ -140,6 +142,33 @@ class Selection:
     detail: str | None = None
 
 
+@dataclass
+class CleanupJob:
+    """Everything this process's backends may still own, for the POSIX shutdown hand-off.
+
+    `payload()` is what the detached cleaner gets (vestibule.cleanup); the CLI processes
+    are killed by the server itself before it exits.
+    """
+
+    runtimes: list[dict[str, list[str]]] = field(default_factory=list)
+    tmpdirs: list[str] = field(default_factory=list)
+    cli_procs: list[asyncio.subprocess.Process] = field(default_factory=list)
+    # The dev-only naive backend's live guests: killed with their process groups.
+    guests: list[asyncio.subprocess.Process] = field(default_factory=list)
+
+    @property
+    def names(self) -> list[str]:
+        return [n for rt in self.runtimes for n in rt["names"]]
+
+    @property
+    def empty(self) -> bool:
+        """Nothing to hand off: no container that may exist and no temp dir left."""
+        return not self.names and not self.tmpdirs
+
+    def payload(self) -> dict[str, object]:
+        return {"runtimes": self.runtimes, "tmpdirs": self.tmpdirs}
+
+
 class BackendSelector:
     """Lazy, cached backend choice (contract §5). One instance per server process."""
 
@@ -218,10 +247,32 @@ class BackendSelector:
             self._selection = None
             self._prune()
 
+    def cleanup_job(self) -> CleanupJob:
+        """Snapshot for the POSIX shutdown hand-off (S1-D5): every tracked backend's
+        names, owner token, temp dirs and live CLIs, grouped by runtime. Dropped and
+        candidate backends are tracked too (S7-D1), so a probe or a run on a backend that
+        was replaced mid-session is included. Synchronous: nothing may change before the
+        server's os._exit."""
+        job = CleanupJob()
+        by_runtime: dict[str, dict[str, list[str]]] = {}
+        for b in self._backends:
+            names, tmpdirs, procs = b.cleanup_snapshot()
+            rt = by_runtime.setdefault(b.runtime, {"argv": [b.runtime], "owners": [], "names": []})
+            rt["owners"].append(b.owner)
+            rt["names"].extend(names)
+            job.tmpdirs.extend(tmpdirs)
+            job.cli_procs.extend(procs)
+        job.runtimes = list(by_runtime.values())
+        # The dev-only naive backend has no containers, but its guests are plain child
+        # processes that would outlive the server's exit: kill them with the CLIs.
+        if self._selection is not None and isinstance(self._selection.warden, NaiveBackend):
+            job.guests.extend(self._selection.warden.live_procs())
+        return job
+
     async def aclose(
         self, rm_budget_s: float = _SHUTDOWN_RM_S, wait_budget_s: float = _SHUTDOWN_WAIT_S
     ) -> bool:
-        """Shutdown (S7-D1); True when no cleanup task is left pending.
+        """Shutdown on Windows (S7-D1); True when no cleanup task is left pending.
 
         First one batched `rm -f` per runtime for every container any tracked backend
         may still own — runs cancelled by the client's disconnect included — then a

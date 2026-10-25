@@ -1,1 +1,5 @@
 *.html linguist-vendored
+# Shell scripts run under Linux bash, which breaks on CRLF (core.autocrlf=true here).
+*.sh text eol=lf
+# Test fixtures are compared byte for byte (sha256), so git must never convert them.
+tests/fixtures/** -text
