@@ -534,6 +534,24 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     selection) refuses to use them, but the server starts and the container backend still
     works. A config error would have blocked every tool for working M1 setups such as
     `VESTIBULE_WORKSPACE=~`.
+- **Step-3 decisions — approved 2026-10-25** ([plan](plans/M2/M2-step3-warden-core.md),
+  v3).
+  - **Sign-off:** Victor said to proceed with the build after a second `skeptic` review,
+    which used the new Karpathy check.
+  - **The two reviews:** 6 findings, then 13 (one high: the guest could open the server's
+    terminal through `/dev/tty`). All were accepted.
+  - **Before planning,** a throwaway prototype ran against the real rootfs on both Pythons.
+    It found eight problems the spike's design would have shipped with, among them a helper
+    launch that couldn't find its own Python install, lost imports after the jail closed, and
+    a `/proc/keys` that listed the user's kernel keyrings.
+  - **S3-D1 — the script lives in a per-run memory folder at `/sandbox`** (amends the
+    contract's §4.2). Init writes it there and makes the folder read-only, so a run leaves
+    nothing on the host, even when the server is killed. The contract had a host temp folder.
+  - **Contract changes that came with the sign-off:**
+    - how the helper is started (N1);
+    - the label for a run with no status report, `none` (N5);
+    - the kill order without cgroups (N8);
+    - Docker's `/proc` masks, loopback up, and no controlling terminal (N9).
 
 ### Build steps (8 planned: 0–7)
 
@@ -583,3 +601,63 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   - **Review:** two `critic` rounds (2 medium + 3 low, then 1 medium + 3 low), all confirmed
     by `verifier` and fixed. Among them: the cleaner failed silently in some installs, and
     naive-backend guests could outlive the server.
+- **Step 2 — rootfs and `vestibule-mcp setup`, done 2026-10-25
+  ([plan](plans/M2/M2-step2-rootfs.md); committed in `2af2c0c` and `9197a55`, review fixes
+  pending).**
+  - **Now:** on Linux, `vestibule-mcp setup` downloads the two pinned images straight from
+    Docker Hub, with no Docker needed. It checks every byte against the pin and unpacks each
+    image into a folder the native sandbox will use as its `/` (step 3). Both images take
+    about 10 s and 357 MB, and a second run does nothing. The server doesn't use them yet.
+  - **How we know the unpacker is right:**
+    - a test compares every entry of both trees with Docker's own `docker export` of the
+      same image;
+    - attack tests (symlinks and hardlinks that try to escape the tree) run next to a
+      sentinel folder that must stay untouched;
+    - deliberately broken versions of the unpacker were run against those tests to check
+      they fail.
+  - **Review:** two `critic` rounds found 11 issues, all fixed. The main ones:
+    - folders in the tree (such as `/var/tmp`) were left writable by every local user. Old
+      trees are now replaced on the next setup;
+    - a registry could point the token request at a local file.
+  - **Karpathy re-review (2026-10-25):** the whole step looked at again for code nothing
+    asked for, and for tests that would pass on broken code.
+    - It found 8 small things, all confirmed and dealt with: two weak tests were
+      strengthened, and five pieces nobody needed were removed.
+    - One check was kept on purpose: the repository-name check, which stops a typo in an
+      image name from silently changing the request.
+    - The size overrun of `registry.py` is now explained in the plan instead of ignored.
+- **Workflow change — the Karpathy rules (Victor, 2026-10-24 and 2026-10-25).**
+  - **2026-10-24:** four coding rules from Andrej Karpathy's guidelines joined the loop:
+    - think before coding;
+    - simplicity first;
+    - surgical changes;
+    - goal-driven execution.
+
+    They live in `CLAUDE.md`'s "Coding discipline" section, with worked examples in
+    `.claude/KARPATHY_EXAMPLES.md`. The main session reads them before each plan and checks its
+    own diff against them before the gate.
+  - **2026-10-25:** `skeptic` and `critic` check plans and diffs against the rules too. Step 2's
+    build reviews had checked correctness only, so step 2 got the re-review above.
+- **Step 3 — warden core, done 2026-10-25
+  ([plan](plans/M2/M2-step3-warden-core.md); commit pending).**
+  - **Now:** `NativeBackend` runs a snippet in a fresh sandbox built from the step-2 image
+    folders:
+    - its own user, process, mount, network and other namespaces;
+    - a filesystem jail where only the workspace, a read-only script and small memory folders
+      are visible;
+    - a process 1 the guest can't read, signal or take over;
+    - no terminal and no network, except its own `localhost`.
+
+    A run that overruns is stopped with nothing left behind, even a guest that has stopped
+    itself. If the server dies, the whole sandbox dies with it.
+  - **Not usable from the MCP server yet.** Every run still reports `isolation: none`, because
+    the seccomp filter that native requires arrives in step 5. Resource limits come in step 4,
+    and the server starts choosing native in step 6.
+  - **How we know:**
+    - 27 Linux tests run real sandboxes on both Pythons;
+    - 43 offline tests cover the verdict rules on every platform;
+    - 14 deliberately broken versions of the code each turned a test red.
+  - **Review:** two `critic` rounds found 6 issues, all confirmed and fixed. The main ones:
+    - the helper's own deadline never fired;
+    - the mount check would have accepted a sandbox that was missing the `/proc/keys` mask;
+    - a client that stops reading the server's log could have blocked that deadline.

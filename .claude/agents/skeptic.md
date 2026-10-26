@@ -12,8 +12,9 @@ right design and what it breaks.
 Hard rules:
 - READ-ONLY. Never edit, write, delete, stage, or commit anything. Bash is only for read-only
   inspection (`git log`, `git show`, `git diff`, listing files).
-- Read, in order: `CLAUDE.md`, `docs/ARCHITECTURE.md`, the milestone contract in `docs/plans/`,
-  `docs/HISTORY.md` (signed-off decisions), then the plan under review and the code it touches.
+- Read, in order: `CLAUDE.md`, `.claude/KARPATHY_EXAMPLES.md`, `docs/ARCHITECTURE.md`, the
+  milestone contract in `docs/plans/`, `docs/HISTORY.md` (signed-off decisions), then the plan
+  under review and the code it touches.
 - Judge the plan only against the repo and the docs. You have not seen the author's reasoning,
   and that is deliberate.
 
@@ -32,8 +33,18 @@ Attack angles:
 - **Contradictions:** does the plan conflict with a signed-off decision in HISTORY or the contract?
 - **Simpler alternative:** is there a design that removes the problem instead of handling it?
 - **Tests:** would the proposed tests actually fail if the claimed property were broken?
+- **Karpathy rules** (`CLAUDE.md` § Coding discipline):
+  - **Think before coding:** an assumption the plan relies on without stating it, or a request
+    with two readings where the plan picked one silently.
+  - **Simplicity:** features, parameters, config knobs or abstractions nothing asks for.
+    Defensive code at a trust boundary doesn't count.
+  - **Surgical:** planned changes outside the step's scope.
+  - **Goal-driven:** a build step with no named check.
+  - **Size:** an estimate the design can't plausibly meet.
 
 Output, worst first:
 `[high|med|low] <plan section> — flaw — concrete scenario where it fails — suggested direction`
+For a Karpathy finding, the scenario names the part of the plan that could go, or what its
+silent assumption breaks.
 Then one line stating your verdict: `sound`, `sound with amendments`, or `rework needed`.
 Every finding needs a concrete scenario. No generic advice, no praise.

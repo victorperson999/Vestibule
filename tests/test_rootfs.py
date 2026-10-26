@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from dockerutil import docker_required
+from stdioutil import SERVER_EXE
 
 import vestibule.server as server
 from vestibule import registry, rootfs
@@ -111,6 +112,47 @@ def test_setup_reads_its_own_settings(monkeypatch, capsys, tmp_path):
     assert not (tmp_path / "rootfs").exists()
 
 
+def test_setup_refuses_a_relative_rootfs_dir(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", "rel/rootfs")  # a server elsewhere won't find it
+    assert rootfs.setup_main() == 1
+    assert "must be an absolute path or start with ~" in capsys.readouterr().err
+    assert not (tmp_path / "rel").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX: Windows expands ~user differently")
+def test_an_unexpandable_home_is_a_message(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", "~no-such-user-vestibule/rootfs")
+    assert rootfs.setup_main() == 1
+    assert "VESTIBULE_ROOTFS_DIR or VESTIBULE_WORKSPACE" in capsys.readouterr().err
+
+
+@linux_only
+def test_a_tree_from_format_1_is_replaced(env):
+    """Format 1 trees have world-writable dirs; setup must not call them "already present"."""
+    d, _, calls = env
+    assert rootfs.setup_main() == 0
+    marker_path = d / f"{PY}-{_arch()}.json"
+    marker_path.write_text(json.dumps({**json.loads(marker_path.read_text()), "format": 1}))
+    calls.clear()
+    assert rootfs.setup_main() == 0
+    assert calls == [f"sha256:{PY}"]
+
+
+@pytest.mark.skipif(not SERVER_EXE.exists(), reason=f"console script not found: {SERVER_EXE}")
+def test_setup_does_not_print_the_servers_config_advice(tmp_path):
+    """The real console script: importing the server must not log its MCP-client advice."""
+    env = {**os.environ, "VESTIBULE_MEM_MB": "abc", "VESTIBULE_ROOTFS_DIR": str(tmp_path / "r")}
+    r = subprocess.run([str(SERVER_EXE), "setup"], capture_output=True, text=True, timeout=60,
+                       stdin=subprocess.DEVNULL, env=env)
+    assert "MCP client's config" not in r.stderr, r.stderr
+    assert r.stdout == ""
+    if sys.platform == "linux":
+        assert r.returncode == 1 and "VESTIBULE_MEM_MB='abc'" in r.stderr
+
+
 def test_setup_refuses_an_overlap_before_writing_anything(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("VESTIBULE_WORKSPACE", str(tmp_path / "ws"))
@@ -156,7 +198,7 @@ def env(monkeypatch, tmp_path):
         calls.append(reg.ref.digest)
         layers = [{"digest": f"sha256:{i:064x}", "size": p.stat().st_size, "path": str(p)}
                   for i, p in enumerate(images[reg.ref.digest[7:]])]
-        return registry.Image(reg.ref, "sha256:" + "f" * 64, ["PATH=/bin", "LANG=C.UTF-8"], layers)
+        return registry.Image("sha256:" + "f" * 64, ["PATH=/bin", "LANG=C.UTF-8"], layers)
 
     def blob_to_file(self, desc, dest):
         shutil.copyfile(desc["path"], dest)
@@ -173,19 +215,25 @@ def _arch():
 @linux_only
 def test_setup_makes_both_trees_with_their_mount_points(env, capsys):
     d, _, calls = env
-    assert rootfs.setup_main() == 0
+    old_umask = os.umask(0)  # so the modes below come from setup, not from the umask
+    try:
+        assert rootfs.setup_main() == 0
+    finally:
+        os.umask(old_umask)
     out = capsys.readouterr()
     assert out.out == ""  # stderr only
-    assert out.err.count("ready:") == 2
+    assert out.err.splitlines().count("  ready") == 2
     for hexd in (PY, NODE):
         found = rootfs.find(d, f"docker.io/library/x@sha256:{hexd}")
         assert found is not None and found.tree == d / f"{hexd}-{_arch()}"
         assert found.env == ["PATH=/bin", "LANG=C.UTF-8"]
         assert (found.tree / "workspace").is_dir() and (found.tree / "sandbox").is_dir()
         assert (found.tree / "etc/hosts").read_text() == rootfs.HOSTS
+        for name, mode in (("workspace", 0o755), ("sandbox", 0o755), ("etc/hosts", 0o444)):
+            assert stat.S_IMODE((found.tree / name).stat().st_mode) == mode, name
         assert (found.tree / "bin/sh").read_bytes() == b"#!"
         marker = json.loads((d / f"{hexd}-{_arch()}.json").read_text())
-        assert marker["platform"] == f"linux/{_arch()}" and marker["format"] == 1
+        assert marker["platform"] == f"linux/{_arch()}" and marker["format"] == rootfs.FORMAT
     assert len(calls) == 2
 
 
@@ -247,6 +295,41 @@ def test_an_invalid_marker_means_refetch(env, marker):
     assert rootfs.setup_main() == 0
     assert calls == [f"sha256:{PY}"]
     assert rootfs.find(d, f"python@sha256:{PY}") is not None
+
+
+@linux_only
+@pytest.mark.parametrize("field, value", [
+    ("index_digest", "sha256:" + "9" * 64), ("platform", "linux/s390x"),
+])
+def test_a_valid_but_mismatched_marker_means_refetch(env, field, value):
+    # Such a marker survives the sweep (it is well-formed), so _install itself must clear the
+    # old tree before the rename, or the rename fails on every run.
+    d, _, calls = env
+    assert rootfs.setup_main() == 0
+    marker_path = d / f"{PY}-{_arch()}.json"
+    marker = json.loads(marker_path.read_text())
+    marker_path.write_text(json.dumps({**marker, field: value}))
+    calls.clear()
+    assert rootfs.setup_main() == 0
+    assert calls == [f"sha256:{PY}"]
+    assert rootfs.find(d, f"python@sha256:{PY}") is not None
+
+
+@linux_only
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
+                    reason="root deletes through the chmod that stands in for a root-owned dir")
+def test_a_sweep_failure_is_a_message_not_a_traceback(env, capsys):
+    d, _, calls = env
+    stuck = d / ".vestibule-tmp-stuck" / "sub"
+    stuck.mkdir(parents=True)
+    (stuck / "f").write_text("x")
+    stuck.chmod(0o555)  # stands in for a root-owned leftover
+    try:
+        assert rootfs.setup_main() == 1
+    finally:
+        stuck.chmod(0o755)
+    assert "could not remove setup's own leftovers" in capsys.readouterr().err
+    assert calls == []
 
 
 @linux_only
@@ -354,7 +437,7 @@ def _docker_export(ref: str) -> dict[str, tuple]:
                 elif m.islnk():
                     entries[name] = ("hardlink", _norm(m.linkname))
                 elif m.isdir():
-                    entries[name] = ("dir", (m.mode & 0o777) | 0o700)  # S2-D6's formula
+                    entries[name] = ("dir", (m.mode & 0o755) | 0o700)  # S2-D6, as amended
                 elif m.isreg():
                     data = tf.extractfile(m).read()  # type: ignore[union-attr]
                     entries[name] = ("file", m.mode & 0o555, hashlib.sha256(data).hexdigest())

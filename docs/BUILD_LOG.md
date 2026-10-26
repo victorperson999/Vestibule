@@ -41,6 +41,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
 | M2 step 1a | Linux baseline: version pins, constraints, two-platform gate | 2026-10-15 | `d811021` (with 1b) | 240 (+201 / +3 on Linux 3.11) |
 | M2 step 1b | POSIX shutdown hand-off (detached cleaner) | 2026-10-15 | `d811021` (with 1a) | 261 Linux (0 skipped); 252 + 9 POSIX-only skips on Windows |
+| M2 step 2 | Rootfs: registry client, unpacker, `vestibule-mcp setup` | 2026-10-25 | `2af2c0c` `9197a55` + review fixes and Karpathy re-review *pending* | 358 Linux (0 skipped); 305 + 33 POSIX/Linux-only skips on Windows |
+| M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | *pending* | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -52,6 +54,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. | Later milestone (liveness lease); M2 step 7 re-measures with a real session |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
+| 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
@@ -66,6 +69,196 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 - The 2026-10-14 config-validation issue (bad values silently replaced by the default, `0`
   accepted, `²` crashing startup) and the server-version issue (`1.28.1` reported) were
   fixed in the M1 follow-up below.
+
+---
+
+## M2 step 3 — Warden core: helper, jail, PID-1 hardening, kill path (2026-10-25)
+
+- **Commit:** *pending* (fill in from `git log` next session).
+- **Plan:** [`docs/plans/M2/M2-step3-warden-core.md`](plans/M2/M2-step3-warden-core.md)
+  S3-D1 to S3-D13 (v3, after two `skeptic` reviews). Contract amendments in M2 N1, N5, N7,
+  N8, N9, §3 and §4.2.
+- **What:**
+  - **`native_helper.py`** is the stdlib-only program each run executes. It is started as
+    `vestibule-warden -S -P -c …` with only `PYTHONHOME` in its environment, its stdout on
+    `/dev/null` and its stderr on the server's log.
+    - **helper:** user and PID namespaces, the identity maps, the status relay, and the stop
+      path. It exits only once the sandbox is empty.
+    - **init (PID 1):**
+      - `setsid` and the remaining namespaces;
+      - a non-recursive read-only tree, Docker's `/proc` masks, and a tmpfs `/sandbox` holding
+        the script;
+      - `lo` up, `pivot_root`, every privilege dropped, not dumpable;
+      - its own checks, then `ready` and the guest.
+    - **guest:** default signals, its own PATH search, `execve`.
+  - **`native.py`** launches the helper (config in a memfd), collects output with M1's caps,
+    stops overruns (SIGTERM to the helper, which SIGKILLs init through its pidfd), and
+    computes the verdict.
+    - The verdict re-checks the reported namespaces, identity maps and mount table against
+      the server's own values.
+    - Every run reports `isolation: none` until step 5's seccomp filter. A test-only bypass
+      lets the tests run the sandbox at all.
+  - **Not reachable from the server** until step 6.
+  - **Measured in WSL:**
+    - cold start ~40 ms (python), node 60–240 ms;
+    - the stop takes 3–5 ms;
+    - the Linux gate takes 174 s, +31 s for the new tests on two Pythons.
+- **Files:**
+  - Source: `backends/native_helper.py` and `backends/native.py` (new); `backends/base.py`
+    (the isolation-value comment).
+  - Tests: `test_native.py` (Linux, `native` marker), `test_native_verdict.py` (every
+    platform), `nativeutil.py` (new).
+  - Config and docs: `pyproject.toml` (`native` marker); `docs/GETTING_STARTED.md` (the marker
+    and its `setup` prerequisite).
+- **Guarded by:**
+  - `test_native.py::test_what_the_guest_sees`: ids, capabilities, environment, fds,
+    `/proc/1`, network.
+  - `::test_the_mount_table_is_the_planned_one`, `::test_proc_is_masked_like_docker`.
+  - `::test_a_run_past_its_timeout_is_stopped_with_nothing_left`: busy loop, self-`SIGSTOP`,
+    closed output. It also checks that the helper exited by itself.
+  - `::test_a_killed_server_leaves_no_sandbox`.
+  - `::test_the_guest_gets_no_controlling_terminal`: run under `script`.
+  - `::test_a_locked_workspace_mount_keeps_its_flags` and
+    `::test_a_workspace_with_a_mount_inside_is_refused`: both run under `unshare -r -m`.
+  - `::test_the_helpers_self_deadline_stops_a_run_the_server_forgot` and
+    `::test_a_stalled_server_stderr_cannot_hold_the_self_deadline`.
+  - `test_native_verdict.py::test_the_mount_table_rule` and
+    `::test_a_hard_control_not_confirmed_claims_nothing`.
+- **Broke along the way:**
+  - **The prototype, before the plan** (WSL `~/m2spike/step3/`), found eight problems in the
+    spike's design:
+    - the `-I` launch can't find its prefix;
+    - lazy imports after `pivot_root` (`ctypes._layout`; `os.execvpe` → `warnings`);
+    - uv-3.11's `os.closerange` takes 246 ms;
+    - SIGPIPE ignored in the guest, and a guest's SIGINT reaching PID 1;
+    - `lo` down;
+    - `/proc/keys` readable;
+    - locked `noexec`/`ro` workspace mounts failing setup.
+  - **`skeptic`, twice** (6, then 13 findings, all accepted). The high one: the guest
+    inherited the server's terminal and could open `/dev/tty`. Also: the helper's stderr was
+    the guest's, a wait status can't be decoded on Windows, and recursive binds let a mount
+    inside the workspace in without `nosuid,nodev`.
+  - **`critic`, twice** (4, then 2 findings; all confirmed by `verifier` and fixed, each with a
+    test that failed first):
+    - the self-deadline never fired;
+    - a weak stdout/stderr test;
+    - a mount rule that let missing masks through;
+    - an untested note;
+    - a stderr write that could block the self-deadline;
+    - the size line.
+  - **The mutation harness itself:** tests that run the backend in a child process (under
+    `script` or `unshare`) let mutants survive at first, because only the pytest process was
+    patched. A `sitecustomize.py` fixed it. All 14 mutants now turn their tests red.
+  - **Size:** `native.py` reached 383 code lines against a ~380 look-again line. One fold, and
+    it was recorded (plan §3).
+- **Where to start if it breaks:**
+  - **A setup failure:** the run's `isolation_detail` names the stage (`error` line), or the
+    control the server couldn't confirm.
+  - **A hang:** the helper's `_supervise` loop, then `NativeBackend._finish`.
+  - The prototype in `~/m2spike/step3/` reproduces each §1 fact.
+
+---
+
+## M2 step 2 — Rootfs: registry client, unpacker, `vestibule-mcp setup` (2026-10-25)
+
+- **Commit:** `2af2c0c`, `9197a55` (the step); review fixes *pending* (fill in from `git log`
+  next session).
+- **Plan:** [`docs/plans/M2/M2-step2-rootfs.md`](plans/M2/M2-step2-rootfs.md) S2-D1 to S2-D10,
+  with an amendment for the review fixes. Contract amendments in M2 N2, §6 and §7; M1 step 6's
+  re-pin procedure now runs `setup` on Linux.
+- **What:**
+  - **`vestibule-mcp setup`** fetches both pinned images from the registry without Docker:
+    an anonymous token in an unredirected header, and every blob's size and sha256 checked
+    before anything parses it. Each image is unpacked into
+    `~/.vestibule/rootfs/<index-hex>-<arch>/`, with a marker beside it, written last after
+    `os.sync()`.
+  - **The unpacker:**
+    - walks every parent from the root fd with `O_NOFOLLOW` and uses leaf-only calls;
+    - stores symlinks verbatim, and allows hardlinks only to regular files in the tree;
+    - strips write and set-id bits (directories keep owner rwx only);
+    - refuses whiteouts, devices, FIFOs, a directory replaced by a non-directory, and a
+      missing parent (S2-D2).
+  - **Setup also:**
+    - adds `workspace/`, `sandbox/` and a localhost `etc/hosts`;
+    - touches only its own names in the directory;
+    - refuses an overlap with the workspace, a relative directory, and an unexpandable `~`.
+  - `vestibule-mcp <anything else>` warns on stderr and still serves.
+  - **Measured in WSL:**
+    - python: 43.3 MB downloaded, 119.4 MB unpacked, in 3.8–4.0 s;
+    - node: 79.8 MB downloaded, 227.0 MB unpacked, in 5.0–5.1 s;
+    - 357 MB on disk; a second run takes 0.5 s and says "already present".
+- **Files:**
+  - Source: `registry.py`, `unpack.py`, `rootfs.py` (new); `config.py` (`rootfs_dir`);
+    `server.py` (`run()` dispatch; the invalid-config log line moved to `_main`).
+  - Tests: `test_registry.py`, `test_unpack.py`, `test_rootfs.py` (new); `test_config.py`.
+- **Guarded by:**
+  - `test_rootfs.py::test_our_tree_matches_docker_export` (`docker` + `network`): every
+    entry of both trees against `docker export` of the same digest. It checks paths, types,
+    symlink targets, contents, hardlink pairs and the mode formula.
+  - `test_unpack.py::test_refused_entries_fail_and_touch_nothing_outside`: the attack
+    fixtures, with sentinel and `st_nlink` checks.
+  - `test_registry.py::test_the_token_never_reaches_the_cdn`,
+    `::test_a_token_realm_must_use_the_registrys_scheme`.
+  - `test_rootfs.py::test_setup_removes_only_its_own_leftovers`,
+    `::test_a_tree_from_format_1_is_replaced`.
+- **Broke along the way:**
+  - **The plan's `skeptic` review** (13 findings, all accepted) reshaped it before any code.
+    The main ones: cleanup scoped to setup's own names (high), hardlink linkname rules, the
+    mount points, setup reading its own settings, and both images tested.
+  - **Mutation checks** turned the guarding tests red for four broken unpackers: no
+    `O_NOFOLLOW`, a raw-path hardlink, an unscoped sweep, and one that keeps setuid bits.
+    - The setuid check passed falsely at first. The mutant set the mode before the file
+      object's last buffered write, and Linux clears set-id bits on a write.
+    - A flush added to the real unpacker at the time was removed by the Karpathy re-review
+      (below): its mask already strips set-id bits, so the order can't matter.
+  - **The first oracle run** fixed its expected differences:
+    - Docker's container additions: `.dockerenv`, `dev/console`, `dev/pts`, `dev/shm`,
+      `etc/mtab`;
+    - the three files Docker rewrites when it creates a container: `etc/hostname`,
+      `etc/hosts`, `etc/resolv.conf`;
+    - ours: `workspace`, `sandbox`.
+  - **mypy on both platforms:** Windows mypy doesn't narrow on `assert sys.platform !=
+    "win32"`, so the Linux-only helpers use `if … raise`. The Linux run caught a variable
+    reused with two types, which Windows couldn't see.
+  - **`critic`, round 1** (2 medium + 4 low; all confirmed by `verifier`, the mediums lowered
+    to low):
+    - world-writable directories in the tree (the sticky bit was stripped, but not the write
+      bits);
+    - a `file:` or `http:` token realm accepted;
+    - a sweep error ending in a traceback;
+    - the server's config advice printed by `setup`;
+    - a relative rootfs directory accepted;
+    - the mismatched-marker path untested.
+
+    All fixed.
+  - **`critic`, round 2** (on the fixes; 2 medium + 3 low, all fixed):
+    - existing caches kept the world-writable dirs, so the marker format went to 2 and old
+      trees are replaced; verified on the real WSL cache;
+    - an unexpandable `~` raised;
+    - the plan's §4.2 example;
+    - the sweep test failing when run as root;
+    - the realm-scheme wiring untested.
+  - **Karpathy re-review** (after `skeptic` and `critic` gained a Karpathy check): 8 low
+    findings, all confirmed by `verifier`.
+    - **Two tests could pass on broken code:**
+      - "verify, then parse" was tested only for the index, not for the config blob;
+      - S2-D10's modes weren't asserted.
+
+      Both are fixed, and each is proved red by a mutant.
+    - **Removed, because nothing asked for them:**
+      - the defenceless `flush()`;
+      - the "MB downloaded / unpacked" summary line (setup now says `ready`; the figures
+        above were measured with it);
+      - `Image.ref`;
+      - the one-caller `_kind`;
+      - an untested 404 message.
+    - **Kept, with reasons:** the repository-name check, and the separate `manifest()` and
+      `json_blob()`.
+    - **Size:** `registry.py` is still about 200 code lines against ~150 planned. Most of it
+      is input checks at the registry boundary, and it is now accepted in the plan (§3
+      amendment).
+- **Where to start if it breaks:** the oracle test, then `unpack.py` `_apply`'s per-type
+  branches.
 
 ---
 

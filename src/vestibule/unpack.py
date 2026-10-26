@@ -10,8 +10,9 @@ Debian trees are full of them (contract §6). So the rules live here:
   absolute path would make the kernel ignore dir_fd;
 - symlinks are stored verbatim; a hardlink only to a regular file already in the tree,
   its linkname held to the same rules as a name;
-- files lose their write bits and setuid/setgid/sticky; directories keep owner rwx, so
-  the cache can be deleted without a chmod (the read-only mount is the real guard);
+- files lose their write bits and setuid/setgid/sticky; directories lose group/other write
+  and the set-id/sticky bits but keep owner rwx, so the cache can be deleted without a chmod
+  (the read-only mount is the real guard);
 - what the pinned images don't use is refused and fails the image (S2-D2): whiteouts, a
   directory replaced by a non-directory, a missing parent, devices, FIFOs, other types.
 Ownership, mtimes and xattrs are not applied.
@@ -38,10 +39,8 @@ class UnpackError(Exception):
     """A layer has an entry the unpacker refuses; the message names it."""
 
 
-def unpack_layers(layers: list[Path], tree: Path) -> int:
-    """Unpack the gzip tar `layers`, in order, into the directory `tree`. Returns the
-    regular-file bytes written."""
-    written = 0
+def unpack_layers(layers: list[Path], tree: Path) -> None:
+    """Unpack the gzip tar `layers`, in order, into the directory `tree`."""
     root = os.open(tree, _DIR)
     try:
         for i, layer in enumerate(layers, 1):
@@ -51,11 +50,8 @@ def unpack_layers(layers: list[Path], tree: Path) -> int:
                         _apply(root, member, tf)
                     except UnpackError as e:
                         raise UnpackError(f"layer {i}: {e}") from None
-                    if member.isreg():
-                        written += member.size
     finally:
         os.close(root)
-    return written
 
 
 def _apply(root: int, m: tarfile.TarInfo, tf: tarfile.TarFile) -> None:
@@ -76,12 +72,14 @@ def _apply(root: int, m: tarfile.TarInfo, tf: tarfile.TarFile) -> None:
                 os.mkdir(leaf, 0o700, dir_fd=parent)
             fd = os.open(leaf, _DIR, dir_fd=parent)
             try:
-                os.fchmod(fd, (m.mode & 0o777) | 0o700)
+                # No group/other write: without the (stripped) sticky bit, a world-writable
+                # /var/tmp would let any local user plant entries in every guest's tree.
+                os.fchmod(fd, (m.mode & 0o755) | 0o700)
             finally:
                 os.close(fd)
             return
         if not (m.isreg() or m.issym() or m.islnk()):
-            raise UnpackError(f"{m.name}: {_kind(m)} entries are not supported")
+            raise UnpackError(f"{m.name}: tar entry type {m.type!r} is not supported")
         if existing is not None:
             if stat.S_ISDIR(existing.st_mode):
                 raise UnpackError(f"{m.name}: replacing a directory with a "
@@ -144,7 +142,6 @@ def _write_file(parent: int, leaf: str, m: tarfile.TarInfo, tf: tarfile.TarFile)
     with os.fdopen(os.open(leaf, _NEW_FILE, 0o600, dir_fd=parent), "wb") as out:
         if src is not None:
             shutil.copyfileobj(src, out, _CHUNK)
-        out.flush()  # the mode last: a later write would clear set-id bits (kernel rule)
         os.fchmod(out.fileno(), m.mode & 0o555)
 
 
@@ -166,11 +163,3 @@ def _hardlink(root: int, m: tarfile.TarInfo, parent: int, leaf: str) -> None:
     finally:
         if src_parent != root:
             os.close(src_parent)
-
-
-def _kind(m: tarfile.TarInfo) -> str:
-    if m.ischr() or m.isblk():
-        return "device"
-    if m.isfifo():
-        return "FIFO"
-    return f"type {m.type!r}"

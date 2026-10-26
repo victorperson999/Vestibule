@@ -52,8 +52,7 @@ def _load_limits() -> tuple[Limits, str | None]:
             "setting in the MCP client's config for this server, then restart it. "
             "Nothing was run."
         )
-        log.error("%s", msg)
-        return Limits(), msg
+        return Limits(), msg  # logged when the server starts (_main), not by `setup`
 
 
 LIMITS, CONFIG_ERROR = _load_limits()
@@ -264,6 +263,8 @@ def _truncate(s: str, limit: int = LIMITS.max_output_bytes) -> str:
 
 
 async def _main() -> None:
+    if CONFIG_ERROR:
+        log.error("%s", CONFIG_ERROR)
     if sys.platform == "win32":
         try:
             async with stdio_server() as (read, write):

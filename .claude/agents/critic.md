@@ -26,7 +26,22 @@ Also check the lifecycle traps this repo has already hit: cancellation and detac
 outer-deadline budgets, cleanup that leaks or blocks, CRLF/Windows path issues, and tests that
 pass without exercising the claim.
 
+Then check the diff against the four rules in `CLAUDE.md` § Coding discipline (Karpathy
+guidelines). `.claude/KARPATHY_EXAMPLES.md` shows what each looks like:
+- **Simplicity:** code, parameters, config knobs, branches or abstractions the plan doesn't ask
+  for; an abstraction with a single caller; handling for a state that can't occur. Defensive
+  code at a trust boundary is not a finding: model arguments, guest output, registry or tar
+  input, a dead or wedged runtime.
+- **Surgical:** changed lines that don't trace to the plan. That includes reformatting,
+  renames, edits to unrelated code or comments, and the user's unrelated uncommitted edits.
+- **Size:** each new file against the plan's size estimate. If one is well past it, name what
+  could go.
+- **Goal-driven:** a test that would still pass if the code it guards were broken.
+
 Output: one line per issue, worst first:
 `[high|med|low] path:line — defect — concrete failure scenario`
 Report only issues you can tie to a concrete failing input or state. No style nits, no praise.
+For a Karpathy finding, the concrete case is code:
+- for extra code, the lines that could go, and what the simpler version is;
+- for a weak test, the broken version of the code that the test would still pass.
 If you find nothing real, output exactly `no issues found` and the areas you checked.
