@@ -42,4 +42,5 @@ asyncio_mode = "auto"
 markers = [
     "docker: needs a running Docker daemon and both digest-pinned sandbox images; skips (with the pull commands) otherwise",
     "network: fetches the pinned images from their registry (Linux; about 123 MB per session)",
+    "native: runs native sandboxes (Linux, user namespaces, and the trees `vestibule-mcp setup` makes); skips with the reason otherwise",
 ]

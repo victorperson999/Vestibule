@@ -97,6 +97,15 @@ proxy settings.
 - **Doc impact on sign-off:** `CLAUDE.md` (Async bullet) and `ARCHITECTURE.md` ("Sync warden
   vs. async server").
 
+> **Amendment 2026-10-25 (step 3, [`M2-step3-warden-core.md`](M2-step3-warden-core.md)
+> S3-D4):** the launch is `vestibule-warden -S -P -c "exec(open(<fd>,'rb').read())"`.
+> - **Not `-I`:** isolated mode ignores `PYTHONHOME`, and without it the interpreter can't find
+>   its own prefix under a neutral `argv[0]`. That stays hidden on Ubuntu (`/lib` → `usr/lib`),
+>   and on uv's 3.11 it prints a warning.
+> - **The minimal environment** is now exactly one variable, `PYTHONHOME`.
+> - **The helper's own output:** its stdout is `/dev/null` and its stderr is the server's log.
+>   The guest's pipes are extra fds that init puts on 1 and 2.
+
 ### N2 (signed off 2026-10-14) — The rootfs is M1's pinned images, fetched once by an explicit setup command
 
 `vestibule-mcp setup` (exact CLI shape in the step-2 plan) downloads the two images M1
@@ -324,6 +333,15 @@ Same idea as D3: hard controls block, soft controls degrade loudly.
   - **No AppArmor profile is documented:** it would grant user namespaces to every `python3`
     on the system.
 
+> **Amendment 2026-10-25 (step 3, [`M2-step3-warden-core.md`](M2-step3-warden-core.md)
+> S3-D8):**
+> - **The open label:** a run with no status report is `none`, "no isolation is claimed for
+>   this run". Nothing confirms what applied.
+> - **Per-run verification:** init aborts before the guest exists on its own checks (mount
+>   flags, capabilities, `no_new_privs`, not dumpable, only `lo`, no controlling terminal). The
+>   server then checks the reported namespace inodes, identity maps and mount table against its
+>   own values.
+
 ### Fixed decisions (one defensible answer each)
 
 - **N6 — Identity uid map.**
@@ -365,6 +383,17 @@ Same idea as D3: hard controls block, soft controls degrade loudly.
     interpreter and venv path, which leaks the host username. The step-3 plan picks how to
     show no host path (for example, init re-executing a tiny reaper from the rootfs).
     Criterion 10 checks it.
+
+  > **Amendment 2026-10-25 (step 3, S3-D4 and S3-D7):**
+  > - **`/proc/1/cmdline`:** the neutral launch shows no host path. The username is still
+  >   visible in the guest's `/proc/self/mountinfo` (bind-mount sources), as in Docker; that is
+  >   noted for M4's `SECURITY.md`.
+  > - **Init also:**
+  >   - resets SIGINT to `SIG_DFL`, so a guest's `kill -INT 1` is ignored;
+  >   - calls `setsid()`, so the guest can't open the server's terminal through `/dev/tty`;
+  >   - puts the guest's pipes on fds 1 and 2.
+  > - **The guest** resets SIGPIPE and SIGXFSZ to `SIG_DFL`, and does its own PATH search.
+  > - **The "go" handshake** uses the helper/init socketpair, not a separate pipe.
 - **N8 — Kill paths no stopped or hostile guest can block.**
   - **Timeout or output overflow:** the server writes `1` to the run cgroup's `cgroup.kill`
     (Linux 5.14+). `SIGSTOP` can't block it, which closes M1's S7-D5 watchdog residual for
@@ -377,6 +406,12 @@ Same idea as D3: hard controls block, soft controls degrade loudly.
   - PDEATHSIG fires when the *thread* that forked the child exits, so the helper is always
     spawned from the event-loop thread.
   - **No orphan reaper:** nothing outlives its server. Empty run cgroups are removed.
+
+  > **Amendment 2026-10-25 (step 3, S3-D7) — without cgroups, the order is reversed:**
+  > - the server sends SIGTERM to the helper, which SIGKILLs init through its pidfd;
+  > - the kernel reports init's exit only once the whole PID namespace is empty, so the
+  >   helper's exit means the sandbox is gone, and the concurrency slot is released then;
+  > - SIGKILL to the helper, 5 s later, stays as the fallback.
 - **N9 — Parity with the container profile.**
   - **Paths:** `/workspace` (rw, or ro under `VESTIBULE_WORKSPACE_RO`); the script at
     `/sandbox/main.<ext>` (read-only); workdir `/workspace`; `/tmp` a size-capped tmpfs.
@@ -392,6 +427,14 @@ Same idea as D3: hard controls block, soft controls degrade loudly.
   - **Output and timeouts:** the same output caps and overflow kill as M1. The startup grace
     on the timeout shrinks (native setup takes milliseconds); the step-3 plan fixes it. The
     outer deadline stays `timeout_s + 30`.
+
+  > **Amendment 2026-10-25 (step 3, S3-D1–S3-D3, S3-D7, S3-D10):**
+  > - **`/sandbox`** is a per-run tmpfs that init writes the script into, then makes
+  >   read-only. No host temp dir.
+  > - **`/proc`** gets Docker's masks and read-only paths.
+  > - **`lo` is up**, as in Docker's `--network none`.
+  > - **No controlling terminal.**
+  > - **The startup grace is 2 s.**
 - **N10 — No new tool surface.** Still two tools. The config surface grows only as in §7.
 - **N11 — stdout discipline (golden rule 1).** The guest's stdout and stderr are pipes the
   server reads, never the server's own stdout. The helper reports on a separate status pipe
@@ -447,12 +490,30 @@ Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after t
 >   neutral `argv[0]` `vestibule-warden`, so `/proc/1/cmdline` shows no host path.
 > - **A5:** every import happens before `pivot_root`.
 
+> **Amendment 2026-10-25 (step 3, [`M2-step3-warden-core.md`](M2-step3-warden-core.md)):**
+> - **A4 corrected (S3-D4):** `-S -P` with `PYTHONHOME`, not `-I`.
+> - **A5 widened (S3-D5):** no call after `pivot_root` may import lazily, not just no import
+>   statement. That rules out `ctypes.Structure` subclasses made late (3.14), `os.execvpe`
+>   (it imports `warnings`) and `os.closerange` (it loops on uv's 3.11; `close_range` is
+>   used).
+> - **The chain above as built:**
+>   - binds are non-recursive;
+>   - the tree is read-only from its first remount;
+>   - bind remounts keep the source mount's locked `ro`/`noexec` (S3-D6);
+>   - init checks itself before the guest exists, and sends `ready`, `error` and `exit` lines
+>     for the helper to relay (S3-D8).
+
 ## 4. Run lifecycle
 
 1. **Concurrency:** the selector's single shared semaphore (S7-D1) covers native runs, with
    the same 5 s bounded wait and `Blocked:` on refusal (S4-D1).
 2. **Per run:** a random ID (`secrets.token_hex(8)`), a host temp dir for the script (as D9),
    and the run cgroup.
+
+   > **Amendment 2026-10-25 (step 3, S3-D1, Victor):** no host temp dir. The script travels in
+   > the run config (a memfd), and init writes it into a read-only tmpfs at `/sandbox`. A
+   > native run creates no host files, so cleanup and the shutdown hand-off have none to
+   > remove.
 3. **Run:** spawn the helper; stream and cap the output; enforce the timeout (N8); collect the
    status and apply N5's per-run verdict.
 4. **Cleanup:** the temp dir and the cgroup are removed by a detached task that never delays
