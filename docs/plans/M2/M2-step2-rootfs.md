@@ -264,6 +264,30 @@ right, for a feature nothing uses.
 - **POSIX only:** `dir_fd`, `O_NOFOLLOW` and symlinks behave differently on Windows, and
   native is Linux-only anyway.
 
+> **Amendment 2026-10-25 (build; `critic` findings confirmed by `verifier`):**
+> - **Directory modes are `(mode & 0o755) | 0o700`,** not `(mode & 0o777) | 0o700`. With the
+>   sticky bit stripped, the first formula left `tmp`, `var/tmp` and `run/lock`
+>   world-writable. Any local user who can reach the cache could then plant entries in every
+>   guest's tree, or block its removal. §4.2's example now reads "a `0o1777` dir becomes
+>   `0o755`". **The marker format is now 2,** so a tree made by the first formula isn't
+>   "already present": the next setup replaces it (second `critic` pass).
+> - **An unexpandable `~`** (`~nosuchuser/…`, or no home directory) is a message, not a
+>   traceback.
+> - **Files, a test-harness lesson:** a mutation check's mutant kept set-id bits, yet passed,
+>   because its own buffered write cleared them (Linux clears set-id bits on a write). The
+>   corrected mutant fails as it should.
+>   - A flush added to the real code at the time was removed by the Karpathy re-review (§7).
+>     The real mask already strips set-id bits, so the order can't matter.
+> - **The token realm must use the registry's own scheme, HTTPS** (S2-D4). A `file:` realm
+>   would read a local file, and its `token` would be sent to the registry.
+> - **Setup also:**
+>   - refuses a relative `VESTIBULE_ROOTFS_DIR` (a server started elsewhere would look
+>     elsewhere);
+>   - reports a failed sweep of its own leftovers as a message, not a traceback.
+> - **The server logs an invalid config when it starts,** not when the module is imported,
+>   so `vestibule-mcp setup` no longer prints the server's "fix it in the MCP client's
+>   config" advice.
+
 ### S2-D7 (fixed) — Non-Linux hosts, and keeping mypy clean
 
 - `setup` says native isolation is Linux-only, points to the README's `docker pull` lines for
@@ -343,6 +367,19 @@ verified and mounted read-only.
 **Size check** (Karpathy: "if 200 lines could be 50, rewrite it"): roughly 150 lines each for
 `registry.py` and `unpack.py`, and 170 for `rootfs.py`. If one grows well past that, the
 design is wrong somewhere and goes back to the plan.
+
+> **Amendment 2026-10-25 (Karpathy re-review, §7):** the build overran this estimate, and
+> nobody brought it back to the plan until the re-review.
+>
+> | File | Code lines (no comments or docstrings): before → after the re-review | Estimate |
+> |---|---|---|
+> | `registry.py` | 206 → 203 | ~150 |
+> | `rootfs.py` | 200 → 196 | ~170 |
+> | `unpack.py` | 131 → 120 | ~150 |
+>
+> - The overrun is mostly checks and messages for registry and tar input, which is a trust
+>   boundary. The design isn't wrong; the estimate was low.
+> - The re-review removed what nothing asked for, and the rest is accepted.
 
 **Build order, each step with its check:**
 1. `config.py` → `tests/test_config.py` passes on both platforms.
@@ -544,3 +581,24 @@ behaviour went to `verifier` (results below the table).
   its empty `etc/hosts` makes `getaddrinfo('localhost')` fail in a network-less sandbox
   (finding 3).
 - Both indexes list arm64 as `linux/arm64` with `variant: v8` (finding 9).
+
+### Karpathy re-review (2026-10-25, after the build)
+
+The two `critic` rounds during the build checked correctness only: the review agents had no
+Karpathy check yet. Victor then had one added to `skeptic` and `critic` and asked for this
+re-review of the whole step-2 diff.
+- **Result:** `critic` found no correctness defect, and 8 low findings. `verifier` confirmed
+  all 8; three needed a correction to part of their wording.
+- **Test changes:** each new test was proved by a mutant that turns it red: a `json_blob` that
+  parses before its check, and setup without its `chmod` calls.
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | "Verify, then parse" (S2-D3) was tested only for the index, not for the config blob | Fixed: the test now covers both |
+| 2 | S2-D10's modes (0o755, 0o444) were asserted nowhere; without the `chmod` calls, umask 0 gives 0o777 and 0o666 | Fixed: asserted, under umask 0 |
+| 3 | The `flush()` before `fchmod` defended against nothing: the mask already strips set-id bits | Removed; the S2-D6 amendment corrected |
+| 4 | The "ready: X MB downloaded, Y MB unpacked, in Z s" summary wasn't asked for | Removed: setup says `ready`. The sizes stay recorded in BUILD_LOG |
+| 5 | `Image.ref` had no reader | Removed |
+| 6 | The repository-name check (`_PATH`) isn't in S2-D4 | **Kept.** It enforces S2-D4's reference grammar: without it, a `#` in a name drops the rest of the request path, a `?` adds a query, and a space escapes as a non-`RegistryError` |
+| 7 | `_kind` had one caller and only worded one message | Inlined: the message names the entry and its tar type |
+| 8 | Size: `registry.py` well past its estimate | Accepted with the reason (§3 amendment). The untested 404 message was removed. Merging `manifest()` and `json_blob()` was **not** done: they differ in URL, cap, Accept header and descriptor check, so one function would need three parameters and wouldn't be simpler |

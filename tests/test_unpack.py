@@ -99,8 +99,8 @@ ABS = "<sentinel>"  # replaced by the sentinel directory's absolute path
     ([[f("../x")]], "'..' components are refused"),
     ([[f("/etc/x")]], "absolute names are refused"),
     ([[d("a"), f("a/../../x")]], "'..' components are refused"),
-    ([[special("null", tarfile.CHRTYPE)]], "device entries are not supported"),
-    ([[special("fifo", tarfile.FIFOTYPE)]], "FIFO entries are not supported"),
+    ([[special("null", tarfile.CHRTYPE)]], "null: tar entry type b'3' is not supported"),
+    ([[special("fifo", tarfile.FIFOTYPE)]], "fifo: tar entry type b'6' is not supported"),
     # multi-entry attacks (contract §6)
     ([[sym("a", ABS), f("a/.bashrc")]], "its parent 'a' is missing or not a plain directory"),
     ([[sym("a", ".."), f("a/x")]], "its parent 'a' is missing or not a plain directory"),
@@ -151,8 +151,10 @@ def test_the_real_images_shape_unpacks(work):
     assert (a.st_ino, a.st_nlink) == (b.st_ino, 2)
     assert stat.S_IMODE((tree / "usr/bin/su").stat().st_mode) == 0o555   # 0o4755 & 0o555
     assert stat.S_IMODE((tree / "usr/bin/gunzip").stat().st_mode) == 0o555
-    assert stat.S_IMODE((tree / "tmp").stat().st_mode) == 0o777          # sticky stripped
-    assert stat.S_IMODE((tree / "var/mail").stat().st_mode) == 0o775     # setgid stripped
+    # Directories: sticky/setgid AND group/other write stripped, else (no sticky) any local
+    # user could plant entries in a world-writable tmp of every guest's tree
+    assert stat.S_IMODE((tree / "tmp").stat().st_mode) == 0o755          # was 0o1777
+    assert stat.S_IMODE((tree / "var/mail").stat().st_mode) == 0o755     # was 0o2775
     assert stat.S_IMODE(tree.stat().st_mode) == 0o755  # the root entry's mode isn't applied
     assert (tree / ("x" * 150)).read_bytes() == b"long"
     shutil.rmtree(tree)  # read-only files, owner-writable dirs: deletable without a chmod

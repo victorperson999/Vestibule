@@ -19,7 +19,6 @@ import re
 import shutil
 import sys
 import tempfile
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,7 +26,9 @@ from typing import Any
 from vestibule import registry
 from vestibule.config import ConfigError, Limits
 
-FORMAT = 1
+# 2: directories without group/other write (2026-10-25). A tree made under an older format is
+# not accepted, so the next setup replaces it instead of keeping a world-writable /var/tmp.
+FORMAT = 2
 LOCK_NAME = ".vestibule-setup.lock"
 TMP_PREFIX = ".vestibule-tmp-"
 _TREE = re.compile(r"[0-9a-f]{64}-(?:amd64|arm64)")
@@ -88,11 +89,19 @@ def setup_main() -> int:
         for problem in e.problems:
             _say(f"  - {problem}")
         return 1
-    overlap = overlap_problem(limits)
+    try:
+        rootfs_dir = limits.rootfs_path
+        overlap = overlap_problem(limits)
+    except RuntimeError as e:  # Path.expanduser: a ~user that doesn't exist, or no home
+        _say(f"vestibule setup: VESTIBULE_ROOTFS_DIR or VESTIBULE_WORKSPACE: {e}")
+        return 1
+    if not rootfs_dir.is_absolute():  # a server started elsewhere would look elsewhere
+        _say(f"vestibule setup: VESTIBULE_ROOTFS_DIR={limits.rootfs_dir!r} must be an "
+             "absolute path or start with ~")
+        return 1
     if overlap:
         _say(f"vestibule setup: {overlap}")
         return 1
-    rootfs_dir = limits.rootfs_path
     _say(f"vestibule setup: rootfs directory {rootfs_dir}")
     try:
         arch = registry.host_arch()
@@ -106,7 +115,11 @@ def setup_main() -> int:
         return 1
     failed = False
     try:
-        _sweep(rootfs_dir)
+        try:
+            _sweep(rootfs_dir)
+        except OSError as e:
+            _say(f"vestibule setup: could not remove setup's own leftovers: {e}")
+            return 1
         for label, ref in (("python image", limits.image_python),
                            ("node image", limits.image_node)):
             _say(f"{label}: {ref}")
@@ -127,7 +140,6 @@ def _install(rootfs_dir: Path, image_ref: str, arch: str) -> str:
         return "already present"
     from vestibule import unpack  # the Linux path only (S2-D7)
 
-    t0 = time.monotonic()
     ref = registry.parse_ref(image_ref)
     reg = registry.Registry(ref)
     image = registry.resolve(reg, arch)
@@ -140,7 +152,7 @@ def _install(rootfs_dir: Path, image_ref: str, arch: str) -> str:
         tree = work / "tree"
         tree.mkdir()
         os.chmod(tree, 0o755)
-        written = unpack.unpack_layers(blobs, tree)
+        unpack.unpack_layers(blobs, tree)
         for blob in blobs:
             blob.unlink()
         _add_mount_points(tree)
@@ -154,9 +166,7 @@ def _install(rootfs_dir: Path, image_ref: str, arch: str) -> str:
         })
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    downloaded = sum(int(layer["size"]) for layer in image.layers)
-    return (f"ready: {downloaded / 1e6:.1f} MB downloaded, {written / 1e6:.1f} MB unpacked, "
-            f"in {time.monotonic() - t0:.1f} s")
+    return "ready"
 
 
 def _add_mount_points(tree: Path) -> None:

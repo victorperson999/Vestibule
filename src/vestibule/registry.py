@@ -59,7 +59,6 @@ class Ref:
 
 @dataclass(frozen=True)
 class Image:
-    ref: Ref
     manifest_digest: str
     env: list[str]                # the config's Env (N9 needs its PATH and LANG)
     layers: list[dict[str, Any]]  # gzip layer descriptors, in order
@@ -124,7 +123,7 @@ class Registry:
                 challenge = e.headers.get("WWW-Authenticate", "")
                 e.close()
                 if e.code == 401 and attempt == 1:
-                    self.token = _anonymous_token(challenge)
+                    self.token = _anonymous_token(challenge, self.base.split(":", 1)[0])
                     continue
                 raise RegistryError(_http_problem(e.code, self.ref)) from None
             except OSError as e:  # URLError, timeouts, resets
@@ -195,16 +194,21 @@ def resolve(reg: Registry, arch: str) -> Image:
             raise RegistryError(f"{reg.ref} has a zstd layer; it needs Python 3.14's "
                                 "compression.zstd, and Vestibule supports 3.11+")
         raise RegistryError(f"{reg.ref}: unsupported layer type {media!r}")
-    return Image(reg.ref, manifest_digest, env, layers)
+    return Image(manifest_digest, env, layers)
 
 
-def _anonymous_token(challenge: str) -> str:
+def _anonymous_token(challenge: str, url_scheme: str) -> str:
+    """A token from the challenge's realm, which must use the registry's own scheme (HTTPS):
+    a `file:` realm would read a local file, and its "token" would go to the registry."""
     scheme, _, params = challenge.partition(" ")
     if scheme.lower() != "bearer":
         raise RegistryError(f"the registry wants {scheme or 'unknown'} auth; only anonymous "
                             "bearer tokens are supported")
     fields = dict(re.findall(r'(\w+)="([^"]*)"', params))
-    url = fields.pop("realm", "") + "?" + urllib.parse.urlencode(fields)
+    realm = fields.pop("realm", "")
+    if urllib.parse.urlsplit(realm).scheme != url_scheme:
+        raise RegistryError(f"the registry's token realm {realm[:100]!r} is not {url_scheme}")
+    url = realm + "?" + urllib.parse.urlencode(fields)
     try:
         with urllib.request.urlopen(url, timeout=TIMEOUT_S) as r:
             body = _json(_read_capped(r, MAX_JSON_BYTES, "token"), "token")
@@ -222,8 +226,6 @@ def _http_problem(code: int, ref: Ref) -> str:
     if code == 429:
         return (f"{ref.host}: registry rate limit (anonymous pulls are counted per IP); "
                 "try again later")
-    if code == 404:
-        return f"{ref}: not found (is the digest right?)"
     return f"{ref.host}: HTTP {code}"
 
 

@@ -214,10 +214,14 @@ def test_non_gzip_layers_are_refused(fake, media, message):
         registry.resolve(registry.Registry(parse_ref(ref)), "amd64")
 
 
-def test_a_manifest_that_does_not_match_its_digest_is_never_parsed(fake, monkeypatch):
+@pytest.mark.parametrize("which", ["index", "config"])  # manifest() and json_blob()
+def test_json_that_does_not_match_its_digest_is_never_parsed(fake, monkeypatch, which):
     ref = _two_arch_index(fake)
-    index_digest = ref.split("@")[1]
-    lie = fake.wrong[index_digest] = b'{"manifests": []}'
+    digest = ref.split("@")[1]
+    if which == "config":
+        amd64 = json.loads(fake.objects[digest])["manifests"][0]["digest"]
+        digest = json.loads(fake.objects[amd64])["config"]["digest"]
+    lie = fake.wrong[digest] = b'{"manifests": []}'  # shorter than either real document
     real_loads = json.loads
 
     def loads(data, *args, **kwargs):  # the token response is parsed; the lie must not be
@@ -269,6 +273,35 @@ def test_a_second_401_for_the_same_request_fails(fake):
     with pytest.raises(RegistryError, match="HTTP 401"):
         registry.resolve(registry.Registry(parse_ref(ref)), "amd64")
     assert fake.tokens_issued == 1
+
+
+@pytest.mark.parametrize("realm", ["file:///home/u/secret.json", "http://auth.example/token"])
+def test_a_token_realm_must_use_the_registrys_scheme(realm):
+    # A file: realm would read a local file and send its "token" to the registry.
+    with pytest.raises(RegistryError, match="token realm .* is not https"):
+        registry._anonymous_token(f'Bearer realm="{realm}",service="x"', "https")
+
+
+def test_the_realm_check_gets_the_registrys_real_scheme(monkeypatch):
+    # The fake registry is plain http, so this pins the wiring for the real (https) base.
+    seen = []
+
+    def urlopen(req, timeout):
+        raise registry.urllib.error.HTTPError(
+            req.full_url, 401, "Unauthorized",
+            {"WWW-Authenticate": 'Bearer realm="https://auth.example/token"'}, None)
+
+    def token(challenge, url_scheme):
+        seen.append(url_scheme)
+        raise RegistryError("stop here")
+
+    monkeypatch.setattr(registry.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(registry, "_anonymous_token", token)
+    reg = registry.Registry(parse_ref(f"docker.io/library/python@sha256:{HEX}"))
+    assert reg.base.startswith("https://registry-1.docker.io/")
+    with pytest.raises(RegistryError, match="stop here"):
+        reg.manifest(f"sha256:{HEX}", INDEX_TYPES)
+    assert seen == ["https"]
 
 
 def test_a_rate_limit_says_so(fake):
