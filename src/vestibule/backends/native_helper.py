@@ -4,19 +4,20 @@ The server never imports this. For each run, `native.py` starts a fresh interpre
 `vestibule-warden -S -P -c "exec(open(<fd>,'rb').read())"`, and this file is that program
 (S3-D4). It is stdlib-only, and everything it needs exists before `pivot_root`: imports,
 ctypes types, the libc handle (S3-D5). After `pivot_root` only os/posix calls, calls on those
-types, socket.sethostname, fcntl.ioctl and json.dumps run.
+types, socket.sethostname, fcntl.ioctl, resource's rlimit calls and json.dumps run.
 
 Process shape (S3-D7):
-- helper: dies with the server, unshares user + PID namespaces, writes the identity maps,
-  forks init, relays init's status lines, SIGKILLs init on SIGTERM, exits after it. Its exit
-  therefore means the sandbox is empty.
+- helper: dies with the server, waits for its release while the server places it in a cgroup
+  (S4-D3), unshares user + PID namespaces, writes the identity maps, forks init and moves it
+  into the guest's cgroup, relays init's status lines, SIGKILLs init on SIGTERM, reports the
+  guest cgroup's OOM counters, exits after init. Its exit therefore means the sandbox is empty.
 - init (PID 1): its own session, the other namespaces, the jail, every privilege dropped, its
   checks (S3-D8), then `ready`, the guest, a reap loop, and the guest's exit.
 - guest: no extra fds, default signals, our own PATH search, execve.
 
-Input: the JSON run config on stdin. Output: JSON lines on cfg["status_fd"] (`ready`, `error`,
-`exit`). Nothing of the helper's own reaches the guest's pipes: its stdout is /dev/null and its
-stderr is the server's log.
+Input: the JSON run config on stdin, then the release on cfg["sync_fd"]. Output: JSON lines on
+cfg["status_fd"] (`ready`, `error`, `exit`, the OOM counters). Nothing of the helper's own
+reaches the guest's pipes: its stdout is /dev/null and its stderr is the server's log.
 """
 from __future__ import annotations
 
@@ -25,6 +26,7 @@ import errno
 import fcntl
 import json
 import os
+import resource
 import select
 import signal
 import socket
@@ -90,6 +92,10 @@ def _helper(cfg: dict[str, Any]) -> None:
     _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
     if os.getppid() != cfg["server_pid"]:  # the server died before PDEATHSIG was armed
         os._exit(0)
+    release = _read_all(cfg["sync_fd"])  # paused until the server has placed us (S4-D3)
+    if not release:  # the server gave up on this run
+        os._exit(0)
+    cfg.update(json.loads(release))  # {"cgroup": guest/sandbox | None, "nproc": n | None}
     last_cap = int(_read("/proc/sys/kernel/cap_last_cap"))
     pivot_nr = SYS_PIVOT_ROOT[os.uname().machine]
     uid, gid = os.getuid(), os.getgid()
@@ -103,6 +109,8 @@ def _helper(cfg: dict[str, Any]) -> None:
         ours.close()
         _init(cfg, theirs, last_cap, pivot_nr)  # never returns
     theirs.close()
+    if cfg["cgroup"]:  # before init does anything; a failure here stops the run (S4-D5)
+        _write(f"{cfg['cgroup']}/cgroup.procs", str(pid))
     ours.sendall(b"g")
     os.close(cfg["stdout_fd"])  # so the guest's pipes reach EOF only when the sandbox is gone
     os.close(cfg["stderr_fd"])
@@ -117,6 +125,14 @@ def _helper(cfg: dict[str, Any]) -> None:
     signal.signal(signal.SIGTERM, stop)
     _supervise(cfg["status_fd"], ours, pidfd, stop, cfg["self_deadline_s"])
     os.waitpid(pid, 0)
+    if cfg["cgroup"]:  # S4-D8: before our exit, after which systemd removes the scope
+        try:
+            events = dict(line.split() for line in
+                          _read(os.path.dirname(cfg["cgroup"]) + "/memory.events").splitlines())
+            _send(cfg["status_fd"], {"oom": int(events["oom"]),
+                                     "oom_kill": int(events["oom_kill"])})
+        except (OSError, KeyError, ValueError):  # no memory controller, or the server is gone
+            pass
     os._exit(0)
 
 
@@ -170,6 +186,7 @@ def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int
         _prctl(PR_SET_PDEATHSIG, signal.SIGKILL)
         if sock.recv(1) != b"g":  # the helper died before our death signal was armed
             os._exit(0)
+        cgroup = _read("/proc/self/cgroup")  # the host's view, before NEWCGROUP (S4-D7)
         signal.signal(signal.SIGINT, signal.SIG_DFL)  # PID 1 then ignores a guest's SIGINT
         os.setsid()  # no controlling terminal for init or the guest (S3-D7)
         stage = "namespaces"
@@ -202,6 +219,10 @@ def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int
         _check(_LIBC.capset(ctypes.byref(_CAP_V3), ctypes.byref(_NO_CAPS)), "capset")
         _prctl(PR_SET_DUMPABLE, 0)
         _prctl(PR_SET_NO_NEW_PRIVS, 1)
+        if cfg["nproc"]:  # the fork-bomb backstop when there's no pids limit (S4-D9)
+            hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]  # no process can raise it
+            n = cfg["nproc"] if hard == resource.RLIM_INFINITY else min(cfg["nproc"], hard)
+            resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
         stage = "checks"
         checks = _checks(cfg)
         stage = "seccomp"
@@ -213,6 +234,7 @@ def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int
             "uid_map": _read("/proc/self/uid_map"), "gid_map": _read("/proc/self/gid_map"),
             "setgroups": _read("/proc/self/setgroups"),
             "mountinfo": _read("/proc/self/mountinfo"),
+            "cgroup": cgroup,
         }})
         stage = "guest"
         guest = os.fork()

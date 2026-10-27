@@ -1,8 +1,10 @@
 """M2 native backend, server side (docs/plans/M2/M2-step3-warden-core.md).
 
 Each run gets one fresh sandbox, built by a fresh helper interpreter (`native_helper.py`; N1,
-S3-D4). This module starts the helper, collects the guest's output with M1's caps, stops a run
-that overruns (S3-D7), and turns the helper's status report into an honest verdict (S3-D8).
+S3-D4). This module starts the helper, has `native_cgroup.py` place it in its own systemd scope
+with the guest's limits before releasing it (step 4), collects the guest's output with M1's
+caps, stops a run that overruns (S3-D7), and turns the helper's status report into an honest
+verdict (S3-D8, S4-D7).
 
 Not reachable from the server until M2 step 6: tests build it directly. There is no seccomp
 filter until step 5, so every run reports `isolation: none`, and only the test-only
@@ -27,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from vestibule import rootfs
+from vestibule.backends import native_cgroup
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.config import Limits
 
@@ -51,12 +54,12 @@ _STOP_WAIT_S = 5  # after SIGTERM, the helper gets this long before SIGKILL (S3-
 _SEM_WAIT_S = 5  # max wait for a concurrency slot before a legible refusal (S4-D1)
 _STATUS_CAP = 64 * 1024
 _SELF_DEADLINE_SLACK_S = 30  # the helper's own backstop sits at the server's outer deadline
+_RUNTIME_MAX_SLACK_S = 30  # systemd's sits there too (S4-D6); its own constant for one test
 # The hard tier is the server's own list (S3-D8), never one the helper sends.
 _INIT_CHECKS = ("mount_flags", "caps", "no_new_privs", "not_dumpable", "only_lo", "no_tty")
 _HARD_CHECKS = _INIT_CHECKS + ("seccomp",)
 _NAMESPACES = ("user", "pid", "mnt", "net", "uts", "ipc", "cgroup")
-# Applied and checked from M2 step 4 on; until then no run has them.
-_CGROUP_LIMITS = ("cpu", "memory", "pids")
+_CGROUP_LIMITS = ("cpu", "memory", "pids")  # the soft tier's limits (S4-D5)
 
 
 @dataclass
@@ -70,6 +73,9 @@ class _Run:
     status: bytearray = field(default_factory=bytearray)
     status_task: asyncio.Task[None] | None = None
     transports: list[asyncio.ReadTransport] = field(default_factory=list)
+    sync_w: int | None = None  # the paused helper's release pipe (S4-D3)
+    cgroup: str | None = None  # where init must be, once placed (S4-D7)
+    applied: frozenset[str] = frozenset()  # the guest's limits that read back exactly
 
 
 class NativeBackend(Warden):
@@ -107,6 +113,7 @@ class NativeBackend(Warden):
             except OSError as e:
                 log.error("run %s: could not start the native helper: %s", run.run_id, e)
                 return _not_run(f"could not start the native sandbox helper: {e}")
+            await self._release(run, timeout_s, limits)
             return await self._collect(run, timeout_s, limits)
         finally:
             # Detached, as M1's finisher (P2): it stops whatever still runs, waits until the
@@ -130,9 +137,12 @@ class NativeBackend(Warden):
             loose += [err_r, err_w]
             status_r, status_w = os.pipe()
             loose += [status_r, status_w]
+            sync_r, sync_w = os.pipe()
+            loose += [sync_r, sync_w]
             config = {
                 "server_pid": os.getpid(),
                 "status_fd": status_w, "stdout_fd": out_w, "stderr_fd": err_w,
+                "sync_fd": sync_r,
                 "rootfs": os.path.abspath(found.tree),  # the helper's cwd is /
                 "workspace": os.path.abspath(workspace),
                 "workspace_ro": limits.workspace_ro,
@@ -164,11 +174,11 @@ class NativeBackend(Warden):
                 stdin=config_fd,
                 stdout=asyncio.subprocess.DEVNULL,  # golden rule 1
                 stderr=None,  # the server's own stderr: the helper's diagnostics go to the log
-                pass_fds=(source, status_w, out_w, err_w),
+                pass_fds=(source, status_w, out_w, err_w, sync_r),
                 env={"PYTHONHOME": f"{sys.base_prefix}:{sys.base_exec_prefix}"},
                 cwd="/",
             )
-            for fd in (config_fd, source, status_w, out_w, err_w):
+            for fd in (config_fd, source, status_w, out_w, err_w, sync_r):
                 os.close(fd)
                 loose.remove(fd)
             readers = []
@@ -184,9 +194,32 @@ class NativeBackend(Warden):
             # Drained to EOF whatever happens to the result, so the helper's last status
             # write never blocks or fails (S3-D11).
             run.status_task = asyncio.create_task(_drain_status(status, run.status))
+            loose.remove(sync_w)  # last: until here, a failure closes it and the helper exits
+            run.sync_w = sync_w
         finally:
             for fd in loose:
                 os.close(fd)
+
+    async def _release(self, run: _Run, timeout_s: int, limits: Limits) -> None:
+        """Place the paused helper (S4-D3), then let it start. A failed placement only
+        degrades the run; the guest's timeout starts after this."""
+        if sys.platform != "linux":  # never: run() returns first; the guard is for mypy
+            raise RuntimeError("native isolation needs Linux")
+        assert run.proc is not None and run.sync_w is not None
+        try:
+            placed = await native_cgroup.place(run.run_id, run.proc.pid,
+                                               timeout_s + _RUNTIME_MAX_SLACK_S, limits)
+            cgroup = None
+            if placed is not None:
+                run.cgroup, run.applied = placed.sandbox, placed.applied
+                cgroup = native_cgroup.CGROUP_FS + placed.sandbox
+            backstop = "pids" not in run.applied and _nproc_backstop(os.uname().release)
+            release = {"cgroup": cgroup, "nproc": limits.pids_max if backstop else None}
+            with contextlib.suppress(OSError):  # the helper is gone: collection reports it
+                os.write(run.sync_w, json.dumps(release).encode())
+        finally:
+            os.close(run.sync_w)
+            run.sync_w = None
 
     async def _collect(self, run: _Run, timeout_s: int, limits: Limits) -> RunResult:
         if sys.platform != "linux":  # never: run() returns first; the guard is for mypy
@@ -224,9 +257,10 @@ class NativeBackend(Warden):
         lines = _parse_status(bytes(run.status))
         isolation, detail = _verdict(lines, uid=os.getuid(), gid=os.getgid(),
                                      host_ns=_host_namespaces(), host_proc=_host_proc(),
-                                     limits=limits)
+                                     limits=limits, cgroup=run.cgroup, applied=run.applied)
         exit_code, note = _outcome(lines, timed_out=timed_out,
-                                   truncated=len(out_buf) >= cap or len(err_buf) >= cap)
+                                   truncated=len(out_buf) >= cap or len(err_buf) >= cap,
+                                   oom_limit_mb=limits.mem_mb if "memory" in run.applied else None)
         log.info("run %s: done exit=%s timed_out=%s isolation=%s",
                  run.run_id, exit_code, timed_out, isolation)
         return RunResult(stdout=out_buf.decode(errors="replace"),
@@ -347,29 +381,57 @@ def _parse_status(data: bytes) -> list[dict[str, Any]]:
     return lines
 
 
-def _outcome(lines: list[dict[str, Any]], *, timed_out: bool,
-             truncated: bool) -> tuple[int, str]:
+def _outcome(lines: list[dict[str, Any]], *, timed_out: bool, truncated: bool,
+             oom_limit_mb: int | None = None) -> tuple[int, str]:
     """The exit code and any note for stderr, with M1's conventions (S3-D10). A guest killed by
-    signal S reports 128+S, as Docker does."""
+    signal S reports 128+S, as Docker does. `oom_limit_mb` is the memory limit, if applied."""
     if timed_out:
         return -1, ""
     if truncated:  # as M1's CLI reports after its kill
         return 137, "\n[output exceeded collection cap; the sandbox was terminated]"
+    oom = _oom_note(lines, oom_limit_mb)
     for line in lines:
         end = line.get("exit")
         if isinstance(end, dict):
             if type(end.get("code")) is int:
-                return int(end["code"]), ""
+                return int(end["code"]), oom
             if type(end.get("signal")) is int:
-                return 128 + int(end["signal"]), ""
+                return 128 + int(end["signal"]), oom
     if any("ready" in line for line in lines):  # the guest started; its end is unknown
-        return -1, "\n[the sandbox did not report an exit status]"
-    return -1, ""
+        return -1, "\n[the sandbox did not report an exit status]" + oom
+    return -1, oom
+
+
+def _oom_note(lines: list[dict[str, Any]], limit_mb: int | None) -> str:
+    """S4-D8, from the helper's line of guest/'s counters: `oom_kill` counts any OOM kill in
+    the sandbox, `oom` only guest/'s own limit firing, so only then is the limit named."""
+    counts = next((line for line in lines if "oom_kill" in line), {})
+    kills, hits = counts.get("oom_kill"), counts.get("oom")
+    if type(kills) is not int or kills < 1:
+        return ""
+    if limit_mb is not None and type(hits) is int and hits >= 1:
+        return ("\n[out of memory: the kernel killed a process in the sandbox at its "
+                f"{limit_mb} MiB limit]")
+    return "\n[out of memory: the kernel killed a process in the sandbox]"
+
+
+def _nproc_backstop(release: str) -> bool:
+    """Whether RLIMIT_NPROC may stand in for a missing pids limit on this kernel (S4-D9). From
+    5.14 it counts per user namespace; before, per uid across the host, which could fail every
+    guest fork of a user who already runs many processes."""
+    try:
+        major, minor = (int(part) for part in release.split(".")[:2])
+    except ValueError:
+        return False
+    return (major, minor) >= (5, 14)
 
 
 def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[str, int],
-             host_proc: dict[str, bool], limits: Limits) -> tuple[str, str | None]:
-    """What this run may claim (S3-D8): `native` only when every control is confirmed."""
+             host_proc: dict[str, bool], limits: Limits, cgroup: str | None = None,
+             applied: frozenset[str] = frozenset()) -> tuple[str, str | None]:
+    """What this run may claim (S3-D8): `native` only when every control is confirmed. A limit
+    counts only if init reported the cgroup the server made (`cgroup`) and it read back there
+    (`applied`; S4-D7)."""
     first = next((line for line in lines if "ready" in line or "error" in line), None)
     if first is None:
         return "none", "the sandbox sent no status report; no isolation is claimed for this run"
@@ -397,9 +459,12 @@ def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[s
         unconfirmed.append(f"mount table ({problem})")
     if unconfirmed:
         return "none", "hard controls not confirmed: " + ", ".join(unconfirmed)
-    not_applied = list(_CGROUP_LIMITS)
+    placed = cgroup is not None and ready.get("cgroup") == f"0::{cgroup}\n"
+    not_applied = [name for name in _CGROUP_LIMITS if not (placed and name in applied)]
     if mounts is not None and not _tmpfs_sizes_ok(mounts, limits):
         not_applied.append("tmpfs-size")
+    if not not_applied:
+        return "native", None
     return "native-degraded", "limits not applied: " + ", ".join(sorted(not_applied))
 
 

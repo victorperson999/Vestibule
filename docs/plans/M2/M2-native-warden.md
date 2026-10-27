@@ -213,6 +213,24 @@ Layout. "Run cgroup" means the per-run scope in (i), or `run-<id>` inside the se
   `pids_max` there as a fork-bomb backstop, so a bomb can't exhaust the user's own process
   table.
 
+> **Amendment 2026-10-26 (step 4, [`M2-step4-cgroups.md`](M2-step4-cgroups.md)):**
+> - **Mechanism (i) as built (S4-D3–S4-D6):** `busctl --user call … StartTransientUnit` with
+>   the properties above, plus `CollectMode=inactive-or-failed` (a scope that ends badly is
+>   still removed) and `KillSignal=SIGKILL` (init ignores SIGTERM). The guest's limits are
+>   written on `guest/`, the envelope is the scope's own `MemoryMax`, `TasksMax` and
+>   `CPUQuotaPerSecUSec`. One 5 s bound covers the whole placement; past it, or on any
+>   failure, the run goes on without limits and says so.
+> - **No "either way" path (S4-D1, Victor):** every run gets its own scope or runs without
+>   limits. Using a delegated subtree the server is already in would mean moving the server
+>   into a leaf below it, mechanism (ii)'s side effect. Sandboxes therefore run outside the
+>   client's cgroup.
+> - **"Every limit file back"** means the guest's: the envelope isn't read back, and no label
+>   claims it (S4-D6).
+> - **The `RLIMIT_NPROC` backstop** is set only on Linux 5.14 and later, this bullet's own
+>   condition (S4-D9). It doesn't make `pids` count as applied.
+> - **A2 corrected (S4-D8):** the helper reads `memory.events` only (`oom` and `oom_kill`);
+>   `memory.peak` waits for M3's usage report.
+
 ### N4 (signed off 2026-10-14) — seccomp: our own libseccomp binding, an allowlist derived from Docker's, required for native
 
 - **Binding:** a small `ctypes` module over the system's `libseccomp.so.2`
@@ -412,6 +430,12 @@ Same idea as D3: hard controls block, soft controls degrade loudly.
   > - the kernel reports init's exit only once the whole PID namespace is empty, so the
   >   helper's exit means the sandbox is gone, and the concurrency slot is released then;
   > - SIGKILL to the helper, 5 s later, stays as the fallback.
+
+  > **Amendment 2026-10-26 (step 4, S4-D2, Victor) — no `cgroup.kill`:** step 3's stop above
+  > is the only stop, with or without a cgroup. Killing PID 1 empties its namespace, stopped
+  > processes included, and the helper's exit is the one signal that it has. systemd's
+  > `RuntimeMaxSec` (with `KillSignal=SIGKILL`) and the helper's self-deadline are the two
+  > outside deadlines. Nothing in M2 needs Linux 5.14 for stopping any more.
 - **N9 — Parity with the container profile.**
   - **Paths:** `/workspace` (rw, or ro under `VESTIBULE_WORKSPACE_RO`); the script at
     `/sandbox/main.<ext>` (read-only); workdir `/workspace`; `/tmp` a size-capped tmpfs.
@@ -503,6 +527,19 @@ Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after t
 >   - init checks itself before the guest exists, and sends `ready`, `error` and `exit` lines
 >     for the helper to relay (S3-D8).
 
+> **Amendment 2026-10-26 (step 4, [`M2-step4-cgroups.md`](M2-step4-cgroups.md) S4-D3,
+> S4-D5, S4-D7, S4-D8):**
+> - **The helper waits for its release** before it unshares anything: one JSON object on the
+>   sync pipe, with the `guest/sandbox` path (or none) and the `RLIMIT_NPROC` value (or none).
+>   The server moves it into `supervisor/` (step 2 above is the server's write).
+> - **The helper moves init into `guest/sandbox/`** before "go". If that fails, the run is
+>   `none` and nothing runs.
+> - **Init reports `/proc/self/cgroup`** in `ready`, read before `unshare(NEWCGROUP)`. A limit
+>   counts only if that's the path the server made and the limit read back there.
+> - **The OOM report** is the helper's own line after init's exit: `guest/`'s `oom` and
+>   `oom_kill`.
+> - **No `cgroup.kill`, and the server removes no cgroup** (N8's and §4's amendments).
+
 ## 4. Run lifecycle
 
 1. **Concurrency:** the selector's single shared semaphore (S7-D1) covers native runs, with
@@ -532,6 +569,10 @@ Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after t
 >   No `cgroup.kill` at shutdown.
 > - **What step 6 must add:** a native backend's `cleanup_snapshot()` (temp dirs only) for
 >   `cleanup_job()`.
+
+> **Amendment 2026-10-26 (step 4, S4-D2, S4-D6):** cleanup removes no cgroup. systemd removes
+> the emptied scope with our sub-cgroups when the helper exits, and `CollectMode=inactive-or-
+> failed` removes one that failed. The finisher is step 3's. Shutdown writes no `cgroup.kill`.
 
 ## 5. Backend selection & probing on Linux
 
@@ -743,7 +784,8 @@ On WSL Ubuntu 26.04 (kernel 6.6), through `server.call_tool` like M1's suite:
    value or selector path can pass it, and step 6 adds a test proving every selector-built
    native backend loads the filter.
 4. **cgroups v2 (N3):** the chosen mechanism, bus discovery, the envelope layout, limits plus
-   readback, `cgroup.kill`, the OOM-kill report and the `RLIMIT_NPROC` backstop.
+   readback, `cgroup.kill`, the OOM-kill report and the `RLIMIT_NPROC` backstop. *(Built
+   without `cgroup.kill`: S4-D2.)*
 5. **seccomp (N4):** the binding, the Docker-derived allowlist, socket families, bad-arch
    kill, and notification reporting with bounds.
 6. **Selection on Linux (N5, §5) — native becomes reachable here, with everything it needs:**

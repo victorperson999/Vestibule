@@ -80,6 +80,9 @@ package, so a stale or upgraded dependency can't quietly change what the tests r
   need unprivileged user namespaces and the two trees `vestibule-mcp setup` makes in the
   default `~/.vestibule/rootfs`. Otherwise they skip with the reason, and they never download
   anything. The Linux gate allows no skips, so run `setup` once on a new dev host.
+  - The resource-limit tests also need a systemd user manager that delegates `cpu`, `memory`
+    and `pids` (WSL with systemd enabled has one). Each test checks that it left no
+    `vestibule-*.scope` unit behind.
 - `tests/test_acceptance.py` is the M1 exam: one test per acceptance criterion, run through
   the real tool handler against real Docker. It includes a memory bomb and a fork bomb, both
   bounded by the sandbox's own caps.

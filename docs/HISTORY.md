@@ -552,6 +552,17 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     - the label for a run with no status report, `none` (N5);
     - the kill order without cgroups (N8);
     - Docker's `/proc` masks, loopback up, and no controlling terminal (N9).
+- **Step-4 decisions — approved 2026-10-26** ([plan](plans/M2/M2-step4-cgroups.md), v3).
+  - **Sign-off:** Victor approved v3 after one `skeptic` review (11 findings, all accepted)
+    and a Karpathy re-check that he asked for (3 more gaps, fixed in the plan).
+  - **Before planning,** a throwaway prototype ran the whole step in WSL. Per-run systemd
+    scopes add about 2 ms to a run, and the memory, process and CPU limits all held.
+  - **S4-D1 — no "already inside a delegated cgroup" path** (amends N3). Every run gets its
+    own systemd scope, or runs without limits and says so. The path would have needed the
+    server to move itself, and no host we test has it.
+  - **S4-D2 — no `cgroup.kill`** (amends N8). Step 3's stop already kills everything in the
+    sandbox, stopped processes included, and it is the one signal that tells the server the
+    sandbox is really gone.
 
 ### Build steps (8 planned: 0–7)
 
@@ -661,3 +672,23 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     - the helper's own deadline never fired;
     - the mount check would have accepted a sandbox that was missing the `/proc/keys` mask;
     - a client that stops reading the server's log could have blocked that deadline.
+- **Step 4 — resource limits, done 2026-10-26
+  ([plan](plans/M2/M2-step4-cgroups.md); commit pending).**
+  - **Now:** each native run gets its own temporary systemd scope. The guest gets 256 MiB of
+    memory with no swap, 128 processes and 75 % of one CPU, and the server reads every limit
+    back before it counts it.
+    - A memory bomb is killed, and the result says it ran out of memory at its limit.
+    - A fork bomb stops at the process limit.
+    - systemd's own deadline ends a run even if the helper itself is broken.
+  - **Without systemd,** runs still happen and say which limits are missing. A process-count
+    backstop keeps a fork bomb from filling the user's process table.
+  - **Still `isolation: none`** until step 5's seccomp filter. With that check set aside, a
+    run now reports `native`.
+  - **How we know:**
+    - 17 new Linux tests run real sandboxes with limits, on both Pythons;
+    - 25 new offline tests cover the rules;
+    - 28 deliberately broken versions of the code each turned a test red.
+  - **Review:** `critic` found 8 issues, all confirmed or plausible, all dealt with. The two
+    real bugs:
+    - on a machine without systemd and with a low process limit, every run was refused;
+    - on an old cgroup-v1 machine, every run would have waited 5 s for nothing.
