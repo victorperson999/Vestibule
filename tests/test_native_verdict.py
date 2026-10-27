@@ -1,12 +1,16 @@
-"""The native backend's pure parts (M2 step 3, docs/plans/M2/M2-step3-warden-core.md §4.1):
-the per-run verdict, the mount-table rule, exit codes and the guest's environment. Offline, on
-every platform; the sandbox itself is tested in test_native.py (Linux).
+"""The native backend's pure parts (M2 step 3, docs/plans/M2/M2-step3-warden-core.md §4.1, and
+step 4, M2-step4-cgroups.md §4.1): the per-run verdict, the mount-table rule, exit codes, the
+OOM note, the backstop's kernel check and the guest's environment. Offline, on every platform;
+the sandbox itself is tested in test_native.py (Linux).
 """
 import asyncio
+import os
+import stat
+import sys
 
 import pytest
 
-from vestibule.backends import native
+from vestibule.backends import native, native_cgroup
 from vestibule.config import Limits
 
 UID, GID = 1000, 1000
@@ -31,6 +35,10 @@ GOOD_MOUNTS = [
     ("/proc/keys", "devtmpfs", "rw,nosuid,relatime", "rw,size=7954124k"),
     ("/proc/sys", "proc", "ro,nosuid,nodev,noexec,relatime", "rw"),
 ]
+# The guest/sandbox cgroup the server made, as init reports it (S4-D7).
+SANDBOX = ("/user.slice/user-1000.slice/user@1000.service/app.slice/"
+           "vestibule-0123456789abcdef.scope/guest/sandbox")
+ALL = frozenset(native._CGROUP_LIMITS)
 
 
 def _mountinfo(rows):
@@ -46,14 +54,15 @@ def _ready(**changes):
         "gid_map": "      1000       1000          1\n",
         "setgroups": "deny\n",
         "mountinfo": _mountinfo(GOOD_MOUNTS),
+        "cgroup": f"0::{SANDBOX}\n",
     }
     ready.update(changes)
     return {"ready": ready}
 
 
-def _verdict(lines, limits=Limits(), host_proc=HOST_PROC):
+def _verdict(lines, limits=Limits(), host_proc=HOST_PROC, cgroup=None, applied=frozenset()):
     return native._verdict(lines, uid=UID, gid=GID, host_ns=HOST_NS, host_proc=host_proc,
-                           limits=limits)
+                           limits=limits, cgroup=cgroup, applied=applied)
 
 
 def _with(point, opts=None, supers=None):
@@ -82,12 +91,27 @@ def test_an_error_after_ready_is_not_a_setup_failure():
 
 
 def test_everything_this_step_can_confirm_is_still_degraded():
-    """No run has cgroup limits before step 4, so `native` is out of reach (S3-D8)."""
+    """Without a placement (none was made, or it failed), every limit is named (S4-D7)."""
     assert _verdict([_ready()]) == ("native-degraded", "limits not applied: cpu, memory, pids")
 
 
+@pytest.mark.parametrize("ready, applied, detail", [
+    (_ready(), ALL, None),
+    (_ready(), ALL - {"cpu"}, "limits not applied: cpu"),  # it didn't read back
+    (_ready(cgroup="0::/user.slice/elsewhere\n"), ALL, "limits not applied: cpu, memory, pids"),
+    (_ready(cgroup=None), ALL, "limits not applied: cpu, memory, pids"),
+    (_ready(mountinfo=_mountinfo(_with("/tmp", supers="rw,size=1024k,uid=1000"))),
+     ALL - {"cpu"}, "limits not applied: cpu, tmpfs-size"),
+])
+def test_limits_count_only_where_init_reports_it_is(ready, applied, detail):
+    """A cgroup problem degrades the run, never turns a hard-tier pass into `none` (S4-D7)."""
+    isolation = "native" if detail is None else "native-degraded"
+    assert _verdict([ready], cgroup=SANDBOX, applied=applied) == (isolation, detail)
+
+
 @pytest.mark.parametrize("ready, named", [
-    (_ready(checks={n: True for n in native._INIT_CHECKS}), "seccomp"),  # step 3's own runs
+    (_ready(checks={n: True for n in native._INIT_CHECKS}), "seccomp"),  # no seccomp key at all
+    (_ready(checks={**{n: True for n in native._HARD_CHECKS}, "seccomp": False}), "seccomp"),
     (_ready(checks={**{n: True for n in native._HARD_CHECKS}, "caps": False}), "caps"),
     # a key the server doesn't know can't stand in for a missing one
     (_ready(checks={**{n: True for n in native._INIT_CHECKS}, "seccomp_ok": True}), "seccomp"),
@@ -187,6 +211,88 @@ UNKNOWN = "\n[the sandbox did not report an exit status]"
 ])
 def test_the_outcome_and_its_note(lines, timed_out, truncated, outcome):
     assert native._outcome(lines, timed_out=timed_out, truncated=truncated) == outcome
+
+
+OOM = "\n[out of memory: the kernel killed a process in the sandbox]"
+OOM_AT_LIMIT = "\n[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]"
+EXIT_0 = {"exit": {"code": 0}}
+
+
+@pytest.mark.parametrize("lines, limit_mb, outcome", [
+    ([_ready(), EXIT_0, {"oom": 1, "oom_kill": 1}], 256, (0, OOM_AT_LIMIT)),
+    ([_ready(), EXIT_0, {"oom": 1, "oom_kill": 1}], None, (0, OOM)),  # memory not applied
+    ([_ready(), EXIT_0, {"oom": 0, "oom_kill": 1}], 256, (0, OOM)),  # not guest/'s own limit
+    ([_ready(), EXIT_0, {"oom": 0, "oom_kill": 0}], 256, (0, "")),
+    ([_ready(), EXIT_0, {"oom": 1, "oom_kill": "1"}], 256, (0, "")),  # not a number
+    ([_ready(), EXIT_0], 256, (0, "")),  # no line from the helper
+    ([_ready(), {"oom": 1, "oom_kill": 1}], 256, (-1, UNKNOWN + OOM_AT_LIMIT)),
+])
+def test_the_oom_note(lines, limit_mb, outcome):
+    """S4-D8: the limit is named only when it was applied and guest/'s own limit fired."""
+    assert native._outcome(lines, timed_out=False, truncated=False,
+                           oom_limit_mb=limit_mb) == outcome
+
+
+def test_no_oom_note_on_a_timeout_or_an_overflow():
+    lines = [_ready(), {"oom": 1, "oom_kill": 1}]
+    assert native._outcome(lines, timed_out=True, truncated=False, oom_limit_mb=256) == (-1, "")
+    assert native._outcome(lines, timed_out=False, truncated=True,
+                           oom_limit_mb=256) == (137, CUT)
+
+
+@pytest.mark.parametrize("release, backstop", [
+    ("6.6.87.2-microsoft-standard-WSL2", True),
+    ("5.14.0", True),
+    ("5.10.0-21-amd64", False),
+    ("4.19.0", False),
+    ("not a release", False),
+    ("", False),
+])
+def test_the_nproc_backstop_needs_linux_5_14(release, backstop):
+    assert native._nproc_backstop(release) is backstop
+
+
+# --- finding the user bus (S4-D4) ---------------------------------------------------------
+
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="the user bus is Linux-only")
+
+
+@linux_only
+def test_busctl_gets_only_what_it_needs(monkeypatch):
+    """Critic finding 4: built from scratch, never the server's own environment."""
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setenv("VESTIBULE_CANARY_TOKEN", "the client's secret")
+    assert native_cgroup.bus_env() == {"DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+                                       "XDG_RUNTIME_DIR": "/run/user/1000", "PATH": "/usr/bin:/bin"}
+
+
+@linux_only
+@pytest.mark.parametrize("mode, own, found", [
+    (stat.S_IFSOCK | 0o666, True, True),
+    (stat.S_IFLNK | 0o777, True, False),  # a symlink doesn't count, whatever it points at
+    (stat.S_IFSOCK | 0o666, False, False),  # someone else's socket
+    (stat.S_IFREG | 0o600, True, False),
+    (None, True, False),  # no socket at all
+])
+def test_the_runtime_dir_is_derived_only_for_our_own_socket(monkeypatch, mode, own, found):
+    """The MCP SDK's minimal environment has neither variable (S4-D4)."""
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin")
+    uid = os.getuid()
+    runtime = f"/run/user/{uid}"
+
+    def lstat(path):
+        assert path == f"{runtime}/bus"
+        if mode is None:
+            raise FileNotFoundError(path)
+        return os.stat_result((mode, 0, 0, 1, uid if own else uid + 1, 0, 0, 0, 0, 0))
+
+    monkeypatch.setattr(os, "lstat", lstat)
+    expected = {"XDG_RUNTIME_DIR": runtime, "PATH": "/usr/bin"} if found else None
+    assert native_cgroup.bus_env() == expected
 
 
 def test_the_guest_environment_is_the_images_plus_the_profile(monkeypatch):

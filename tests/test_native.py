@@ -1,15 +1,21 @@
-"""The native sandbox (M2 step 3, docs/plans/M2/M2-step3-warden-core.md §4.2). Linux only,
-against the real trees that `vestibule-mcp setup` made; the `native` marker skips elsewhere with
-the reason (tests/nativeutil.py).
+"""The native sandbox (M2 steps 3 and 4: docs/plans/M2/M2-step3-warden-core.md §4.2,
+M2-step4-cgroups.md §4.2). Linux only, against the real trees that `vestibule-mcp setup` made;
+the `native` marker skips elsewhere with the reason, and the cgroup tests also need a systemd
+user manager (tests/nativeutil.py).
 
-Runs use the test-only seccomp bypass unless they test the default. The filter arrives in
-step 5, so every result here says `isolation: none` (S3-D8, S3-D9).
+Since step 5 the `backend` fixture loads the real seccomp filter, so a run that reaches the
+guest reports `native` (with a cgroup) or `native-degraded` (without); the subprocess runners
+below keep the test-only bypass because they probe non-seccomp mechanisms (locked mounts, the
+terminal, a killed server), where the bypass keeps the fixture simple and `isolation: none`
+with the step-3 label (S5-D8).
 """
 import asyncio
+import errno
 import getpass
 import json
 import logging
 import os
+import platform
 import secrets
 import subprocess
 import sys
@@ -18,10 +24,10 @@ import time
 from pathlib import Path
 
 import pytest
-from nativeutil import holders, native_required
+from nativeutil import cgroups_required, holders, native_required, scopes
 
 from vestibule import registry, rootfs
-from vestibule.backends import native
+from vestibule.backends import native, native_cgroup
 from vestibule.backends.base import RunRefusedError
 from vestibule.backends.native import NativeBackend
 from vestibule.config import DEFAULT_IMAGE_PYTHON, Limits
@@ -42,9 +48,27 @@ def limits(tmp_path):
 
 @pytest.fixture()
 async def backend():
-    b = NativeBackend(_skip_seccomp_for_tests=True)
+    b = NativeBackend()  # the real seccomp filter (S5-D8)
     yield b
     assert await b.drain(15), "a finisher was still running"
+
+
+@pytest.fixture(autouse=True)
+def no_scope_left():
+    """Criterion 8: every run scope a test made is gone after it, failed ones too (S4-D10). A
+    before/after difference, so a unit something else made can't fail the test."""
+    before = scopes()
+    yield
+    if before is None:  # no user manager: no scope was made
+        return
+    deadline = time.monotonic() + 1  # systemd removes an emptied scope asynchronously
+    while True:
+        after = scopes()
+        assert after is not None, "the user manager stopped answering"
+        if not after - before or time.monotonic() > deadline:
+            break
+        time.sleep(0.05)
+    assert not after - before, f"scopes left behind: {sorted(after - before)}"
 
 
 def _facts(r):
@@ -67,7 +91,8 @@ def _token():
 async def test_hello_in_all_three_languages(backend, limits, language, code, out):
     r = await backend.run(language, code, 10, limits)
     assert r.exit_code == 0 and r.stdout.startswith(out) and r.stderr == ""
-    assert r.isolation == "none" and r.isolation_detail == STEP3_LABEL
+    # The filter is loaded, so a clean run is native-tier and reports no denied syscalls (S5-D8).
+    assert r.isolation in ("native", "native-degraded") and r.denied_syscalls == []
 
 
 async def test_exit_codes(backend, limits):
@@ -164,7 +189,7 @@ async def test_a_read_only_workspace(backend, tmp_path):
                           10, Limits(workspace_dir=str(ws), workspace_ro=True))
     assert r.stdout == "hello" and "Read-only file system" in r.stderr
     assert not (ws / "out.txt").exists()
-    assert r.isolation_detail == STEP3_LABEL  # the server accepted /workspace as ro
+    assert r.isolation in ("native", "native-degraded")  # the server accepted /workspace as ro
 
 
 async def test_proc_is_masked_like_docker(backend, limits):
@@ -332,6 +357,63 @@ async def test_signals_behave_as_in_docker(backend, limits):
     assert (r.exit_code, r.stdout) == (0, "still-here\n")  # PID 1 ignores both
 
 
+# --- seccomp: the allowlist, the reported subset, the storm (criteria 3, 9) ----------------
+
+async def test_denied_syscalls_are_denied_and_the_subset_is_named(backend, limits):
+    """The dangerous subset is denied AND reported by name; io_uring is denied silently; an
+    allowed socket family works; ptrace of the guest's own process is allowed (S5-D1)."""
+    code = textwrap.dedent("""
+        import ctypes, json, socket
+        libc = ctypes.CDLL(None, use_errno=True)
+        def call(rc):
+            return 0 if rc == 0 else ctypes.get_errno()
+        def sock(family):
+            try:
+                socket.socket(family, socket.SOCK_STREAM).close(); return 0
+            except OSError as e:
+                return e.errno
+        print(json.dumps({
+            "mount": call(libc.mount(b"none", b"/tmp/x", b"tmpfs", 0, None)),
+            "unshare": call(libc.unshare(0x10000000)),       # CLONE_NEWUSER
+            "keyctl": call(libc.syscall(250, 0, 0, 0, 0, 0)),
+            "vsock": sock(40), "inet": sock(socket.AF_INET),
+            "iouring": call(libc.syscall(425, 1, 0)),         # io_uring_setup
+            "ptrace": call(libc.ptrace(0, 0, 0, 0)),          # PTRACE_TRACEME
+        }))
+    """)
+    r = await backend.run("python", code, 15, limits)
+    assert r.exit_code == 0, (r.stderr, r.isolation_detail)
+    f = json.loads(r.stdout.strip().splitlines()[-1])
+    assert f["mount"] == f["unshare"] == f["keyctl"] == f["vsock"] == errno.EPERM
+    assert f["iouring"] == errno.EPERM  # denied, but silently (S5-D2)
+    assert f["inet"] == 0 and f["ptrace"] == 0  # an allowed family; ptrace of own process
+    # vsock is named by its syscall, `socket`; io_uring and ptrace are never named.
+    assert set(r.denied_syscalls) == {"mount", "unshare", "keyctl", "socket"}
+    assert not any("io_uring" in n or n == "ptrace" for n in r.denied_syscalls)
+    assert r.isolation in ("native", "native-degraded")
+
+
+async def test_the_notification_storm_is_bounded(backend, limits):
+    """criterion 9: many threads looping a notified syscall return, with the name deduplicated
+    and reporting stopped at the cap. (The helper's CPU inside the envelope is a step-7 check.)"""
+    code = textwrap.dedent("""
+        import ctypes, threading
+        libc = ctypes.CDLL(None, use_errno=True)
+        def spin():
+            for _ in range(3000):
+                libc.mount(b"none", b"/tmp/x", b"tmpfs", 0, None)
+        ts = [threading.Thread(target=spin) for _ in range(20)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        print("done")
+    """)
+    r = await backend.run("python", code, 20, limits)
+    assert r.exit_code == 0 and r.stdout.strip() == "done"
+    assert r.denied_syscalls == ["mount"]  # 60k attempts, one deduplicated name
+    assert "reporting stopped" in r.stderr  # the 256 cap was hit; the rest fail unnamed
+    assert (await backend.run("python", "print('fine')", 10, limits)).stdout == "fine\n"
+
+
 # --- stopping (criteria 8 and 11, without cgroups) -----------------------------------------
 
 @pytest.mark.parametrize("language, code", [
@@ -354,7 +436,8 @@ async def test_a_run_past_its_timeout_is_stopped_with_nothing_left(backend, limi
     r = await task
     assert r.timed_out and r.exit_code == -1
     assert time.monotonic() - t0 < 1 + 3  # timeout_s, the 2 s grace, and margin
-    assert r.isolation_detail == STEP3_LABEL  # the verdict comes from `ready`, read before
+    # the verdict comes from `ready`, sent before the guest ran, so the filter was confirmed
+    assert r.isolation in ("native", "native-degraded")
     assert await backend.drain(10)
     assert holders(token) == []
     # The helper stopped init itself: its exit means the sandbox is empty (S3-D7).
@@ -407,17 +490,29 @@ def test_a_killed_server_leaves_no_sandbox(tmp_path):
 
 # --- refusing before the guest exists (S3-D8, S3-D9) ---------------------------------------
 
-async def test_the_default_backend_stops_before_the_guest(limits):
-    b = NativeBackend()  # no bypass: there is no filter until step 5
-    r = await b.run("bash", "echo ran > ran", 10, limits)
-    assert await b.drain(10)
-    assert (r.isolation, r.exit_code, r.stdout) == ("none", -1, "")
-    assert r.isolation_detail == ("native sandbox setup failed at seccomp: the seccomp filter "
-                                  "arrives in M2 step 5; nothing was executed")
-    assert not (Path(limits.workspace_dir) / "ran").exists()
+async def test_the_default_loads_the_filter_the_bypass_does_not(limits):
+    """S5-D8: the default run loads the filter and reaches a native verdict; the test-only
+    bypass loads none, so the server's own `seccomp` check leaves the run `none`."""
+    default = NativeBackend()
+    bypass = NativeBackend(_skip_seccomp_for_tests=True)
+    try:
+        r = await default.run("bash", "echo ok", 10, limits)
+        assert r.exit_code == 0 and r.stdout == "ok\n"
+        assert r.isolation in ("native", "native-degraded")
+        # the bypass still runs the guest (exit 0, the file is written); only the verdict is
+        # `none`, because the server's own seccomp check fails on the unloaded filter (S5-D6).
+        r = await bypass.run("bash", "echo hi; echo ran > ran", 10, limits)
+        assert (r.isolation, r.isolation_detail, r.exit_code, r.stdout) == (
+            "none", STEP3_LABEL, 0, "hi\n")
+        assert (Path(limits.workspace_dir) / "ran").exists()
+    finally:
+        assert await default.drain(10) and await bypass.drain(10)
 
 
 async def test_an_empty_tree_fails_setup_at_mounts(backend, tmp_path):
+    # S5-D7 regression: init aborts at the mounts stage, before the seccomp stage, so it sends
+    # an `error` line and no listener fd; the helper's first recv_fds must relay those bytes, not
+    # eat them — otherwise this honest "setup failed at mounts" would become "no status report".
     ref, arch = registry.parse_ref(DEFAULT_IMAGE_PYTHON), registry.host_arch()
     key = f"{ref.digest[7:]}-{arch}"
     d = tmp_path / "rootfs"
@@ -529,3 +624,317 @@ async def test_busy_refusal_after_a_bounded_wait(limits, monkeypatch):
     gate.set()
     await holder
     assert await b.drain(10)
+
+
+# --- cgroups: the run's scope and the guest's limits (M2 step 4) ---------------------------
+
+OOM_AT_LIMIT = "\n[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]"
+ALL_LIMITS = "limits not applied: cpu, memory, pids"
+
+
+def _fork_bomb(cap):
+    """Forks until the kernel refuses, at most `cap` times so a broken limit can't flood the
+    host; the children sleep, so each one counts."""
+    return textwrap.dedent(f"""
+        import errno, json, os, time
+        n, error = 0, None
+        try:
+            while n < {cap}:
+                if os.fork() == 0:
+                    time.sleep(30)
+                    os._exit(0)
+                n += 1
+        except OSError as e:
+            error = errno.errorcode[e.errno]
+        print(json.dumps({{"forks": n, "error": error}}))
+    """)
+
+
+def _fake_busctl(tmp_path, monkeypatch, body):
+    """S4-D10: a `busctl` of the test's own, the only one on the PATH that busctl gets."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "busctl"
+    fake.write_text("#!/bin/sh\n" + body)
+    fake.chmod(0o755)
+    monkeypatch.setattr(native_cgroup, "bus_env", lambda: {"PATH": f"{bin_dir}:{os.defpath}"})
+
+
+def _helpers():
+    """This process's own helper children that are still around."""
+    def parent(pid):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[1])
+        except OSError:  # gone meanwhile
+            return None
+    return [p for p in holders("vestibule-warden") if parent(p) == os.getpid()]
+
+
+@cgroups_required
+async def test_the_limits_from_outside(backend, limits, capfd):
+    token = _token()
+    task = asyncio.create_task(backend.run(
+        "bash", f"(exec -a {token} sleep 600) & until [ -e go ]; do sleep 0.02; done; echo done",
+        20, limits))
+    t0 = time.monotonic()
+    while not holders(token):
+        assert time.monotonic() - t0 < 5, "the guest never started"
+        await asyncio.sleep(0.02)
+    with open(f"/proc/{holders(token)[0]}/cgroup") as f:
+        cgroup = f.read().strip().removeprefix("0::")
+    scope, sep, _ = cgroup.rpartition("/guest/sandbox")
+    assert sep and scope.rsplit("/", 1)[1].startswith("vestibule-") and scope.endswith(".scope")
+
+    def read(name):
+        return Path(f"{native_cgroup.CGROUP_FS}{scope}/{name}").read_text().strip()
+
+    assert [read(f"guest/{f}") for f in ("memory.max", "memory.swap.max", "pids.max", "cpu.max")] \
+        == [str(256 << 20), "0", "128", "75000 100000"]
+    assert [read(f) for f in ("memory.max", "pids.max", "cpu.max")] \
+        == [str(320 << 20), "144", "100000 100000"]  # the envelope (S4-D6)
+    assert read("supervisor/cgroup.procs").split() == [str(p) for p in _helpers()]
+    (Path(limits.workspace_dir) / "go").touch()
+    r = await task
+    assert (r.exit_code, r.stdout, r.stderr) == (0, "done\n", "")
+    assert (r.isolation, r.isolation_detail) == ("native", None)  # filter + every limit (S5-D8)
+    # Golden rule 1: busctl prints the job's path on its stdout, which must not be ours.
+    assert capfd.readouterr().out == ""
+
+
+async def test_a_failed_move_of_init_runs_nothing(backend, limits, monkeypatch):
+    async def place(run_id, pid, runtime_max_s, limits):  # a guest/sandbox that doesn't exist
+        return native_cgroup.Placement("/vestibule-missing/guest/sandbox",
+                                       frozenset(native._CGROUP_LIMITS))
+
+    monkeypatch.setattr(native_cgroup, "place", place)
+    r = await backend.run("bash", "echo ran > ran", 10, limits)
+    assert (r.isolation, r.exit_code, r.stdout) == ("none", -1, "")
+    assert r.isolation_detail.startswith("native sandbox setup failed at helper: ")
+    assert r.isolation_detail.endswith("; nothing was executed")
+    assert not (Path(limits.workspace_dir) / "ran").exists()
+
+
+@cgroups_required
+async def test_a_memory_bomb_is_killed_at_the_limit(backend, limits):
+    child = ("import subprocess, sys\n"
+             "p = subprocess.run([sys.executable, '-c', 'b = b\"x\" * (1 << 30)'])\n"
+             "print('child', p.returncode)\n")
+    r = await backend.run("python", child, 30, limits)
+    assert (r.exit_code, r.stdout, r.stderr) == (0, "child -9\n", OOM_AT_LIMIT)
+    r = await backend.run("python", "b = b'x' * (1 << 30)", 30, limits)
+    assert (r.exit_code, r.stderr) == (137, OOM_AT_LIMIT)
+    r = await backend.run("python", "print('fine')", 10, limits)
+    assert (r.exit_code, r.stdout, r.stderr) == (0, "fine\n", "")
+
+
+@cgroups_required
+async def test_a_fork_bomb_stops_at_pids_max(backend, limits):
+    t0 = time.monotonic()
+    f = _facts(await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits))
+    assert f == {"forks": limits.pids_max - 2, "error": "EAGAIN"}  # init and the guest count
+    assert time.monotonic() - t0 < 10
+    assert (await backend.run("bash", "echo fine", 10, limits)).stdout == "fine\n"
+
+
+@cgroups_required
+async def test_the_cpu_limit_holds(backend, limits):
+    code = ("import time\nt0 = time.time()\nwhile time.time() - t0 < 2:\n    pass\n"
+            "print(time.process_time() / (time.time() - t0))\n")
+    r = await backend.run("python", code, 10, limits)
+    assert r.exit_code == 0 and float(r.stdout) <= 0.85  # cpu_pct 75; no lower bound
+
+
+@cgroups_required
+async def test_a_limit_the_kernel_rejects_is_named(backend, tmp_path):
+    lim = Limits(workspace_dir=str(tmp_path / "ws"), cpu_pct=0)  # cpu.max "0 100000": EINVAL
+    r = await backend.run("python", "print(1)", 10, lim)
+    assert (r.exit_code, r.isolation, r.isolation_detail) == (
+        0, "native-degraded", "limits not applied: cpu")
+
+
+@cgroups_required
+async def test_a_full_run_claims_native(backend, limits):
+    r = await backend.run("python", "print(1)", 10, limits)
+    assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (0, "1\n", "native", None)
+
+
+@pytest.mark.skipif(not native._nproc_backstop(platform.release()),
+                    reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
+async def test_without_a_bus_the_run_degrades_and_the_backstop_holds(backend, limits, caplog,
+                                                                     monkeypatch):
+    monkeypatch.setattr(native_cgroup, "bus_env", lambda: None)
+    r = await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits)
+    assert (r.isolation, r.isolation_detail) == ("native-degraded", ALL_LIMITS)
+    f = _facts(r)
+    assert f["error"] == "EAGAIN" and f["forks"] < limits.pids_max  # RLIMIT_NPROC, not the cap
+    assert any("no user bus" in m for m in caplog.messages), caplog.messages
+
+
+_LOW_NPROC_RUNNER = textwrap.dedent("""
+    import asyncio, json, sys
+    from vestibule.backends import native_cgroup
+    from vestibule.backends.native import NativeBackend
+    from vestibule.config import Limits
+
+    native_cgroup.bus_env = lambda: None  # no cgroup, so the backstop is set
+
+    async def main():
+        b = NativeBackend(_skip_seccomp_for_tests=True)
+        r = await b.run("bash", "echo ran", 10, Limits(workspace_dir=sys.argv[1]))
+        await b.drain(10)
+        print(json.dumps({"exit": r.exit_code, "out": r.stdout, "detail": r.isolation_detail}))
+
+    asyncio.run(main())
+""")
+
+
+@pytest.mark.skipif(not native._nproc_backstop(platform.release()),
+                    reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
+def test_a_hard_nproc_limit_below_pids_max_still_runs(tmp_path):
+    """Critic finding 1: no process can raise its hard limit, so the backstop must clamp to it,
+    never refuse the run (S4-D3: limits degrade, never block)."""
+    runner = tmp_path / "runner.py"
+    runner.write_text(_LOW_NPROC_RUNNER)
+    p = subprocess.run(["bash", "-c", 'ulimit -u 100 && exec "$0" "$1" "$2"', sys.executable,
+                        str(runner), str(tmp_path / "ws")],
+                       capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout.strip().splitlines()[-1]) == {
+        "exit": 0, "out": "ran\n", "detail": STEP3_LABEL}
+
+
+async def test_without_cgroup_v2_placement_fails_at_once(backend, limits, tmp_path, monkeypatch,
+                                                         caplog):
+    """Critic finding 5: a v1 or hybrid host has no cgroup.controllers at the v2 root. Asking
+    systemd anyway would cost every run the 5 s bound, and the log would blame the bound."""
+    pidfile = tmp_path / "busctl.pid"
+    _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pidfile}"\n')
+    monkeypatch.setattr(native_cgroup, "CGROUP_FS", str(tmp_path / "v1"))
+    r = await backend.run("python", "print('ran')", 10, limits)
+    assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
+        0, "ran\n", "native-degraded", ALL_LIMITS)
+    assert not pidfile.exists()  # systemd was never asked
+    assert any("no cgroup v2" in m for m in caplog.messages), caplog.messages
+
+
+@cgroups_required
+async def test_a_limit_that_reads_back_differently_is_named(backend, limits, monkeypatch):
+    """Critic finding 2: a written limit counts only if it reads back as written (S4-D5)."""
+    real = native_cgroup._read
+    monkeypatch.setattr(native_cgroup, "_read", lambda path: "max 100000"
+                        if path.endswith("/guest/cpu.max") else real(path))
+    r = await backend.run("python", "print(1)", 10, limits)
+    assert (r.exit_code, r.isolation, r.isolation_detail) == (
+        0, "native-degraded", "limits not applied: cpu")
+
+
+@cgroups_required
+@pytest.mark.skipif(not native._nproc_backstop(platform.release()),
+                    reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
+async def test_a_controller_not_delegated_is_named_and_the_backstop_holds(backend, limits,
+                                                                          monkeypatch):
+    """Critic finding 3: with a scope but no pids controller under it (a user manager that
+    doesn't delegate it), pids is named and RLIMIT_NPROC stands in (S4-D9)."""
+    real = native_cgroup._write
+
+    def write(path, text):
+        if text == "+pids":
+            raise PermissionError("pids not delegated (test)")
+        real(path, text)
+
+    monkeypatch.setattr(native_cgroup, "_write", write)
+    r = await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits)
+    assert (r.isolation, r.isolation_detail) == ("native-degraded", "limits not applied: pids")
+    f = _facts(r)
+    # RLIMIT_NPROC stops it at 125; without it, the envelope's TasksMax would at about 141.
+    assert f["error"] == "EAGAIN" and f["forks"] < limits.pids_max - 2
+
+
+@cgroups_required
+async def test_systemds_deadline_stops_a_run_nothing_else_stops(backend, limits, monkeypatch,
+                                                                caplog):
+    """S4-D6: the server's grace and the helper's own deadline pushed past 100 s; systemd's at
+    3 s must end the run, by SIGKILL to everything in the scope, the helper included."""
+    caplog.set_level(logging.INFO, logger="vestibule.native")
+    monkeypatch.setattr(native, "_STARTUP_GRACE_S", 100)
+    monkeypatch.setattr(native, "_SELF_DEADLINE_SLACK_S", 100)
+    monkeypatch.setattr(native, "_RUNTIME_MAX_SLACK_S", -7)  # timeout 10: systemd's at 3 s
+    token = _token()
+    code = ("import os, signal, subprocess\n"
+            f"subprocess.Popen(['bash', '-c', 'exec -a {token} sleep 600'])\n"
+            "os.kill(os.getpid(), signal.SIGSTOP)\n")
+    t0 = time.monotonic()
+    r = await backend.run("python", code, 10, limits)
+    assert not r.timed_out and time.monotonic() - t0 < 6
+    assert await backend.drain(10)
+    assert holders(token) == []
+    # -9: systemd's SIGKILL. The helper's own handler would have exited 0.
+    assert any("sandbox gone (helper exit -9)" in m for m in caplog.messages), caplog.messages
+
+
+_MIN_ENV_RUNNER = textwrap.dedent("""
+    import asyncio, json, sys
+    from vestibule.backends.native import NativeBackend
+    from vestibule.config import Limits
+
+    async def main():
+        b = NativeBackend(_skip_seccomp_for_tests=True)
+        r = await b.run("python", "b = b'x' * (1 << 30)", 30, Limits(workspace_dir=sys.argv[1]))
+        await b.drain(10)
+        print(json.dumps({"exit": r.exit_code, "err": r.stderr}))
+
+    asyncio.run(main())
+""")
+
+
+@cgroups_required
+def test_placement_finds_the_bus_in_the_sdks_minimal_environment(tmp_path):
+    """The MCP SDK starts servers with these six variables only: no XDG_RUNTIME_DIR, no
+    DBUS_SESSION_BUS_ADDRESS (S4-D4). The OOM note shows the memory limit was placed."""
+    runner = tmp_path / "runner.py"
+    runner.write_text(_MIN_ENV_RUNNER)
+    env = {k: os.environ[k] for k in ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+           if k in os.environ}
+    p = subprocess.run([sys.executable, str(runner), str(tmp_path / "ws")], env=env,
+                       capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+    assert p.returncode == 0, p.stderr
+    assert json.loads(p.stdout.strip().splitlines()[-1]) == {"exit": 137, "err": OOM_AT_LIMIT}
+
+
+async def test_a_hanging_busctl_costs_at_most_the_placement_bound(backend, limits, tmp_path,
+                                                                  monkeypatch, caplog):
+    pidfile = tmp_path / "busctl.pid"
+    _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pidfile}"\nexec sleep 60\n')
+    t0 = time.monotonic()
+    r = await backend.run("python", "print('ran')", 10, limits)
+    assert time.monotonic() - t0 < native_cgroup._PLACE_WAIT_S + 3
+    assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
+        0, "ran\n", "native-degraded", ALL_LIMITS)
+    assert any("placement took over" in m for m in caplog.messages), caplog.messages
+    assert not Path(f"/proc/{pidfile.read_text().strip()}").exists()
+
+
+async def test_without_busctl_the_run_degrades_at_once(backend, limits, tmp_path, monkeypatch,
+                                                       caplog):
+    monkeypatch.setattr(native_cgroup, "bus_env", lambda: {"PATH": str(tmp_path / "empty")})
+    t0 = time.monotonic()
+    r = await backend.run("python", "print('ran')", 10, limits)
+    assert time.monotonic() - t0 < 3
+    assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
+        0, "ran\n", "native-degraded", ALL_LIMITS)
+    assert any("placement failed" in m for m in caplog.messages), caplog.messages
+
+
+async def test_a_cancel_during_placement_leaves_nothing(backend, limits, tmp_path, monkeypatch):
+    pidfile = tmp_path / "busctl.pid"
+    _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pidfile}"\nexec sleep 60\n')
+    task = asyncio.create_task(backend.run("python", "print('ran')", 10, limits))
+    await asyncio.sleep(0.5)  # inside placement, every time: busctl never answers
+    assert pidfile.exists() and not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await backend.drain(10)
+    assert not Path(f"/proc/{pidfile.read_text().strip()}").exists()
+    assert _helpers() == []

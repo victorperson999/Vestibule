@@ -41,8 +41,10 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 0 | Spike: kernel facts for N1–N5 (no code) | 2026-10-14 | `4509d35` | 240 |
 | M2 step 1a | Linux baseline: version pins, constraints, two-platform gate | 2026-10-15 | `d811021` (with 1b) | 240 (+201 / +3 on Linux 3.11) |
 | M2 step 1b | POSIX shutdown hand-off (detached cleaner) | 2026-10-15 | `d811021` (with 1a) | 261 Linux (0 skipped); 252 + 9 POSIX-only skips on Windows |
-| M2 step 2 | Rootfs: registry client, unpacker, `vestibule-mcp setup` | 2026-10-25 | `2af2c0c` `9197a55` + review fixes and Karpathy re-review *pending* | 358 Linux (0 skipped); 305 + 33 POSIX/Linux-only skips on Windows |
-| M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | *pending* | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
+| M2 step 2 | Rootfs: registry client, unpacker, `vestibule-mcp setup` | 2026-10-25 | `2af2c0c` `9197a55` + review fixes and Karpathy re-review `4c8afcf` | 358 Linux (0 skipped); 305 + 33 POSIX/Linux-only skips on Windows |
+| M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | `1ef1b46` | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
+| M2 step 4 | cgroups v2: per-run scope, guest limits, OOM note, fork-bomb backstop (not reachable from the server yet) | 2026-10-26 | `8b1de5e` | 470 Linux (0 skipped); 367 + 83 POSIX/Linux-only skips on Windows |
+| M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | pending | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -51,10 +53,12 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
-| 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) is noted for M2. | Documented (README, contract D1); M2 seccomp / M4 |
+| 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) was considered for M2 step 5 and **rejected** (N4): denying `symlink`/`symlinkat` breaks `python -m venv` and npm `.bin` links in the workspace. M1's measures stay. | Documented (README, contract D1); revisit in M4 `SECURITY.md` |
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. | Later milestone (liveness lease); M2 step 7 re-measures with a real session |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
 | 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
+| 2026-10-26 (M2 step 4, S4-D1) | native limits | Sandboxes run in the user manager's `app.slice`, outside the client's own cgroup, so a `MemoryMax=` a user put on their agent doesn't count them. Each sandbox has its own limits instead. | Accepted by Victor; README note in step 7 |
+| 2026-10-26 (M2 step 4) | native placement | A host where systemd accepts the scope job and then fails it, with the helper alive, makes every run wait the full 5 s placement bound before running without limits. Not seen on any tested host. | Step 6's probe reports placement time |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
@@ -72,9 +76,174 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M2 step 5 — seccomp: libseccomp binding, Docker-derived allowlist, bounded reporting (2026-10-27)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M2/M2-step5-seccomp.md`](plans/M2/M2-step5-seccomp.md) S5-D1 to S5-D10
+  (v2, after the `skeptic` rework). Contract amendment in M2 N4 (Q1/Q2 resolved + the mechanism).
+- **What:**
+  - **`native_seccomp.py`** (new): our own `ctypes` binding over the system `libseccomp.so.2`
+    (N4 — libseccomp compiles the BPF). `build(profile)` ports moby's default profile for a
+    capability-less, native-arch guest: default-deny `EPERM`; `clone3 → ENOSYS`; `socket`/
+    `socketpair` restricted to AF_UNIX/INET/INET6/NETLINK with `AF_VSOCK` notified; a named
+    dangerous subset via `SCMP_ACT_NOTIFY`; `io_uring_*` in `DENY_SILENT` (excluded from the
+    allowlist, never notified — S5-D2); `PTRACE_POLICY="allow"` keeps moby's block-1 ptrace
+    allow (S5-D1); bad-arch → `KILL_PROCESS`. Plus `load`/`notify_fd`/`alloc`/`receive`/
+    `respond_eperm`/`name` and (for §4.1) `attr_get`/`arch_exists`.
+  - **`seccomp-profile.json`** (new): moby/profiles `6fe7deb` verbatim, sha256-pinned by a test
+    (S5-D9), Apache-2.0 (attributed in the binding's docstring). `.gitattributes` keeps git from
+    rewriting its bytes.
+  - **`native_helper.py`:** `_build_seccomp` imports the binding and compiles the ctx in the
+    **helper, before it forks init** (so no ctypes array/POINTER type is first materialized after
+    `pivot_root` — a 3.14 trap; S5-D3). `_init` gained `seccomp_ctx`; it now **loads** the filter
+    and hands the listener fd to the helper over the init↔helper socketpair, **before `_checks`**
+    (so `_checks` reads `/proc/self/status` `Seccomp:` as a 7th, reported-not-raising check —
+    S5-D6). `_supervise` was rewritten: its **first** socket read is `recv_fds` (fd ⇒ listener,
+    no fd ⇒ relay the bytes — the S5-D7 framing fix), and it answers notifications with `EPERM`,
+    de-duplicating names and capping at 256 before closing the listener. The helper sends a
+    `{"denied":[…],"notify_stopped":…}` status line.
+  - **`native.py`:** reads the vendored profile once (`_PROFILE`), passes `profile` + `pkg_dir`
+    in the run config, and `_denied` parses the status line into `RunResult.denied_syscalls` + a
+    "reporting stopped" note.
+  - **Config/docs:** the `pyproject` `seccomp` extra removed (N4); two CLAUDE.md bullets and a
+    GETTING_STARTED libseccomp note (S5-D10); the contract N4 amendment.
+- **Tests:** `test_native.py` migrated off the bypass — the `backend` fixture loads the real
+  filter, the `seccomp_aside` fixture is gone, and the step-3/4 `STEP3_LABEL`/`none` side-checks
+  became native-tier assertions; the subprocess runners (locked mounts, tty, killed server) keep
+  the bypass since they probe non-seccomp mechanisms. New: `test_native_seccomp.py` (the binding,
+  `native`-marked, imported via a fixture so collection never hits its Linux-only guard),
+  `test_seccomp_profile.py` (the pin, runs everywhere), the denial + storm runs, the
+  default-vs-bypass test, a `seccomp: False` verdict row. `nativeutil.native_skip_reason` now
+  also requires `libseccomp.so.2`.
+- **What broke along the way (build-time, fixed before gate):**
+  1. *`seccomp_arch_exists` → `seccomp_arch_exist`* — the real symbol has no trailing `s`; the
+     typo made the whole module fail to import. Build-order check 1 caught it at once.
+  2. *`_OPS` trimmed to `EQ` only* — the first build raised `KeyError: SCMP_CMP_LT`. moby's
+     *applicable* entries use `MASKED_EQ` (the `clone` rule that denies `CLONE_NEW*`) and others,
+     so trimming would have silently mis-built the namespace-blocking clone rule. Restored the
+     full 7-comparator map. (This is exactly why the plan front-loads the build as check 1.)
+  3. *the default-vs-bypass test asserted the old `-1`/"nothing ran"* — under the step-5 bypass
+     the guest still *runs* (the step-3 stub that raised is gone); only the verdict is `none`.
+     Fixed to assert exit 0 + the file written + `none`.
+- **Where to start if it breaks:**
+  - a run wrongly `none` with "…not confirmed: seccomp": init didn't reach `Seccomp: 2` — check
+    `native_helper._init`'s seccomp stage order (load is before `_checks`) and that libseccomp is
+    present (`nativeutil`).
+  - a `blocked syscalls:` line that's wrong/missing: `native_helper._supervise`'s listener branch
+    and `native._denied`; the dangerous subset is `native_seccomp.NOTIFY`.
+  - an innocent node run reporting `io_uring_setup`: it drifted out of `DENY_SILENT` or into
+    `NOTIFY` (S5-D2).
+  - the suite hanging on a seccomp test: a notified syscall in a lone child with no serviced
+    listener blocks — §4.1's child-load test must use only silent-deny calls.
+- **Mechanism verified by hand on 3.14 and 3.11** before the tests (scratch harness, not
+  committed): build → 347 rules, bad-arch KILL, host-arch only; default → `native`; bypass →
+  `none`; mount/unshare/keyctl/vsock denied+named, io_uring silent, AF_INET + self-ptrace
+  allowed; 60k-notification storm → `["mount"]` + "stopped" note in ~2.3 s.
+- **Review:** `skeptic` on the plan → "rework needed" (3 findings: the S5-D7 listener framing on
+  an early abort; a §4.1 test that would hang on a notified `mount`; the 3.14 ctypes-after-pivot
+  trap) — all fixed in plan v2 before code. `critic` on the diff → no high/med; one low "dead
+  `PTRACE_POLICY=="deny"` branch" nit, kept deliberately (S5-D1's one-line stricter-posture
+  toggle). Verified via 5 mutants (all red). Gate green both platforms (Linux 480/0 skips ~207 s,
+  Windows 369 + 91 skips).
+- **Sizes** (code lines): `native_seccomp.py` 175 (est. ~140; ctypes boilerplate + test helpers,
+  looked at), `native_helper.py` 382 (est. ~365, look-again ~380; the notification loop is
+  coupled to `_supervise`'s poll, looked at), `native.py` 439 (est. ~445).
+
+## M2 step 4 — cgroups v2: per-run scope, guest limits, OOM note, fork-bomb backstop (2026-10-26)
+
+- **Commit:** `8b1de5e`.
+- **Plan:** [`docs/plans/M2/M2-step4-cgroups.md`](plans/M2/M2-step4-cgroups.md) S4-D1 to S4-D10
+  (v3, after one `skeptic` review and a Karpathy re-check). Contract amendments in M2 N3, N8,
+  §3, §4 and §10.
+- **What:**
+  - **`native_cgroup.py`** (new) places each run before its helper may start:
+    - a transient systemd scope `vestibule-<id>.scope` holding the paused helper, asked for
+      with `busctl --user`. The bus is found as N3 says, under the MCP SDK's minimal
+      environment too;
+    - `supervisor/` for the helper and `guest/sandbox/` for init. The guest's limits sit on
+      `guest/` (`memory.max` with `memory.swap.max` 0, `pids.max`, `cpu.max`), each read back;
+    - the envelope and an outside deadline as the scope's own properties: `MemoryMax`,
+      `TasksMax`, `CPUQuotaPerSecUSec`, and `RuntimeMaxSec` with `KillSignal=SIGKILL` and
+      `CollectMode=inactive-or-failed`;
+    - one 5 s bound over all of it. Any failure degrades the run to "limits not applied: …"
+      and logs why.
+  - **`native_helper.py`:**
+    - the helper waits for its release, then moves init into `guest/sandbox/`. A failed move
+      stops the run with `none`;
+    - init reports its own cgroup in `ready`;
+    - when `pids` isn't applied, on Linux 5.14+, an `RLIMIT_NPROC` backstop, clamped to the
+      user's hard limit;
+    - after init's exit, the helper sends `guest/`'s `oom` and `oom_kill` counters.
+  - **`native.py`:**
+    - the release pipe, with placement between the spawn and the guest's timeout clock;
+    - the verdict counts a limit only where init reports it is and the limit read back, so
+      `native` is reachable once step 5's filter exists;
+    - the OOM note on stderr names the memory limit only when that limit fired.
+  - **Every real run still reports `isolation: none`** until step 5. One test sets the seccomp
+    check aside and gets `native`.
+  - **Measured in WSL:** placement adds about 2 ms to the median cold start (the prototype).
+    The Linux gate still takes 207 s.
+- **Files:**
+  - Source: `backends/native_cgroup.py` (new); `backends/native.py`;
+    `backends/native_helper.py`.
+  - Tests: `test_native.py` (+17 Linux tests, and a no-scope-left check on every test);
+    `test_native_verdict.py` (+25, six of them Linux-only); `nativeutil.py` (the `cgroups`
+    skip rule, the scope listing).
+  - Docs: the contract amendments; `docs/GETTING_STARTED.md` (the cgroup tests'
+    prerequisite).
+- **Guarded by:**
+  - `test_native.py::test_the_limits_from_outside`: every limit file and the envelope, read
+    by the test; the helper alone in `supervisor/`; nothing on the server's stdout.
+  - `::test_a_memory_bomb_is_killed_at_the_limit`, `::test_a_fork_bomb_stops_at_pids_max`,
+    `::test_the_cpu_limit_holds`.
+  - `::test_systemds_deadline_stops_a_run_nothing_else_stops`: systemd's deadline alone
+    ends a self-stopped guest; the helper's exit is −9.
+  - `::test_a_hanging_busctl_costs_at_most_the_placement_bound`,
+    `::test_a_cancel_during_placement_leaves_nothing`, `::test_without_busctl_…`,
+    `::test_without_cgroup_v2_…`, `::test_without_a_bus_…` (with the backstop).
+  - `::test_placement_finds_the_bus_in_the_sdks_minimal_environment`.
+  - `test_native_verdict.py::test_limits_count_only_where_init_reports_it_is`,
+    `::test_the_oom_note`, `::test_the_nproc_backstop_needs_linux_5_14`, and the two
+    `bus_env` tests.
+- **Broke along the way:**
+  - **The prototype, before the plan** (WSL `~/m2spike/step4/`): `busctl`'s stdout would have
+    reached the MCP channel without `/dev/null`, and `busctl` missing from `PATH` raises at
+    the spawn.
+  - **`skeptic`** (11 findings, all accepted, the three medium ones re-measured first):
+    - a scope that ends badly stays `failed` and leaves the user manager `degraded`;
+    - init ignores SIGTERM, so systemd's deadline needs `KillSignal=SIGKILL`;
+    - `busctl --timeout` doesn't cover a bus that never answers;
+    - before 5.14, `RLIMIT_NPROC` counts the user's processes across the host.
+  - **The Karpathy re-check** that Victor asked for: three gaps (a guessed size estimate, no
+    test for `busctl`'s stdout, two behaviours no test could fail).
+  - **`critic`** (8 findings; `verifier`: 7 confirmed, 1 plausible; all dealt with). Two real
+    bugs, each with a test that failed first:
+    - with no user bus and a hard process limit below 128, every run was refused at
+      "privileges", because no process can raise its hard limit;
+    - on a cgroup-v1 host, every run would have waited the full 5 s, with the log blaming the
+      bound.
+
+    It also found four test gaps: the readback compare, a controller that isn't delegated,
+    `bus_env()`'s environment, and the size line.
+  - **Mutation checks:** 28 broken versions, all red. A memory-pressure kill of the
+    background run left one mutant (no placement bound) in `native_cgroup.py`. The file was
+    restored, diffed against a backup, and the rest re-run in the foreground. A harness that
+    edits the real source needs a backup and a check after any kill.
+  - **Size:** `native_cgroup.py` is 136 code lines, against ~110 planned and a look-again
+    line of ~130. It was looked at twice, and the reason is recorded in the plan's §8.
+- **Where to start if it breaks:**
+  - **"limits not applied":** the server log gives the reason: no cgroup v2, no user bus,
+    `busctl` failed, placement over 5 s, the layout failed, or a limit that wasn't applied
+    or read back differently.
+  - **A unit left behind, or the user manager `degraded`:** `systemctl --user list-units
+    --all 'vestibule-*'`, then `systemctl --user reset-failed`.
+  - The prototype in `~/m2spike/step4/` reproduces each §1 fact.
+
+---
+
 ## M2 step 3 — Warden core: helper, jail, PID-1 hardening, kill path (2026-10-25)
 
-- **Commit:** *pending* (fill in from `git log` next session).
+- **Commit:** `1ef1b46`.
 - **Plan:** [`docs/plans/M2/M2-step3-warden-core.md`](plans/M2/M2-step3-warden-core.md)
   S3-D1 to S3-D13 (v3, after two `skeptic` reviews). Contract amendments in M2 N1, N5, N7,
   N8, N9, §3 and §4.2.
@@ -161,8 +330,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M2 step 2 — Rootfs: registry client, unpacker, `vestibule-mcp setup` (2026-10-25)
 
-- **Commit:** `2af2c0c`, `9197a55` (the step); review fixes *pending* (fill in from `git log`
-  next session).
+- **Commit:** `2af2c0c`, `9197a55` (the step); review fixes and the Karpathy re-review
+  `4c8afcf`.
 - **Plan:** [`docs/plans/M2/M2-step2-rootfs.md`](plans/M2/M2-step2-rootfs.md) S2-D1 to S2-D10,
   with an amendment for the review fixes. Contract amendments in M2 N2, §6 and §7; M1 step 6's
   re-pin procedure now runs `setup` on Linux.

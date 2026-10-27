@@ -552,6 +552,17 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     - the label for a run with no status report, `none` (N5);
     - the kill order without cgroups (N8);
     - Docker's `/proc` masks, loopback up, and no controlling terminal (N9).
+- **Step-4 decisions — approved 2026-10-26** ([plan](plans/M2/M2-step4-cgroups.md), v3).
+  - **Sign-off:** Victor approved v3 after one `skeptic` review (11 findings, all accepted)
+    and a Karpathy re-check that he asked for (3 more gaps, fixed in the plan).
+  - **Before planning,** a throwaway prototype ran the whole step in WSL. Per-run systemd
+    scopes add about 2 ms to a run, and the memory, process and CPU limits all held.
+  - **S4-D1 — no "already inside a delegated cgroup" path** (amends N3). Every run gets its
+    own systemd scope, or runs without limits and says so. The path would have needed the
+    server to move itself, and no host we test has it.
+  - **S4-D2 — no `cgroup.kill`** (amends N8). Step 3's stop already kills everything in the
+    sandbox, stopped processes included, and it is the one signal that tells the server the
+    sandbox is really gone.
 
 ### Build steps (8 planned: 0–7)
 
@@ -661,3 +672,57 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     - the helper's own deadline never fired;
     - the mount check would have accepted a sandbox that was missing the `/proc/keys` mask;
     - a client that stops reading the server's log could have blocked that deadline.
+- **Step 4 — resource limits, done 2026-10-26
+  ([plan](plans/M2/M2-step4-cgroups.md); commit `8b1de5e`).**
+  - **Now:** each native run gets its own temporary systemd scope. The guest gets 256 MiB of
+    memory with no swap, 128 processes and 75 % of one CPU, and the server reads every limit
+    back before it counts it.
+    - A memory bomb is killed, and the result says it ran out of memory at its limit.
+    - A fork bomb stops at the process limit.
+    - systemd's own deadline ends a run even if the helper itself is broken.
+  - **Without systemd,** runs still happen and say which limits are missing. A process-count
+    backstop keeps a fork bomb from filling the user's process table.
+  - **Still `isolation: none`** until step 5's seccomp filter. With that check set aside, a
+    run now reports `native`.
+  - **How we know:**
+    - 17 new Linux tests run real sandboxes with limits, on both Pythons;
+    - 25 new offline tests cover the rules;
+    - 28 deliberately broken versions of the code each turned a test red.
+  - **Review:** `critic` found 8 issues, all confirmed or plausible, all dealt with. The two
+    real bugs:
+    - on a machine without systemd and with a low process limit, every run was refused;
+    - on an old cgroup-v1 machine, every run would have waited 5 s for nothing.
+- **S5-D1 signed off (ptrace), 2026-10-26.** The step-5 plan asked one question: should the
+  sandbox's seccomp filter let a program use `ptrace` (debuggers, `strace`, profilers)?
+  Victor chose to **follow Docker and allow it** on modern kernels. Inside the sandbox a program
+  can only ever trace its own child processes — it has no privileges, can't reach process 1, and
+  can't gain any — so allowing it opens no new way out, and it keeps the native sandbox behaving
+  like the container one. The stricter alternative (deny and report it) stays a one-line switch.
+- **Step 5 — seccomp, done 2026-10-27
+  ([plan](plans/M2/M2-step5-seccomp.md); commit pending).**
+  - **Now:** every native run loads a syscall allowlist — the set Docker ships, adapted for a
+    no-privilege sandbox — right before the program starts, and the program inherits it. This is
+    the last piece the native warden was waiting on: **a run now reports `isolation: native`**
+    for real (with step 4's limits), instead of `none`.
+    - Dangerous calls (mounting, new namespaces, loading kernel code, raw devices, the keyring,
+      a non-standard network family like the one that reaches the Windows host) are blocked, and
+      the ones on a named list are reported back to the model by name (`blocked syscalls: …`) so
+      it can adapt. A chatty program can't flood that report: after 256 it stops and the rest are
+      blocked silently.
+    - The filter is our own small binding over the system's `libseccomp`; the Docker profile is
+      vendored into the package and locked to a checksum, so it can't change without a review.
+  - **How we know:**
+    - the whole mechanism was first run by hand on both Pythons (3.14 and 3.11), with the same
+      result: a hello runs as `native` and reports nothing; mounting, new namespaces, the
+      keyring and the host-network family are each blocked and named; a storm of 60,000 blocked
+      calls comes back in about two seconds with one name and a "stopped" note;
+    - the Linux test suite grew to 480 tests (0 skipped); the Windows suite stays green;
+    - the real-sandbox tests moved onto the real filter (they used a stand-in before), and new
+      tests cover the binding, the reported set, the storm, and the checksum;
+    - 5 deliberately broken versions each turned a guarding test red (a lost or mis-read
+      reporting channel, no de-duplication, the filter never loaded, the ptrace switch flipped).
+  - **Review:** `skeptic` on the plan said "rework needed" and its three findings reshaped the
+    design before any code (the reporting channel's framing on an early setup failure; a test
+    that would have hung; a 3.14-only crash from building the filter in the wrong process).
+    `critic` on the finished diff found no real defects, only one small "dead branch" note on the
+    kept ptrace switch.
