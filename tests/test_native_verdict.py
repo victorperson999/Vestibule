@@ -110,7 +110,8 @@ def test_limits_count_only_where_init_reports_it_is(ready, applied, detail):
 
 
 @pytest.mark.parametrize("ready, named", [
-    (_ready(checks={n: True for n in native._INIT_CHECKS}), "seccomp"),  # step 3's own runs
+    (_ready(checks={n: True for n in native._INIT_CHECKS}), "seccomp"),  # no seccomp key at all
+    (_ready(checks={**{n: True for n in native._HARD_CHECKS}, "seccomp": False}), "seccomp"),
     (_ready(checks={**{n: True for n in native._HARD_CHECKS}, "caps": False}), "caps"),
     # a key the server doesn't know can't stand in for a missing one
     (_ready(checks={**{n: True for n in native._INIT_CHECKS}, "seccomp_ok": True}), "seccomp"),

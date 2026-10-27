@@ -6,6 +6,7 @@ trees that `vestibule-mcp setup` makes in the default rootfs directory. The cgro
 need a systemd user manager that delegates cpu, memory and pids (S4-D10). Anywhere else they
 skip with the reason. Nothing here downloads anything.
 """
+import ctypes
 import os
 import subprocess
 import sys
@@ -31,6 +32,10 @@ def native_skip_reason() -> str | None:
                            stdin=subprocess.DEVNULL, capture_output=True)
     if probe.returncode != 0:
         return "unprivileged user namespaces don't work here"
+    try:
+        ctypes.CDLL("libseccomp.so.2")  # native requires it since M2 step 5 (N4, S5-D8)
+    except OSError:
+        return "libseccomp.so.2 is not installed (native requires it; `apt install libseccomp2`)"
     return None
 
 

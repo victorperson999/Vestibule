@@ -3,11 +3,14 @@ M2-step4-cgroups.md §4.2). Linux only, against the real trees that `vestibule-m
 the `native` marker skips elsewhere with the reason, and the cgroup tests also need a systemd
 user manager (tests/nativeutil.py).
 
-Runs use the test-only seccomp bypass unless they test the default. The filter arrives in
-step 5, so every result here says `isolation: none` (S3-D8, S3-D9), except in the step-4 tests
-that set the filter's check aside to show what the rest can claim (S4-D10).
+Since step 5 the `backend` fixture loads the real seccomp filter, so a run that reaches the
+guest reports `native` (with a cgroup) or `native-degraded` (without); the subprocess runners
+below keep the test-only bypass because they probe non-seccomp mechanisms (locked mounts, the
+terminal, a killed server), where the bypass keeps the fixture simple and `isolation: none`
+with the step-3 label (S5-D8).
 """
 import asyncio
+import errno
 import getpass
 import json
 import logging
@@ -45,7 +48,7 @@ def limits(tmp_path):
 
 @pytest.fixture()
 async def backend():
-    b = NativeBackend(_skip_seccomp_for_tests=True)
+    b = NativeBackend()  # the real seccomp filter (S5-D8)
     yield b
     assert await b.drain(15), "a finisher was still running"
 
@@ -68,13 +71,6 @@ def no_scope_left():
     assert not after - before, f"scopes left behind: {sorted(after - before)}"
 
 
-@pytest.fixture()
-def seccomp_aside(monkeypatch):
-    """S4-D10: the verdict without step 5's filter check, inside this test only, so a run shows
-    what step 4 can claim. Nothing in src/ has a switch for it."""
-    monkeypatch.setattr(native, "_HARD_CHECKS", native._INIT_CHECKS)
-
-
 def _facts(r):
     """The JSON object the guest printed last."""
     assert r.exit_code == 0, (r.exit_code, r.stderr, r.isolation_detail)
@@ -95,7 +91,8 @@ def _token():
 async def test_hello_in_all_three_languages(backend, limits, language, code, out):
     r = await backend.run(language, code, 10, limits)
     assert r.exit_code == 0 and r.stdout.startswith(out) and r.stderr == ""
-    assert r.isolation == "none" and r.isolation_detail == STEP3_LABEL
+    # The filter is loaded, so a clean run is native-tier and reports no denied syscalls (S5-D8).
+    assert r.isolation in ("native", "native-degraded") and r.denied_syscalls == []
 
 
 async def test_exit_codes(backend, limits):
@@ -192,7 +189,7 @@ async def test_a_read_only_workspace(backend, tmp_path):
                           10, Limits(workspace_dir=str(ws), workspace_ro=True))
     assert r.stdout == "hello" and "Read-only file system" in r.stderr
     assert not (ws / "out.txt").exists()
-    assert r.isolation_detail == STEP3_LABEL  # the server accepted /workspace as ro
+    assert r.isolation in ("native", "native-degraded")  # the server accepted /workspace as ro
 
 
 async def test_proc_is_masked_like_docker(backend, limits):
@@ -360,6 +357,63 @@ async def test_signals_behave_as_in_docker(backend, limits):
     assert (r.exit_code, r.stdout) == (0, "still-here\n")  # PID 1 ignores both
 
 
+# --- seccomp: the allowlist, the reported subset, the storm (criteria 3, 9) ----------------
+
+async def test_denied_syscalls_are_denied_and_the_subset_is_named(backend, limits):
+    """The dangerous subset is denied AND reported by name; io_uring is denied silently; an
+    allowed socket family works; ptrace of the guest's own process is allowed (S5-D1)."""
+    code = textwrap.dedent("""
+        import ctypes, json, socket
+        libc = ctypes.CDLL(None, use_errno=True)
+        def call(rc):
+            return 0 if rc == 0 else ctypes.get_errno()
+        def sock(family):
+            try:
+                socket.socket(family, socket.SOCK_STREAM).close(); return 0
+            except OSError as e:
+                return e.errno
+        print(json.dumps({
+            "mount": call(libc.mount(b"none", b"/tmp/x", b"tmpfs", 0, None)),
+            "unshare": call(libc.unshare(0x10000000)),       # CLONE_NEWUSER
+            "keyctl": call(libc.syscall(250, 0, 0, 0, 0, 0)),
+            "vsock": sock(40), "inet": sock(socket.AF_INET),
+            "iouring": call(libc.syscall(425, 1, 0)),         # io_uring_setup
+            "ptrace": call(libc.ptrace(0, 0, 0, 0)),          # PTRACE_TRACEME
+        }))
+    """)
+    r = await backend.run("python", code, 15, limits)
+    assert r.exit_code == 0, (r.stderr, r.isolation_detail)
+    f = json.loads(r.stdout.strip().splitlines()[-1])
+    assert f["mount"] == f["unshare"] == f["keyctl"] == f["vsock"] == errno.EPERM
+    assert f["iouring"] == errno.EPERM  # denied, but silently (S5-D2)
+    assert f["inet"] == 0 and f["ptrace"] == 0  # an allowed family; ptrace of own process
+    # vsock is named by its syscall, `socket`; io_uring and ptrace are never named.
+    assert set(r.denied_syscalls) == {"mount", "unshare", "keyctl", "socket"}
+    assert not any("io_uring" in n or n == "ptrace" for n in r.denied_syscalls)
+    assert r.isolation in ("native", "native-degraded")
+
+
+async def test_the_notification_storm_is_bounded(backend, limits):
+    """criterion 9: many threads looping a notified syscall return, with the name deduplicated
+    and reporting stopped at the cap. (The helper's CPU inside the envelope is a step-7 check.)"""
+    code = textwrap.dedent("""
+        import ctypes, threading
+        libc = ctypes.CDLL(None, use_errno=True)
+        def spin():
+            for _ in range(3000):
+                libc.mount(b"none", b"/tmp/x", b"tmpfs", 0, None)
+        ts = [threading.Thread(target=spin) for _ in range(20)]
+        for t in ts: t.start()
+        for t in ts: t.join()
+        print("done")
+    """)
+    r = await backend.run("python", code, 20, limits)
+    assert r.exit_code == 0 and r.stdout.strip() == "done"
+    assert r.denied_syscalls == ["mount"]  # 60k attempts, one deduplicated name
+    assert "reporting stopped" in r.stderr  # the 256 cap was hit; the rest fail unnamed
+    assert (await backend.run("python", "print('fine')", 10, limits)).stdout == "fine\n"
+
+
 # --- stopping (criteria 8 and 11, without cgroups) -----------------------------------------
 
 @pytest.mark.parametrize("language, code", [
@@ -382,7 +436,8 @@ async def test_a_run_past_its_timeout_is_stopped_with_nothing_left(backend, limi
     r = await task
     assert r.timed_out and r.exit_code == -1
     assert time.monotonic() - t0 < 1 + 3  # timeout_s, the 2 s grace, and margin
-    assert r.isolation_detail == STEP3_LABEL  # the verdict comes from `ready`, read before
+    # the verdict comes from `ready`, sent before the guest ran, so the filter was confirmed
+    assert r.isolation in ("native", "native-degraded")
     assert await backend.drain(10)
     assert holders(token) == []
     # The helper stopped init itself: its exit means the sandbox is empty (S3-D7).
@@ -435,17 +490,29 @@ def test_a_killed_server_leaves_no_sandbox(tmp_path):
 
 # --- refusing before the guest exists (S3-D8, S3-D9) ---------------------------------------
 
-async def test_the_default_backend_stops_before_the_guest(limits):
-    b = NativeBackend()  # no bypass: there is no filter until step 5
-    r = await b.run("bash", "echo ran > ran", 10, limits)
-    assert await b.drain(10)
-    assert (r.isolation, r.exit_code, r.stdout) == ("none", -1, "")
-    assert r.isolation_detail == ("native sandbox setup failed at seccomp: the seccomp filter "
-                                  "arrives in M2 step 5; nothing was executed")
-    assert not (Path(limits.workspace_dir) / "ran").exists()
+async def test_the_default_loads_the_filter_the_bypass_does_not(limits):
+    """S5-D8: the default run loads the filter and reaches a native verdict; the test-only
+    bypass loads none, so the server's own `seccomp` check leaves the run `none`."""
+    default = NativeBackend()
+    bypass = NativeBackend(_skip_seccomp_for_tests=True)
+    try:
+        r = await default.run("bash", "echo ok", 10, limits)
+        assert r.exit_code == 0 and r.stdout == "ok\n"
+        assert r.isolation in ("native", "native-degraded")
+        # the bypass still runs the guest (exit 0, the file is written); only the verdict is
+        # `none`, because the server's own seccomp check fails on the unloaded filter (S5-D6).
+        r = await bypass.run("bash", "echo hi; echo ran > ran", 10, limits)
+        assert (r.isolation, r.isolation_detail, r.exit_code, r.stdout) == (
+            "none", STEP3_LABEL, 0, "hi\n")
+        assert (Path(limits.workspace_dir) / "ran").exists()
+    finally:
+        assert await default.drain(10) and await bypass.drain(10)
 
 
 async def test_an_empty_tree_fails_setup_at_mounts(backend, tmp_path):
+    # S5-D7 regression: init aborts at the mounts stage, before the seccomp stage, so it sends
+    # an `error` line and no listener fd; the helper's first recv_fds must relay those bytes, not
+    # eat them — otherwise this honest "setup failed at mounts" would become "no status report".
     ref, arch = registry.parse_ref(DEFAULT_IMAGE_PYTHON), registry.host_arch()
     key = f"{ref.digest[7:]}-{arch}"
     d = tmp_path / "rootfs"
@@ -630,7 +697,7 @@ async def test_the_limits_from_outside(backend, limits, capfd):
     (Path(limits.workspace_dir) / "go").touch()
     r = await task
     assert (r.exit_code, r.stdout, r.stderr) == (0, "done\n", "")
-    assert r.isolation_detail == STEP3_LABEL
+    assert (r.isolation, r.isolation_detail) == ("native", None)  # filter + every limit (S5-D8)
     # Golden rule 1: busctl prints the job's path on its stdout, which must not be ours.
     assert capfd.readouterr().out == ""
 
@@ -679,7 +746,7 @@ async def test_the_cpu_limit_holds(backend, limits):
 
 
 @cgroups_required
-async def test_a_limit_the_kernel_rejects_is_named(backend, tmp_path, seccomp_aside):
+async def test_a_limit_the_kernel_rejects_is_named(backend, tmp_path):
     lim = Limits(workspace_dir=str(tmp_path / "ws"), cpu_pct=0)  # cpu.max "0 100000": EINVAL
     r = await backend.run("python", "print(1)", 10, lim)
     assert (r.exit_code, r.isolation, r.isolation_detail) == (
@@ -687,7 +754,7 @@ async def test_a_limit_the_kernel_rejects_is_named(backend, tmp_path, seccomp_as
 
 
 @cgroups_required
-async def test_what_step_4_can_claim(backend, limits, seccomp_aside):
+async def test_a_full_run_claims_native(backend, limits):
     r = await backend.run("python", "print(1)", 10, limits)
     assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (0, "1\n", "native", None)
 
@@ -695,7 +762,7 @@ async def test_what_step_4_can_claim(backend, limits, seccomp_aside):
 @pytest.mark.skipif(not native._nproc_backstop(platform.release()),
                     reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
 async def test_without_a_bus_the_run_degrades_and_the_backstop_holds(backend, limits, caplog,
-                                                                     monkeypatch, seccomp_aside):
+                                                                     monkeypatch):
     monkeypatch.setattr(native_cgroup, "bus_env", lambda: None)
     r = await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits)
     assert (r.isolation, r.isolation_detail) == ("native-degraded", ALL_LIMITS)
@@ -738,7 +805,7 @@ def test_a_hard_nproc_limit_below_pids_max_still_runs(tmp_path):
 
 
 async def test_without_cgroup_v2_placement_fails_at_once(backend, limits, tmp_path, monkeypatch,
-                                                         caplog, seccomp_aside):
+                                                         caplog):
     """Critic finding 5: a v1 or hybrid host has no cgroup.controllers at the v2 root. Asking
     systemd anyway would cost every run the 5 s bound, and the log would blame the bound."""
     pidfile = tmp_path / "busctl.pid"
@@ -752,8 +819,7 @@ async def test_without_cgroup_v2_placement_fails_at_once(backend, limits, tmp_pa
 
 
 @cgroups_required
-async def test_a_limit_that_reads_back_differently_is_named(backend, limits, monkeypatch,
-                                                            seccomp_aside):
+async def test_a_limit_that_reads_back_differently_is_named(backend, limits, monkeypatch):
     """Critic finding 2: a written limit counts only if it reads back as written (S4-D5)."""
     real = native_cgroup._read
     monkeypatch.setattr(native_cgroup, "_read", lambda path: "max 100000"
@@ -767,8 +833,7 @@ async def test_a_limit_that_reads_back_differently_is_named(backend, limits, mon
 @pytest.mark.skipif(not native._nproc_backstop(platform.release()),
                     reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
 async def test_a_controller_not_delegated_is_named_and_the_backstop_holds(backend, limits,
-                                                                          monkeypatch,
-                                                                          seccomp_aside):
+                                                                          monkeypatch):
     """Critic finding 3: with a scope but no pids controller under it (a user manager that
     doesn't delegate it), pids is named and RLIMIT_NPROC stands in (S4-D9)."""
     real = native_cgroup._write
@@ -838,8 +903,7 @@ def test_placement_finds_the_bus_in_the_sdks_minimal_environment(tmp_path):
 
 
 async def test_a_hanging_busctl_costs_at_most_the_placement_bound(backend, limits, tmp_path,
-                                                                  monkeypatch, caplog,
-                                                                  seccomp_aside):
+                                                                  monkeypatch, caplog):
     pidfile = tmp_path / "busctl.pid"
     _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pidfile}"\nexec sleep 60\n')
     t0 = time.monotonic()
@@ -852,7 +916,7 @@ async def test_a_hanging_busctl_costs_at_most_the_placement_bound(backend, limit
 
 
 async def test_without_busctl_the_run_degrades_at_once(backend, limits, tmp_path, monkeypatch,
-                                                       caplog, seccomp_aside):
+                                                       caplog):
     monkeypatch.setattr(native_cgroup, "bus_env", lambda: {"PATH": str(tmp_path / "empty")})
     t0 = time.monotonic()
     r = await backend.run("python", "print('ran')", 10, limits)

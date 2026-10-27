@@ -2,22 +2,27 @@
 
 The server never imports this. For each run, `native.py` starts a fresh interpreter as
 `vestibule-warden -S -P -c "exec(open(<fd>,'rb').read())"`, and this file is that program
-(S3-D4). It is stdlib-only, and everything it needs exists before `pivot_root`: imports,
-ctypes types, the libc handle (S3-D5). After `pivot_root` only os/posix calls, calls on those
-types, socket.sethostname, fcntl.ioctl, resource's rlimit calls and json.dumps run.
+(S3-D4). It is stdlib-only (plus the sibling `native_seccomp`), and everything it needs exists
+before `pivot_root`: imports, ctypes types, the libc handle, and the compiled seccomp filter
+(S3-D5, S5-D3). After `pivot_root` only os/posix calls, calls on those types,
+socket.sethostname, fcntl.ioctl, resource's rlimit calls, json.dumps, and the seccomp
+`load`/`notify_fd` (which create no new ctypes type) run.
 
 Process shape (S3-D7):
 - helper: dies with the server, waits for its release while the server places it in a cgroup
-  (S4-D3), unshares user + PID namespaces, writes the identity maps, forks init and moves it
-  into the guest's cgroup, relays init's status lines, SIGKILLs init on SIGTERM, reports the
-  guest cgroup's OOM counters, exits after init. Its exit therefore means the sandbox is empty.
-- init (PID 1): its own session, the other namespaces, the jail, every privilege dropped, its
-  checks (S3-D8), then `ready`, the guest, a reap loop, and the guest's exit.
-- guest: no extra fds, default signals, our own PATH search, execve.
+  (S4-D3), imports native_seccomp and compiles the filter (S5-D3), unshares user + PID
+  namespaces, writes the identity maps, forks init and moves it into the guest's cgroup, relays
+  init's status lines, answers the guest's seccomp notifications with EPERM (S5-D5), SIGKILLs
+  init on SIGTERM, reports the guest cgroup's OOM counters and the denied syscalls, exits after
+  init. Its exit therefore means the sandbox is empty.
+- init (PID 1): its own session, the other namespaces, the jail, every privilege dropped, the
+  seccomp filter loaded (its listener fd handed to the helper), its checks (S3-D8), then
+  `ready`, the guest, a reap loop, and the guest's exit.
+- guest: no extra fds, default signals, our own PATH search, execve; it inherits init's filter.
 
 Input: the JSON run config on stdin, then the release on cfg["sync_fd"]. Output: JSON lines on
-cfg["status_fd"] (`ready`, `error`, `exit`, the OOM counters). Nothing of the helper's own
-reaches the guest's pipes: its stdout is /dev/null and its stderr is the server's log.
+cfg["status_fd"] (`ready`, `error`, `exit`, the OOM counters, the denied syscalls). Nothing of
+the helper's own reaches the guest's pipes: its stdout is /dev/null and its stderr is the log.
 """
 from __future__ import annotations
 
@@ -54,6 +59,10 @@ DEVICES = ("null", "zero", "full", "random", "urandom", "tty")
 DEV_LINKS = (("fd", "/proc/self/fd"), ("stdin", "/proc/self/fd/0"),
              ("stdout", "/proc/self/fd/1"), ("stderr", "/proc/self/fd/2"))
 NAMESPACES = ("user", "pid", "mnt", "net", "uts", "ipc", "cgroup")
+
+# The native_seccomp module, imported by _build_seccomp in the helper before it forks init, so
+# both the helper (its notification loop) and init (load/notify_fd) inherit it (S5-D3).
+_SECCOMP: Any = None
 
 
 class _CapHeader(ctypes.Structure):
@@ -99,6 +108,7 @@ def _helper(cfg: dict[str, Any]) -> None:
     last_cap = int(_read("/proc/sys/kernel/cap_last_cap"))
     pivot_nr = SYS_PIVOT_ROOT[os.uname().machine]
     uid, gid = os.getuid(), os.getgid()
+    seccomp_ctx = _build_seccomp(cfg)  # before the fork: all ctypes types materialize now (S5-D3)
     _check(_LIBC.unshare(CLONE_NEWUSER | CLONE_NEWPID), "unshare")
     _write("/proc/self/setgroups", "deny")
     _write("/proc/self/uid_map", f"{uid} {uid} 1")
@@ -107,7 +117,7 @@ def _helper(cfg: dict[str, Any]) -> None:
     pid = os.fork()
     if pid == 0:
         ours.close()
-        _init(cfg, theirs, last_cap, pivot_nr)  # never returns
+        _init(cfg, theirs, last_cap, pivot_nr, seccomp_ctx)  # never returns
     theirs.close()
     if cfg["cgroup"]:  # before init does anything; a failure here stops the run (S4-D5)
         _write(f"{cfg['cgroup']}/cgroup.procs", str(pid))
@@ -123,7 +133,8 @@ def _helper(cfg: dict[str, Any]) -> None:
             pass
 
     signal.signal(signal.SIGTERM, stop)
-    _supervise(cfg["status_fd"], ours, pidfd, stop, cfg["self_deadline_s"])
+    denied, notify_stopped = _supervise(cfg["status_fd"], ours, pidfd, stop,
+                                        cfg["self_deadline_s"])
     os.waitpid(pid, 0)
     if cfg["cgroup"]:  # S4-D8: before our exit, after which systemd removes the scope
         try:
@@ -133,17 +144,45 @@ def _helper(cfg: dict[str, Any]) -> None:
                                      "oom_kill": int(events["oom_kill"])})
         except (OSError, KeyError, ValueError):  # no memory controller, or the server is gone
             pass
+    _send(cfg["status_fd"], {"denied": denied, "notify_stopped": notify_stopped})  # S5-D5
     os._exit(0)
 
 
-def _supervise(status_fd: int, sock: socket.socket, pidfd: int,
-               stop: Callable[[], None], self_deadline_s: float) -> None:
-    """Relay init's lines until init has exited; stop it at the self-deadline (N8)."""
+def _build_seccomp(cfg: dict[str, Any]) -> int | None:
+    """Import the binding and compile the filter, in the helper before it forks init (S5-D3), so
+    every ctypes type is materialized while the stdlib is still reachable. Returns the ctx init
+    will load, or None in the test-only bypass."""
+    if cfg["skip_seccomp"]:
+        return None
+    global _SECCOMP
+    sys.path.insert(0, cfg["pkg_dir"])
+    sys.dont_write_bytecode = True  # don't write __pycache__ into a read-only install
+    import native_seccomp  # type: ignore[import-not-found]  # loaded via the pkg_dir path insert
+    _SECCOMP = native_seccomp
+    ctx, _info = native_seccomp.build(cfg["profile"])
+    return ctx
+
+
+def _supervise(status_fd: int, sock: socket.socket, pidfd: int, stop: Callable[[], None],
+               self_deadline_s: float) -> tuple[list[str], bool]:
+    """Relay init's lines until init has exited; stop it at the self-deadline (N8); answer the
+    guest's seccomp notifications with EPERM, recording names (S5-D5). Returns the deduplicated
+    denied-syscall names and whether reporting was stopped at the cap.
+
+    The *first* read of the init socket is `recv_fds` (S5-D7): if an fd rides along it is the
+    notification listener (and the one-byte "L" tag is dropped); if not, those bytes are the
+    first status chunk. So the filter path, the bypass, and an early init abort all frame right.
+    """
     deadline: float | None = time.monotonic() + self_deadline_s
     poller = select.poll()
     poller.register(pidfd, select.POLLIN)
     poller.register(sock.fileno(), select.POLLIN)
-    pending, sock_open = b"", True
+    pending, sock_open, first = b"", True, True
+    listener: int | None = None
+    req = resp = None
+    denied: list[str] = []
+    seen: set[str] = set()
+    count, stopped = 0, False
     while True:
         wait_ms = None
         if deadline is not None:
@@ -158,13 +197,38 @@ def _supervise(status_fd: int, sock: socket.socket, pidfd: int,
             continue
         if any(fd == pidfd for fd, _ in events):
             break
-        chunk = sock.recv(65536)  # only the socket is left; it was readable
+        if listener is not None and any(fd == listener for fd, _ in events):
+            nr = _SECCOMP.receive(listener, req)
+            if nr is not None:
+                name = _SECCOMP.name(nr)
+                if name not in seen:
+                    seen.add(name)
+                    denied.append(name)
+                _SECCOMP.respond_eperm(listener, req, resp)
+                count += 1
+                if count >= _SECCOMP.NOTIFY_CAP:  # the kernel then fails the rest with ENOSYS
+                    poller.unregister(listener)
+                    os.close(listener)
+                    listener, stopped = None, True
+            continue
+        if first:
+            first = False
+            msg, fds, _, _ = socket.recv_fds(sock, 65536, 1)
+            if fds:  # the seccomp listener (S5-D7); the "L" tag carried no status bytes
+                listener = fds[0]
+                poller.register(listener, select.POLLIN)
+                req, resp = _SECCOMP.alloc()
+                continue
+            chunk = msg  # no fd: these bytes are the first status chunk (ready, or an abort error)
+        else:
+            chunk = sock.recv(65536)
         if not chunk:
             poller.unregister(sock.fileno())
             sock_open = False
         pending = _relay_lines(status_fd, pending + chunk)
     while sock_open and (chunk := sock.recv(65536)):  # init's last lines: EOF now it's gone
         pending = _relay_lines(status_fd, pending + chunk)
+    return denied, stopped
 
 
 def _relay_lines(fd: int, data: bytes) -> bytes:
@@ -179,7 +243,8 @@ def _relay_lines(fd: int, data: bytes) -> bytes:
     return rest
 
 
-def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int) -> None:
+def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int,
+          seccomp_ctx: int | None) -> None:
     out = sock.fileno()
     stage = "start"
     try:
@@ -223,11 +288,18 @@ def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int
             hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]  # no process can raise it
             n = cfg["nproc"] if hard == resource.RLIM_INFINITY else min(cfg["nproc"], hard)
             resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
+        stage = "seccomp"  # load before the checks, so _checks reads Seccomp: 2 (S5-D6)
+        if seccomp_ctx is not None:
+            chan = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=os.dup(out))
+            try:
+                _SECCOMP.load(seccomp_ctx)  # init is filtered too; the guest, forked below,
+                lfd = _SECCOMP.notify_fd(seccomp_ctx)  # inherits the filter (N4)
+                socket.send_fds(chan, [b"L"], [lfd])  # hand the listener to the helper (N7)
+                os.close(lfd)  # init keeps no copy of the listener
+            finally:
+                chan.close()  # closes the dup of fd 3, not fd 3 itself
         stage = "checks"
         checks = _checks(cfg)
-        stage = "seccomp"
-        if not cfg["skip_seccomp"]:
-            raise RuntimeError("the seccomp filter arrives in M2 step 5")
         _send(out, {"ready": {
             "checks": checks,
             "namespaces": {ns: os.stat(f"/proc/self/ns/{ns}").st_ino for ns in NAMESPACES},
@@ -331,6 +403,9 @@ def _checks(cfg: dict[str, Any]) -> dict[str, bool]:
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
         raise RuntimeError("checks failed: " + ", ".join(failed))
+    # seccomp is reported, not run-blocking: the bypass still runs the guest, and the server's
+    # verdict (not init) decides none-vs-native from this kernel-reported mode (S5-D6).
+    checks["seccomp"] = status.get("Seccomp") == "2"  # 2 = SECCOMP_MODE_FILTER
     return checks
 
 

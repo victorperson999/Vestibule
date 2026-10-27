@@ -3,3 +3,5 @@
 *.sh text eol=lf
 # Test fixtures are compared byte for byte (sha256), so git must never convert them.
 tests/fixtures/** -text
+# The vendored seccomp profile is pinned by sha256 (M2 step 5, S5-D9): same rule.
+src/vestibule/backends/seccomp-profile.json -text

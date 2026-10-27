@@ -14,7 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-seccomp = ["pyseccomp>=0.1.2"]                       # optional defense-in-depth (Linux, M2)
+# M2 step 5 (N4): seccomp is now a required hard control for native isolation, via our own
+# ctypes binding over the system libseccomp.so.2 — not an optional `pyseccomp` extra.
 # Ranges for users; exact versions for development live in requirements/constraints.txt.
 dev = ["pytest>=9.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.15.20,<0.16", "mypy>=2.1,<2.2"]
 

@@ -27,7 +27,7 @@ Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, ship
 
 - **Python ≥ 3.11.** Type hints everywhere. `from __future__ import annotations` where useful.
 - **MCP:** the official `mcp` SDK. Low-level `Server` API (not FastMCP) — we want explicit control over tool schemas because *tool descriptions are prompts read by the model*. (The SDK evolves; if an import/signature has drifted, fix it against current docs and note the change.)
-- **Isolation:** `ctypes` calling libc/syscalls directly. cgroups v2 is just filesystem writes (no ctypes). seccomp uses the optional `pyseccomp` binding — never hand-assemble BPF.
+- **Isolation:** `ctypes` calling libc/syscalls directly. cgroups v2 is just filesystem writes (no ctypes). seccomp uses our own small `ctypes` binding over the system `libseccomp.so.2` (`src/vestibule/backends/native_seccomp.py`), required for native since M2 step 5 — never hand-assemble BPF (libseccomp compiles it).
 - **Async:** the MCP server is `async`. The container backend uses `asyncio.create_subprocess_exec`. The native-fork warden does blocking syscalls → run it in an executor (`run_in_executor`), never directly in the event loop.
 - **Layout:** `src/` layout. Import package `vestibule`; distribution `vestibule-mcp`.
 - **Tooling:** `ruff` (lint+format), `mypy` (types), `pytest` + `pytest-asyncio` (tests). Line length 100.
@@ -79,7 +79,7 @@ The `andrej-karpathy-skills` plugin is installed user-wide; these are its four r
 
 - **Don't add heavy frameworks** (LangChain, agent frameworks, ORMs). Vestibule is infrastructure; keep the dependency tree tiny so it's auditable and installs fast. Every dependency is a trust and adoption cost.
 - **Don't expand the tool surface.** Two tools (`run_code`, `read_workspace`). More tools/params = more the model can misuse.
-- **Don't hand-roll seccomp BPF.** Use `pyseccomp`, keep it optional.
+- **Don't hand-roll seccomp BPF.** Use libseccomp (our own ctypes binding) to compile it; the allowlist is derived from Docker's profile and is required for native (M2 step 5, N4).
 - **Don't require Docker on Linux** — native isolation is the point there. Docker is the *fallback*, not the default, on Linux.
 - **Don't let output or errors escape to stdout.** (Restating rule #1 because it's the #1 way to break an MCP server.)
 - **Don't oversell security.** No "unescapable", no "unbreakable". Honest threat modeling is a trust-builder and a differentiator.

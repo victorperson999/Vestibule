@@ -6,9 +6,10 @@ with the guest's limits before releasing it (step 4), collects the guest's outpu
 caps, stops a run that overruns (S3-D7), and turns the helper's status report into an honest
 verdict (S3-D8, S4-D7).
 
-Not reachable from the server until M2 step 6: tests build it directly. There is no seccomp
-filter until step 5, so every run reports `isolation: none`, and only the test-only
-`_skip_seccomp_for_tests` lets the sandbox run at all (S3-D9).
+Not reachable from the server until M2 step 6: tests build it directly. The helper loads a
+seccomp allowlist (step 5, `native_seccomp.py`) by default, so a run can now report
+`isolation: native`; the test-only `_skip_seccomp_for_tests` skips the filter, which makes the
+verdict `none` ("hard controls not confirmed: seccomp") — step 6 retires it (S3-D9, S5-D8).
 
 The verdict, the mount-table rule, the exit codes and the guest's environment are pure
 functions that run on every platform; the rest is Linux-only behind `sys.platform` checks
@@ -36,6 +37,10 @@ from vestibule.config import Limits
 log = logging.getLogger("vestibule.native")
 
 _HELPER = Path(__file__).with_name("native_helper.py")
+# The vendored moby seccomp profile (S5-D9), read once here and passed to the helper in the run
+# config so the helper never touches the host filesystem for it. native.py never imports
+# native_seccomp (which loads libseccomp); only the Linux-only helper does.
+_PROFILE = json.loads(Path(__file__).with_name("seccomp-profile.json").read_text("utf-8"))
 _EXT = {"python": "py", "bash": "sh", "node": "js"}
 _INTERPRETER = {"python": "python", "bash": "bash", "node": "node"}
 # The guest's environment beyond the image's own Env: the container profile's (N9).
@@ -82,8 +87,8 @@ class NativeBackend(Warden):
     """Runs each snippet in a fresh native sandbox: namespaces and a pivot_root jail."""
 
     def __init__(self, *, _skip_seccomp_for_tests: bool = False) -> None:
-        # S3-D9: no config value or selector path passes this. Without it, init stops at its
-        # seccomp stage, so nothing runs until step 5 brings the filter.
+        # S3-D9: no config value or selector path passes this. With it, init skips loading the
+        # filter, so the verdict is `none` (seccomp unconfirmed); the default loads it (S5-D8).
         self._skip_seccomp = _skip_seccomp_for_tests
         self._sem: asyncio.Semaphore | None = None
         self._finishers: set[asyncio.Task[None]] = set()  # strong refs: loop holds tasks weakly
@@ -154,6 +159,8 @@ class NativeBackend(Warden):
                 "masked": list(MASKED), "read_only": list(READ_ONLY),
                 "self_deadline_s": timeout_s + _SELF_DEADLINE_SLACK_S,
                 "skip_seccomp": self._skip_seccomp,
+                "pkg_dir": str(_HELPER.parent),  # the helper imports native_seccomp from here
+                "profile": _PROFILE,
             }
             # S3-D1/S3-D4: the config, code included, travels in an anonymous memfd on the
             # helper's stdin; nothing of the run is written to the host's disk.
@@ -261,11 +268,12 @@ class NativeBackend(Warden):
         exit_code, note = _outcome(lines, timed_out=timed_out,
                                    truncated=len(out_buf) >= cap or len(err_buf) >= cap,
                                    oom_limit_mb=limits.mem_mb if "memory" in run.applied else None)
+        denied, note = _denied(lines, note)  # the helper's `denied` line (S5-D5)
         log.info("run %s: done exit=%s timed_out=%s isolation=%s",
                  run.run_id, exit_code, timed_out, isolation)
         return RunResult(stdout=out_buf.decode(errors="replace"),
                          stderr=err_buf.decode(errors="replace") + note,
-                         exit_code=exit_code, timed_out=timed_out,
+                         exit_code=exit_code, timed_out=timed_out, denied_syscalls=denied,
                          isolation=isolation, isolation_detail=detail)
 
     @staticmethod
@@ -413,6 +421,19 @@ def _oom_note(lines: list[dict[str, Any]], limit_mb: int | None) -> str:
         return ("\n[out of memory: the kernel killed a process in the sandbox at its "
                 f"{limit_mb} MiB limit]")
     return "\n[out of memory: the kernel killed a process in the sandbox]"
+
+
+def _denied(lines: list[dict[str, Any]], note: str) -> tuple[list[str], str]:
+    """The helper's `denied` line (S5-D5): the deduplicated names the seccomp filter reported via
+    user notification, in first-seen order. If reporting hit its cap, a stderr note says so and
+    the rest were denied unnamed. Any other denied syscall fails with EPERM, unreported (N4)."""
+    line = next((ln for ln in lines if isinstance(ln.get("denied"), list)), None)
+    if line is None:
+        return [], note  # no line (timed out, overflowed, or the bypass sent none before exit)
+    names = [str(n) for n in line["denied"]]
+    if line.get("notify_stopped"):
+        note += "\n[seccomp reporting stopped at the cap; further denied syscalls were not named]"
+    return names, note
 
 
 def _nproc_backstop(release: str) -> bool:

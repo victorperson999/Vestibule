@@ -292,6 +292,24 @@ Layout. "Run cgroup" means the per-run scope in (i), or `run-<id>` inside the se
 >     *silently*, or every node result reports it.
 >   - Moby allows `ptrace` and `process_vm_*` on kernels ≥ 4.8; this subset denies them.
 >     Victor decides in step 5.
+
+> **Amendment 2026-10-27 (step 5, [`M2-step5-seccomp.md`](M2-step5-seccomp.md)):** both
+> questions resolved, and the mechanism built.
+> - **Q1 — `io_uring_*` denied silently** (S5-D2): excluded from the allowlist and from the
+>   notified subset, so default-deny returns `EPERM` unnamed; a node hello reports nothing.
+> - **Q2 — `ptrace`/`process_vm_*` allowed on ≥ 4.8** (S5-D1, Victor): follow Docker, for
+>   parity (native would otherwise be stricter than the `container` floor on the same host) and
+>   because a cap-less, `no_new_privs`, non-dumpable-PID-1 guest can only ptrace its own
+>   descendants. Criterion 9's denied-and-named example is `mount`, not `ptrace`.
+> - **The binding is `src/vestibule/backends/native_seccomp.py`** (our own ctypes over
+>   `libseccomp.so.2`); the profile is vendored and sha256-pinned beside it. The helper compiles
+>   the filter before it forks init (so no ctypes type materializes after `pivot_root`); init
+>   loads it and hands the listener fd to the helper over the existing socketpair.
+> - **`seccomp` is verified honestly:** init reports its own `/proc/self/status` `Seccomp:` mode
+>   and the server requires `2`; the guest, forked after the load, inherits the filter (S5-D6).
+>   `socket`/`socketpair` are restricted to the four families (S5-D4) — `AF_VSOCK` is named.
+> - **`socketpair` is restricted too** (N4 pairs it with `socket`), and the `pyproject` `seccomp`
+>   extra is removed (N4).
 - **Guest-planted symlinks (BUILD_LOG S7-D2): no seccomp change.** Denying
   `symlink`/`symlinkat` everywhere is the only structural fix, and it breaks `python -m venv`
   and npm's `.bin` links inside the workspace. M1's measures stay: `read_workspace` refuses
