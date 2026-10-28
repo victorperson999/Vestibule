@@ -699,7 +699,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   can't gain any — so allowing it opens no new way out, and it keeps the native sandbox behaving
   like the container one. The stricter alternative (deny and report it) stays a one-line switch.
 - **Step 5 — seccomp, done 2026-10-27
-  ([plan](plans/M2/M2-step5-seccomp.md); commit pending).**
+  ([plan](plans/M2/M2-step5-seccomp.md); commit `06bd899`).**
   - **Now:** every native run loads a syscall allowlist — the set Docker ships, adapted for a
     no-privilege sandbox — right before the program starts, and the program inherits it. This is
     the last piece the native warden was waiting on: **a run now reports `isolation: native`**
@@ -726,3 +726,41 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     that would have hung; a 3.14-only crash from building the filter in the wrong process).
     `critic` on the finished diff found no real defects, only one small "dead branch" note on the
     kept ptrace switch.
+- **Step 6 plan signed off, 2026-10-27
+  ([plan](plans/M2/M2-step6-selection.md)).** Step 6 makes native isolation reachable from the
+  MCP server: on Linux, `auto` tries native first and falls back in the contract's order
+  (a full container beats a native sandbox missing its limits). `skeptic` found 14 issues, 6 of
+  them medium, and every one changed the plan. The main ones:
+  - a degraded native choice could have stuck for a whole session even after Docker came up;
+  - the reason limits were missing would only have reached the server log, not the model;
+  - three messages earlier steps promised had been dropped.
+
+  Victor decided two questions, both as recommended:
+  - **S6-D1:** the probe that picks native is a normal sandboxed run. Every run already has the
+    server check the sandbox from facts the kernel reports, so the probe doesn't re-check facts
+    the untrusted program prints about itself.
+  - **S6-D10:** the test-only switch that skipped the seccomp filter is **deleted**, not kept.
+    The tests that used it now run the real filter, as users do.
+- **Step 6 — native isolation reachable from the server, done 2026-10-27
+  ([plan](plans/M2/M2-step6-selection.md); commit pending).**
+  - **Now:** on Linux, a user who ran `vestibule-mcp setup` gets `isolation: native` from the
+    MCP server. `auto` tries native first. If native is missing its limits (no systemd user
+    manager), a full container wins; a container that's only down for now is asked again every
+    30 s, so starting Docker later still upgrades the session.
+  - **Messages that name the fix:** the exact `setup` line, a digest-pinned image, Ubuntu's
+    user-namespace restriction, a missing libseccomp, a hidden `/proc`. A run missing its limits
+    says why, for example "— no systemd user bus".
+  - **`VESTIBULE_BACKEND`** takes `auto`, `native`, `container` and `naive`; native and container
+    runs share one concurrency limit. The test-only seccomp switch is gone from the code.
+  - **How we know:**
+    - the Linux suite grew to 539 tests (0 skipped) and Windows stays green;
+    - the server, started with only the six variables the MCP SDK passes, still picks native;
+    - closing the server mid-run leaves nothing behind;
+    - 29 deliberately broken versions each turned a test red. One of them showed a test that
+      couldn't fail, now fixed.
+  - **Review:** `critic` ran twice, each round checked by `verifier`, and every finding was
+    confirmed and fixed. The main ones:
+    - asking again whether Docker was up meant probing native again too, which could block
+      every call for 30 s when the run limit was reached;
+    - a Docker that was half-started, or images not yet pulled, would have left the session
+      without resource limits until a restart.

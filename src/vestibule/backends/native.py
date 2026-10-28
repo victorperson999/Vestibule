@@ -6,10 +6,9 @@ with the guest's limits before releasing it (step 4), collects the guest's outpu
 caps, stops a run that overruns (S3-D7), and turns the helper's status report into an honest
 verdict (S3-D8, S4-D7).
 
-Not reachable from the server until M2 step 6: tests build it directly. The helper loads a
-seccomp allowlist (step 5, `native_seccomp.py`) by default, so a run can now report
-`isolation: native`; the test-only `_skip_seccomp_for_tests` skips the filter, which makes the
-verdict `none` ("hard controls not confirmed: seccomp") — step 6 retires it (S3-D9, S5-D8).
+The selector (`select.py`, M2 step 6) builds it on Linux, with the shared concurrency budget.
+Every run loads the seccomp allowlist (step 5, `native_seccomp.py`); there is no way to skip it
+(step 6 deleted the test-only bypass, S6-D10).
 
 The verdict, the mount-table rule, the exit codes and the guest's environment are pure
 functions that run on every platform; the rest is Linux-only behind `sys.platform` checks
@@ -81,16 +80,16 @@ class _Run:
     sync_w: int | None = None  # the paused helper's release pipe (S4-D3)
     cgroup: str | None = None  # where init must be, once placed (S4-D7)
     applied: frozenset[str] = frozenset()  # the guest's limits that read back exactly
+    unplaced: str | None = None  # why placement failed, for the detail (S6-D7)
 
 
 class NativeBackend(Warden):
     """Runs each snippet in a fresh native sandbox: namespaces and a pivot_root jail."""
 
-    def __init__(self, *, _skip_seccomp_for_tests: bool = False) -> None:
-        # S3-D9: no config value or selector path passes this. With it, init skips loading the
-        # filter, so the verdict is `none` (seccomp unconfirmed); the default loads it (S5-D8).
-        self._skip_seccomp = _skip_seccomp_for_tests
-        self._sem: asyncio.Semaphore | None = None
+    def __init__(self, *, slots: asyncio.Semaphore | None = None) -> None:
+        # The selector's one budget for every backend (S6-D5, M1 S7-D1); built without it (the
+        # tests that construct the backend directly), a lazy one of max_concurrent.
+        self._sem: asyncio.Semaphore | None = slots
         self._finishers: set[asyncio.Task[None]] = set()  # strong refs: loop holds tasks weakly
 
     async def run(self, language: str, code: str, timeout_s: int, limits: Limits) -> RunResult:
@@ -158,7 +157,6 @@ class NativeBackend(Warden):
                 "env": _guest_env(found.env),
                 "masked": list(MASKED), "read_only": list(READ_ONLY),
                 "self_deadline_s": timeout_s + _SELF_DEADLINE_SLACK_S,
-                "skip_seccomp": self._skip_seccomp,
                 "pkg_dir": str(_HELPER.parent),  # the helper imports native_seccomp from here
                 "profile": _PROFILE,
             }
@@ -217,7 +215,9 @@ class NativeBackend(Warden):
             placed = await native_cgroup.place(run.run_id, run.proc.pid,
                                                timeout_s + _RUNTIME_MAX_SLACK_S, limits)
             cgroup = None
-            if placed is not None:
+            if isinstance(placed, str):  # not placed; the reason goes into the detail (S6-D7)
+                run.unplaced = placed
+            else:
                 run.cgroup, run.applied = placed.sandbox, placed.applied
                 cgroup = native_cgroup.CGROUP_FS + placed.sandbox
             backstop = "pids" not in run.applied and _nproc_backstop(os.uname().release)
@@ -264,7 +264,8 @@ class NativeBackend(Warden):
         lines = _parse_status(bytes(run.status))
         isolation, detail = _verdict(lines, uid=os.getuid(), gid=os.getgid(),
                                      host_ns=_host_namespaces(), host_proc=_host_proc(),
-                                     limits=limits, cgroup=run.cgroup, applied=run.applied)
+                                     limits=limits, cgroup=run.cgroup, applied=run.applied,
+                                     unplaced=run.unplaced)
         exit_code, note = _outcome(lines, timed_out=timed_out,
                                    truncated=len(out_buf) >= cap or len(err_buf) >= cap,
                                    oom_limit_mb=limits.mem_mb if "memory" in run.applied else None)
@@ -429,7 +430,7 @@ def _denied(lines: list[dict[str, Any]], note: str) -> tuple[list[str], str]:
     the rest were denied unnamed. Any other denied syscall fails with EPERM, unreported (N4)."""
     line = next((ln for ln in lines if isinstance(ln.get("denied"), list)), None)
     if line is None:
-        return [], note  # no line (timed out, overflowed, or the bypass sent none before exit)
+        return [], note  # no line (timed out, overflowed, or the helper died before sending it)
     names = [str(n) for n in line["denied"]]
     if line.get("notify_stopped"):
         note += "\n[seccomp reporting stopped at the cap; further denied syscalls were not named]"
@@ -449,10 +450,11 @@ def _nproc_backstop(release: str) -> bool:
 
 def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[str, int],
              host_proc: dict[str, bool], limits: Limits, cgroup: str | None = None,
-             applied: frozenset[str] = frozenset()) -> tuple[str, str | None]:
+             applied: frozenset[str] = frozenset(),
+             unplaced: str | None = None) -> tuple[str, str | None]:
     """What this run may claim (S3-D8): `native` only when every control is confirmed. A limit
     counts only if init reported the cgroup the server made (`cgroup`) and it read back there
-    (`applied`; S4-D7)."""
+    (`applied`; S4-D7). `unplaced` is why no cgroup was made, named in the detail (S6-D7)."""
     first = next((line for line in lines if "ready" in line or "error" in line), None)
     if first is None:
         return "none", "the sandbox sent no status report; no isolation is claimed for this run"
@@ -486,7 +488,10 @@ def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[s
         not_applied.append("tmpfs-size")
     if not not_applied:
         return "native", None
-    return "native-degraded", "limits not applied: " + ", ".join(sorted(not_applied))
+    detail = "limits not applied: " + ", ".join(sorted(not_applied))
+    if cgroup is None and unplaced:  # the model reads the detail, not the log (S6-D7)
+        detail += f" — {unplaced}"
+    return "native-degraded", detail
 
 
 _Mount = tuple[str, str, frozenset[str], str]  # mount point, fstype, options, super options

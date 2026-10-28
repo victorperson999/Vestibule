@@ -30,7 +30,8 @@ pytestmark = pytest.mark.docker
 
 @pytest.fixture()
 def limits(tmp_path):
-    return Limits(workspace_dir=str(tmp_path / "ws"))
+    # M1's container path: `auto` would try native first on Linux (M2 step 6, S6-D8)
+    return Limits(workspace_dir=str(tmp_path / "ws"), backend="container")
 
 
 @pytest.fixture()
@@ -313,7 +314,7 @@ async def test_selection_with_read_only_workspace(tmp_path):
     """RO mode: the probe demands that reads work AND writes fail."""
     from vestibule.backends.select import BackendSelector
 
-    lim = Limits(workspace_dir=str(tmp_path / "ws-ro"), workspace_ro=True)
+    lim = Limits(workspace_dir=str(tmp_path / "ws-ro"), workspace_ro=True, backend="container")
     sel = await BackendSelector().get(lim)
     try:
         assert sel.verdict == "container"
@@ -333,7 +334,8 @@ async def test_failed_selection_drains_and_leaves_no_tasks(tmp_path, monkeypatch
 
     monkeypatch.setattr(select_mod, "_PROBE_RW", "exit 7")  # both probes run for real; both fail
     with pytest.raises(RunRefusedError, match="cannot enforce"):
-        await BackendSelector().get(Limits(workspace_dir=str(tmp_path / "ws")))
+        await BackendSelector().get(Limits(workspace_dir=str(tmp_path / "ws"),
+                                           backend="container"))
 
     leftovers = [
         t for t in asyncio.all_tasks()
@@ -352,7 +354,7 @@ async def test_planted_probe_name_cannot_break_selection(tmp_path):
     persists. The probe file name is now random per probe."""
     from vestibule.backends.select import BackendSelector
 
-    lim = Limits(workspace_dir=str(tmp_path / "ws"))
+    lim = Limits(workspace_dir=str(tmp_path / "ws"), backend="container")
     (lim.workspace_path / ".vestibule-probe").mkdir(parents=True)
     sel = await BackendSelector().get(lim)
     try:

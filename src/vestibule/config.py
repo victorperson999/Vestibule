@@ -71,7 +71,7 @@ class Limits:
     workspace_dir: str = "~/.vestibule/workspace"
     workspace_ro: bool = False
     runtime: str = "auto"             # auto | docker | podman
-    backend: str = "auto"             # auto | naive (naive = explicit dev-only opt-in)
+    backend: str = "auto"             # auto | native | container | naive (naive: dev-only)
     image_python: str = DEFAULT_IMAGE_PYTHON
     image_node: str = DEFAULT_IMAGE_NODE
     max_concurrent: int = 4

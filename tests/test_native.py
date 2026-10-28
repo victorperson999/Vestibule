@@ -3,11 +3,8 @@ M2-step4-cgroups.md §4.2). Linux only, against the real trees that `vestibule-m
 the `native` marker skips elsewhere with the reason, and the cgroup tests also need a systemd
 user manager (tests/nativeutil.py).
 
-Since step 5 the `backend` fixture loads the real seccomp filter, so a run that reaches the
-guest reports `native` (with a cgroup) or `native-degraded` (without); the subprocess runners
-below keep the test-only bypass because they probe non-seccomp mechanisms (locked mounts, the
-terminal, a killed server), where the bypass keeps the fixture simple and `isolation: none`
-with the step-3 label (S5-D8).
+Every run loads the real seccomp filter (step 5; step 6 deleted the test-only bypass, S6-D10),
+so a run that reaches the guest reports `native` (with a cgroup) or `native-degraded` (without).
 """
 import asyncio
 import errno
@@ -38,7 +35,6 @@ DEVICES = ("null", "zero", "full", "random", "urandom", "tty")
 MASKED = ("acpi", "asound", "interrupts", "kcore", "keys", "latency_stats", "sched_debug",
           "scsi", "timer_list", "timer_stats")
 READ_ONLY = ("bus", "fs", "irq", "sys", "sysrq-trigger")
-STEP3_LABEL = "hard controls not confirmed: seccomp"
 
 
 @pytest.fixture()
@@ -210,7 +206,7 @@ _RUNNER = textwrap.dedent("""
     from vestibule.config import Limits
 
     async def main():
-        b = NativeBackend(_skip_seccomp_for_tests=True)
+        b = NativeBackend()
         r = await b.run("bash", sys.argv[2], 10, Limits(workspace_dir=sys.argv[1]))
         await b.drain(10)
         print(json.dumps({"exit": r.exit_code, "out": r.stdout, "err": r.stderr,
@@ -242,7 +238,7 @@ def test_a_locked_workspace_mount_keeps_its_flags(tmp_path, setup, flag):
     ws.mkdir()
     r = _in_outer_userns(tmp_path, setup, ws,
                          "cat in.txt; grep ' /workspace ' /proc/self/mountinfo")
-    assert r["exit"] == 0 and r["isolation"] == "none" and r["detail"] == STEP3_LABEL
+    assert r["exit"] == 0 and r["isolation"] in ("native", "native-degraded")
     out, mount = r["out"].splitlines()
     assert out == "hi" and flag in mount.split()[5].split(",")
 
@@ -326,7 +322,7 @@ _TTY_RUNNER = textwrap.dedent('''
     """
 
     async def main():
-        b = NativeBackend(_skip_seccomp_for_tests=True)
+        b = NativeBackend()
         r = await b.run("python", GUEST, 10, Limits(workspace_dir=sys.argv[1]))
         await b.drain(10)
         print("RESULT " + json.dumps({"runner_tty_nr": tty_nr(), "guest": r.stdout.strip()}))
@@ -460,7 +456,7 @@ _SERVER = textwrap.dedent("""
     from vestibule.backends.native import NativeBackend
     from vestibule.config import Limits
 
-    asyncio.run(NativeBackend(_skip_seccomp_for_tests=True).run(
+    asyncio.run(NativeBackend().run(
         "bash", f"exec -a {sys.argv[2]} sleep 600", 60, Limits(workspace_dir=sys.argv[1])))
 """)
 
@@ -489,25 +485,6 @@ def test_a_killed_server_leaves_no_sandbox(tmp_path):
 
 
 # --- refusing before the guest exists (S3-D8, S3-D9) ---------------------------------------
-
-async def test_the_default_loads_the_filter_the_bypass_does_not(limits):
-    """S5-D8: the default run loads the filter and reaches a native verdict; the test-only
-    bypass loads none, so the server's own `seccomp` check leaves the run `none`."""
-    default = NativeBackend()
-    bypass = NativeBackend(_skip_seccomp_for_tests=True)
-    try:
-        r = await default.run("bash", "echo ok", 10, limits)
-        assert r.exit_code == 0 and r.stdout == "ok\n"
-        assert r.isolation in ("native", "native-degraded")
-        # the bypass still runs the guest (exit 0, the file is written); only the verdict is
-        # `none`, because the server's own seccomp check fails on the unloaded filter (S5-D6).
-        r = await bypass.run("bash", "echo hi; echo ran > ran", 10, limits)
-        assert (r.isolation, r.isolation_detail, r.exit_code, r.stdout) == (
-            "none", STEP3_LABEL, 0, "hi\n")
-        assert (Path(limits.workspace_dir) / "ran").exists()
-    finally:
-        assert await default.drain(10) and await bypass.drain(10)
-
 
 async def test_an_empty_tree_fails_setup_at_mounts(backend, tmp_path):
     # S5-D7 regression: init aborts at the mounts stage, before the seccomp stage, so it sends
@@ -577,10 +554,12 @@ _STALLED_STDERR = textwrap.dedent("""
     native._SELF_DEADLINE_SLACK_S = -9  # timeout 10: the helper's deadline at 1 s
 
     async def main():
-        run = asyncio.ensure_future(NativeBackend(_skip_seccomp_for_tests=True).run(
+        run = asyncio.ensure_future(NativeBackend().run(
             "bash", "sleep 600", 10, Limits(workspace_dir=sys.argv[1])))
         done, _ = await asyncio.wait({run}, timeout=5)
-        print(json.dumps({"ended": bool(done)}), flush=True)
+        r = run.result() if done else None
+        print(json.dumps({"ended": bool(done), "isolation": r and r.isolation,
+                          "exit": r and r.exit_code}), flush=True)
         os._exit(0)  # past the stuck pipe; PDEATHSIG takes any sandbox left
 
     asyncio.run(main())
@@ -594,7 +573,10 @@ def test_a_stalled_server_stderr_cannot_hold_the_self_deadline(tmp_path):
     script.write_text(_STALLED_STDERR)
     p = subprocess.run([sys.executable, str(script), str(tmp_path / "ws")],
                        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
-    assert json.loads(p.stdout.strip().splitlines()[-1]) == {"ended": True}
+    f = json.loads(p.stdout.strip().splitlines()[-1])
+    # the sandbox ran (a native-tier verdict) and init was killed (no exit status): the
+    # self-deadline, not a setup failure that also ends fast (critic round, F7)
+    assert f["ended"] and f["isolation"] in ("native", "native-degraded") and f["exit"] == -1
 
 
 # --- concurrency ---------------------------------------------------------------------------
@@ -615,7 +597,7 @@ async def test_busy_refusal_after_a_bounded_wait(limits, monkeypatch):
         return native._not_run("test")
 
     monkeypatch.setattr(NativeBackend, "_collect", slow_collect)
-    b = NativeBackend(_skip_seccomp_for_tests=True)
+    b = NativeBackend()
     one = Limits(workspace_dir=limits.workspace_dir, max_concurrent=1)
     holder = asyncio.create_task(b.run("python", "1", 5, one))
     await asyncio.sleep(0.05)  # let the holder take the only slot
@@ -658,6 +640,17 @@ def _fake_busctl(tmp_path, monkeypatch, body):
     fake.write_text("#!/bin/sh\n" + body)
     fake.chmod(0o755)
     monkeypatch.setattr(native_cgroup, "bus_env", lambda: {"PATH": f"{bin_dir}:{os.defpath}"})
+
+
+async def test_a_bus_that_cannot_be_reached_is_named_as_no_bus(backend, limits, tmp_path,
+                                                               monkeypatch):
+    """An inherited XDG_RUNTIME_DIR with no bus behind it makes busctl fail to connect: the
+    detail says "no systemd user bus", not that systemd refused (critic round, F3)."""
+    _fake_busctl(tmp_path, monkeypatch, 'echo "Failed to connect to user scope bus via local '
+                 'transport: No such file or directory" >&2\nexit 1\n')
+    r = await backend.run("python", "print('ran')", 10, limits)
+    assert (r.exit_code, r.isolation, r.isolation_detail) == (
+        0, "native-degraded", ALL_LIMITS + " — no systemd user bus")
 
 
 def _helpers():
@@ -765,7 +758,8 @@ async def test_without_a_bus_the_run_degrades_and_the_backstop_holds(backend, li
                                                                      monkeypatch):
     monkeypatch.setattr(native_cgroup, "bus_env", lambda: None)
     r = await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits)
-    assert (r.isolation, r.isolation_detail) == ("native-degraded", ALL_LIMITS)
+    assert (r.isolation, r.isolation_detail) == (
+        "native-degraded", ALL_LIMITS + " — no systemd user bus")
     f = _facts(r)
     assert f["error"] == "EAGAIN" and f["forks"] < limits.pids_max  # RLIMIT_NPROC, not the cap
     assert any("no user bus" in m for m in caplog.messages), caplog.messages
@@ -780,7 +774,7 @@ _LOW_NPROC_RUNNER = textwrap.dedent("""
     native_cgroup.bus_env = lambda: None  # no cgroup, so the backstop is set
 
     async def main():
-        b = NativeBackend(_skip_seccomp_for_tests=True)
+        b = NativeBackend()
         r = await b.run("bash", "echo ran", 10, Limits(workspace_dir=sys.argv[1]))
         await b.drain(10)
         print(json.dumps({"exit": r.exit_code, "out": r.stdout, "detail": r.isolation_detail}))
@@ -801,7 +795,7 @@ def test_a_hard_nproc_limit_below_pids_max_still_runs(tmp_path):
                        capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     assert p.returncode == 0, p.stderr
     assert json.loads(p.stdout.strip().splitlines()[-1]) == {
-        "exit": 0, "out": "ran\n", "detail": STEP3_LABEL}
+        "exit": 0, "out": "ran\n", "detail": ALL_LIMITS + " — no systemd user bus"}
 
 
 async def test_without_cgroup_v2_placement_fails_at_once(backend, limits, tmp_path, monkeypatch,
@@ -813,7 +807,7 @@ async def test_without_cgroup_v2_placement_fails_at_once(backend, limits, tmp_pa
     monkeypatch.setattr(native_cgroup, "CGROUP_FS", str(tmp_path / "v1"))
     r = await backend.run("python", "print('ran')", 10, limits)
     assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
-        0, "ran\n", "native-degraded", ALL_LIMITS)
+        0, "ran\n", "native-degraded", ALL_LIMITS + " — no cgroup v2")
     assert not pidfile.exists()  # systemd was never asked
     assert any("no cgroup v2" in m for m in caplog.messages), caplog.messages
 
@@ -879,7 +873,7 @@ _MIN_ENV_RUNNER = textwrap.dedent("""
     from vestibule.config import Limits
 
     async def main():
-        b = NativeBackend(_skip_seccomp_for_tests=True)
+        b = NativeBackend()
         r = await b.run("python", "b = b'x' * (1 << 30)", 30, Limits(workspace_dir=sys.argv[1]))
         await b.drain(10)
         print(json.dumps({"exit": r.exit_code, "err": r.stderr}))
@@ -910,7 +904,7 @@ async def test_a_hanging_busctl_costs_at_most_the_placement_bound(backend, limit
     r = await backend.run("python", "print('ran')", 10, limits)
     assert time.monotonic() - t0 < native_cgroup._PLACE_WAIT_S + 3
     assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
-        0, "ran\n", "native-degraded", ALL_LIMITS)
+        0, "ran\n", "native-degraded", ALL_LIMITS + " — systemd did not place the run within 5 s")
     assert any("placement took over" in m for m in caplog.messages), caplog.messages
     assert not Path(f"/proc/{pidfile.read_text().strip()}").exists()
 
@@ -922,7 +916,7 @@ async def test_without_busctl_the_run_degrades_at_once(backend, limits, tmp_path
     r = await backend.run("python", "print('ran')", 10, limits)
     assert time.monotonic() - t0 < 3
     assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
-        0, "ran\n", "native-degraded", ALL_LIMITS)
+        0, "ran\n", "native-degraded", ALL_LIMITS + " — busctl not found")
     assert any("placement failed" in m for m in caplog.messages), caplog.messages
 
 

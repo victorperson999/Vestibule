@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -73,6 +74,18 @@ def overlap_problem(limits: Limits) -> str | None:
                 f"directory ({limits.rootfs_path}, VESTIBULE_ROOTFS_DIR) overlap; point one "
                 "of them somewhere else")
     return None
+
+
+def setup_command(limits: Limits) -> str:
+    """The exact `setup` line for this server: every setting setup reads, as the server has it,
+    so neither a default nor a value exported in the user's shell sends it elsewhere (step 2
+    §6, M2 step 6)."""
+    pairs = (("VESTIBULE_ROOTFS_DIR", str(limits.rootfs_path)),
+             ("VESTIBULE_WORKSPACE", str(limits.workspace_path)),  # setup's overlap check
+             ("VESTIBULE_IMAGE_PYTHON", limits.image_python),
+             ("VESTIBULE_IMAGE_NODE", limits.image_node))
+    return " ".join([*(f"{var}={shlex.quote(value)}" for var, value in pairs),
+                     "vestibule-mcp setup"])
 
 
 def setup_main() -> int:

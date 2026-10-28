@@ -58,16 +58,17 @@ def bus_env() -> dict[str, str] | None:
     return env
 
 
-async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Placement | None:
+async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Placement | str:
     """Put the paused helper `pid` in its own scope, then build the layout and the guest's
-    limits. None, with the reason logged, if any of it fails or outlasts _PLACE_WAIT_S."""
+    limits. If any of it fails or outlasts _PLACE_WAIT_S: the reason, short, for the run's
+    detail (M2 step 6, S6-D7); the long form goes to the log."""
     if not os.path.exists(f"{CGROUP_FS}/cgroup.controllers"):  # cgroup v1, or v2 elsewhere
         log.warning("run %s: no cgroup v2 at %s; limits not applied", run_id, CGROUP_FS)
-        return None
+        return "no cgroup v2"
     env = bus_env()
     if env is None:
         log.warning("run %s: no user bus; limits not applied", run_id)
-        return None
+        return "no systemd user bus"
     unit = f"vestibule-{run_id}.scope"
     busctl = None
     try:
@@ -80,22 +81,24 @@ async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Pl
                 stderr=asyncio.subprocess.PIPE)
             _, err = await busctl.communicate()
             if busctl.returncode != 0:
-                log.warning("run %s: busctl failed (%s); limits not applied", run_id,
-                            err.decode(errors="replace").strip())
-                return None
+                text = err.decode(errors="replace").strip()
+                log.warning("run %s: busctl failed (%s); limits not applied", run_id, text)
+                # an inherited XDG_RUNTIME_DIR with no bus behind it (WSLg sets one) fails here
+                return ("no systemd user bus" if "Failed to connect" in text
+                        else "systemd refused the scope")
             scope = await _in_scope(pid, unit)
             if scope is None:
                 log.warning("run %s: the helper was gone before placement", run_id)
-                return None
+                return "the helper was gone before placement"
             # A thread: moving a process between cgroups takes a kernel-wide lock (S4-D5).
             return await asyncio.to_thread(_layout, run_id, scope, pid, limits)
     except TimeoutError:
         log.warning("run %s: placement took over %d s; limits not applied", run_id,
                     _PLACE_WAIT_S)
-        return None
+        return f"systemd did not place the run within {_PLACE_WAIT_S} s"
     except OSError as e:  # busctl missing from PATH, among others
         log.warning("run %s: placement failed (%s); limits not applied", run_id, e)
-        return None
+        return "busctl not found" if isinstance(e, FileNotFoundError) else "placement failed"
     finally:
         if busctl is not None and busctl.returncode is None:  # past the bound, or cancelled
             with contextlib.suppress(ProcessLookupError):
@@ -135,7 +138,7 @@ async def _in_scope(pid: int, unit: str) -> str | None:
         await asyncio.sleep(0.001)
 
 
-def _layout(run_id: str, scope: str, pid: int, limits: Limits) -> Placement | None:
+def _layout(run_id: str, scope: str, pid: int, limits: Limits) -> Placement | str:
     """S4-D5: supervisor/ with the helper, guest/sandbox/ for init, then each limit on guest/,
     one controller at a time, counted only if every file reads back what was written."""
     root = CGROUP_FS + scope
@@ -145,7 +148,7 @@ def _layout(run_id: str, scope: str, pid: int, limits: Limits) -> Placement | No
         os.makedirs(f"{root}/guest/sandbox")
     except OSError as e:
         log.warning("run %s: cgroup layout failed (%s); limits not applied", run_id, e)
-        return None
+        return "cgroup layout failed"
     wanted = {  # M1's values and meanings
         "cpu": {"cpu.max": f"{limits.cpu_pct * 1000} 100000"},  # what Docker writes for --cpus
         "memory": {"memory.max": str(limits.mem_mb << 20), "memory.swap.max": "0"},
