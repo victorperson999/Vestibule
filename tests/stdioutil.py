@@ -33,7 +33,8 @@ SERVER_EXE = Path(sys.executable).parent / (
 )
 # The MCP Python SDK's PROCESS_TERMINATION_TIMEOUT (S7-D1).
 CLIENT_GRACE_S = 2.0
-_SPAWN = re.compile(r"run ([0-9a-f]{16}): spawning")
+# A container run logs "spawning"; a native one "starting a native sandbox" (M2 step 6).
+_SPAWN = re.compile(r"run ([0-9a-f]{16}): (?:spawning|starting a native sandbox)")
 
 # Phases a closer reports: the step of the client's sequence that ended the server.
 STDIN = "stdin"      # it exited on its own after stdin closed
@@ -59,9 +60,12 @@ class StdioServer:
         ]
 
     @classmethod
-    async def start(cls, workspace: Path, settings: dict[str, str] | None = None) -> "StdioServer":
+    async def start(cls, workspace: Path, settings: dict[str, str] | None = None,
+                    base_env: dict[str, str] | None = None) -> "StdioServer":
         # The dev shell's own VESTIBULE_* settings must not leak into the server under test.
-        env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")}
+        # `base_env` replaces the inherited environment (criterion 17's minimal launch).
+        source = os.environ if base_env is None else base_env
+        env = {k: v for k, v in source.items() if not k.startswith("VESTIBULE_")}
         env["VESTIBULE_WORKSPACE"] = str(workspace)
         env.update(settings or {})
         proc = await asyncio.create_subprocess_exec(

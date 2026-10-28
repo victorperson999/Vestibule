@@ -16,6 +16,14 @@ Windows path only; on POSIX the server hands `cleanup_job()` to a detached clean
 (docs/plans/M2/M2-step1-linux-baseline.md, S1-D5). The probe reads its soft limits back from
 the container's cgroup, so `container` is claimed only for verified limits (S7-D3),
 and its workspace file name is random per probe.
+
+M2 step 6 (docs/plans/M2/M2-step6-selection.md): `VESTIBULE_BACKEND` is `auto | native |
+container | naive`. On Linux, `auto` probes native first and follows N5's order: native >
+container > native-degraded > container-degraded > refused (S6-D3). The native probe is a
+normal native run of the same workspace round-trip; its own per-run verdict is the check
+(S6-D1). A native-degraded win over a container that was only refused for now is provisional,
+and re-checked after the cooldown (S6-D6). Native runs share the one concurrency budget
+(S6-D5) and need nothing at shutdown: they own no host files and end with the server (S6-D2).
 """
 from __future__ import annotations
 
@@ -25,12 +33,15 @@ import logging
 import math
 import re
 import secrets
+import sys
 import time
 from dataclasses import dataclass, field
 
+from vestibule import registry, rootfs
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, START_HINTS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
+from vestibule.backends.native import NativeBackend
 from vestibule.config import Limits
 
 log = logging.getLogger("vestibule.select")
@@ -124,6 +135,19 @@ _RUNTIME_ORDER: dict[str, tuple[str, ...]] = {
     "docker": ("docker",),
     "podman": ("podman",),
 }
+# M2 step 6 (S6-D3): the four backend values.
+_BACKENDS = ("auto", "native", "container", "naive")
+# S6-D4: the two settings that explain a refused user namespace, read for the hint only.
+_SYSCTLS = {
+    "apparmor_restrict_unprivileged_userns":
+        "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+    "max_user_namespaces": "/proc/sys/user/max_user_namespaces",
+}
+
+
+class _ProbeFailed(RunRefusedError):
+    """The full container profile ran and failed its probe: deterministic on this host, so a
+    native-degraded selection made next to it is final, not provisional (S6-D6)."""
 
 
 class _RestartRequired(RunRefusedError):
@@ -138,8 +162,13 @@ class Selection:
     """The committed verdict: a warden plus what its runs will honestly report."""
 
     warden: Warden
-    verdict: str  # "none" (explicit naive only) | "container" | "container-degraded"
+    # "none" (explicit naive only) | "container" | "container-degraded" | "native"
+    # | "native-degraded"
+    verdict: str
     detail: str | None = None
+    # S6-D6: a provisional selection (native-degraded over a container refused for now) is
+    # selected again once this monotonic time passes; None means cached for the process.
+    recheck_at: float | None = None
 
 
 @dataclass
@@ -199,8 +228,11 @@ class BackendSelector:
         if self._slots is None:  # created once per process, never per selection
             self._slots = asyncio.Semaphore(limits.max_concurrent)
         async with lock:
-            if self._selection is not None:
-                return self._selection
+            sel = self._selection
+            if sel is not None:
+                if sel.recheck_at is not None and time.monotonic() >= sel.recheck_at:
+                    return await self._recheck_container(limits, sel)
+                return sel
             if self._fail_reason is not None:
                 waited = time.monotonic() - self._failed_at
                 if waited < _RETRY_COOLDOWN_S:
@@ -228,24 +260,30 @@ class BackendSelector:
             return self._selection
 
     def note_result(self, warden: Warden, result: RunResult) -> None:
-        """Post-run honesty hook: a container-tier selection that produced a run
-        with no isolation (runtime binary gone — S4-D2 — or an exit-125 container
-        start failure) has lost its runtime. Drop the cache so the next call
-        re-checks and returns an actionable message instead of failing forever.
+        """Post-run honesty hook. A selection whose own run reports no isolation has lost
+        its backend: the container runtime is gone (S4-D2, an exit-125 start failure), or the
+        native rootfs or libseccomp is (N5). A `native` selection whose run comes back
+        degraded has lost its limits, so N5's order may now pick the container (S6-D6). Either
+        way the cache is dropped and the next call selects again; a degraded selection isn't
+        dropped for a degraded run, so this can't loop.
 
         Only a result from the *current* selection counts (S7-D1): a late result
         from an already-dropped backend must not evict a healthy new one. The
         dropped backend stays tracked until idle, so shutdown still drains it.
         """
-        if (
-            self._selection is not None
-            and warden is self._selection.warden
-            and self._selection.verdict != "none"
-            and result.isolation == "none"
-        ):
-            log.warning("selection: runtime failed mid-session; re-checking on next call")
-            self._selection = None
-            self._prune()
+        sel = self._selection
+        if sel is None or warden is not sel.warden or sel.verdict == "none":
+            return
+        if result.isolation == "none":
+            log.warning("selection: the selected backend lost its isolation; re-checking on "
+                        "the next call")
+        elif sel.verdict == "native" and result.isolation == "native-degraded":
+            log.warning("selection: a native run came back degraded (%s); re-checking on the "
+                        "next call", result.isolation_detail)
+        else:
+            return
+        self._selection = None
+        self._prune()
 
     def cleanup_job(self) -> CleanupJob:
         """Snapshot for the POSIX shutdown hand-off (S1-D5): every tracked backend's
@@ -330,11 +368,144 @@ class BackendSelector:
         if limits.backend == "naive":
             log.warning("VESTIBULE_BACKEND=naive: NO isolation (dev-only opt-in)")
             return Selection(NaiveBackend(), "none", "explicitly configured, dev-only")
-        if limits.backend != "auto":
+        if limits.backend not in _BACKENDS:
             raise _RestartRequired(
-                f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto' or 'naive'. "
-                + _RESTART_HINT
+                f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto', 'native', "
+                "'container' or 'naive'. " + _RESTART_HINT
             )
+        on_linux = sys.platform == "linux"
+        if limits.backend == "native":
+            if not on_linux:
+                raise _RestartRequired(
+                    "VESTIBULE_BACKEND=native: native isolation needs Linux; use 'auto' or "
+                    "'container' on this system. " + _RESTART_HINT
+                )
+            try:
+                return await self._try_native(limits)
+            except RunRefusedError as e:
+                raise type(e)(f"native isolation is unavailable: {e}") from None
+        if limits.runtime not in _RUNTIME_ORDER:  # S6-D3: before any probe, so it never hides
+            raise _RestartRequired(
+                f"unknown VESTIBULE_RUNTIME {limits.runtime!r}; "
+                "use 'auto', 'docker', or 'podman'. " + _RESTART_HINT
+            )
+        if limits.backend == "container" or not on_linux:
+            return await self._select_container(limits)
+        return await self._select_auto_linux(limits)
+
+    async def _select_auto_linux(self, limits: Limits) -> Selection:
+        """N5's order (S6-D3): native > container > native-degraded > container-degraded."""
+        native: Selection | None = None
+        native_err: RunRefusedError | None = None
+        try:
+            native = await self._try_native(limits)
+        except RunRefusedError as e:
+            native_err = e
+            log.warning("selection: native isolation unavailable: %s", e)
+        if native is not None and native.verdict == "native":
+            return native
+        try:
+            # With native-degraded in hand, the soft-off retry can only produce a
+            # container-degraded, which ranks below it: skip it.
+            container = await self._select_container(limits, degraded_retry=native is None)
+        except RunRefusedError as e:
+            if native is None:
+                assert native_err is not None
+                msg = (f"no isolating backend is available — native: {native_err}; "
+                       f"container: {e}")
+                both_final = (isinstance(native_err, _RestartRequired)
+                              and isinstance(e, _RestartRequired))
+                raise (_RestartRequired if both_final else RunRefusedError)(msg) from None
+            if not isinstance(e, (_RestartRequired, _ProbeFailed)):  # S6-D6: may clear up
+                native.recheck_at = time.monotonic() + _RETRY_COOLDOWN_S
+            log.warning("selection: container unavailable (%s); using native-degraded%s", e,
+                        "" if native.recheck_at is None
+                        else f", re-checked after {_RETRY_COOLDOWN_S} s")
+            return native
+        if native is None or container.verdict == "container":
+            if native is not None:  # native-degraded loses to a full container
+                await native.warden.drain(_CANDIDATE_DRAIN_S)
+            return container
+        await container.warden.drain(_CANDIDATE_DRAIN_S)  # container-degraded loses
+        return native
+
+    async def _recheck_container(self, limits: Limits, native: Selection) -> Selection:
+        """S6-D6: a provisional native-degraded selection asks the container again, and only
+        the container. Native keeps serving and is never probed again: that probe would wait
+        for a slot its own runs hold, and a failure there would refuse every call."""
+        assert self._slots is not None
+        if self._slots.locked():  # every slot busy: never compete with real runs
+            native.recheck_at = time.monotonic() + _RETRY_COOLDOWN_S
+            return native
+        log.info("selection: asking the container again (native-degraded is provisional)")
+        try:
+            container = await self._select_container(limits, degraded_retry=False)
+        except (_RestartRequired, _ProbeFailed) as e:  # it won't clear up on its own: final
+            log.info("selection: the container can't be used (%s); native-degraded stays", e)
+            native.recheck_at = None
+            return native
+        except RunRefusedError:  # the daemon not up yet, the image not pulled: ask again later
+            native.recheck_at = time.monotonic() + _RETRY_COOLDOWN_S
+            return native
+        if container.verdict == "container":
+            log.warning("selection: the container backend is up; switching from native-degraded")
+            self._selection = container
+            self._prune()
+            return container
+        await container.warden.drain(_CANDIDATE_DRAIN_S)  # container-degraded ranks lower
+        native.recheck_at = None
+        return native
+
+    async def _try_native(self, limits: Limits) -> Selection:
+        """S6-D4: native's pre-checks, cheapest first, then its probe (S6-D1). A Selection,
+        or a refusal whose message is the reason; restart-required when only a config change
+        can fix it."""
+        try:
+            for var, ref in (("VESTIBULE_IMAGE_PYTHON", limits.image_python),
+                             ("VESTIBULE_IMAGE_NODE", limits.image_node)):
+                try:
+                    registry.parse_ref(ref)
+                except registry.RegistryError as e:  # S2-D4: native needs a digest
+                    raise _RestartRequired(f"{var}: {e}") from None
+            overlap = rootfs.overlap_problem(limits)  # S2-D9; setup refuses it too
+            if overlap:
+                raise _RestartRequired(overlap)
+            if any(rootfs.find(limits.rootfs_path, ref) is None
+                   for ref in (limits.image_python, limits.image_node)):
+                raise RunRefusedError(
+                    f"no native rootfs in {limits.rootfs_path}; run "
+                    f"`{rootfs.setup_command(limits)}` once (downloads about 123 MB), then "
+                    "restart Vestibule if it already chose another backend"
+                )
+        except RunRefusedError:
+            raise
+        except Exception as e:  # user-owned files and settings: a reason, never a crash
+            raise RunRefusedError(f"the native checks failed: {e}") from None
+        backend = NativeBackend(slots=self._slots)
+        t0 = time.monotonic()
+        try:
+            r = await backend.run("bash", _probe_script(limits), _PROBE_TIMEOUT_S, limits)
+        except asyncio.CancelledError:
+            raise  # the run's own finisher stops the helper (step 3)
+        except BaseException:
+            await backend.drain(_CANDIDATE_DRAIN_S)
+            raise
+        ok = (r.exit_code == 0 and not r.timed_out and _PROBE_MARKER in r.stdout
+              and r.isolation in ("native", "native-degraded"))
+        log.info("selection: native probe %s in %.0f ms (%s)",  # step 4's placement time
+                 r.isolation if ok else "failed", (time.monotonic() - t0) * 1000,
+                 r.isolation_detail or "no detail")
+        if ok:
+            if r.isolation == "native-degraded":
+                log.warning("selection: native is degraded (%s)", r.isolation_detail)
+            return Selection(backend, r.isolation, r.isolation_detail)
+        await backend.drain(_CANDIDATE_DRAIN_S)
+        raise RunRefusedError(_native_reason(r, limits, _read_sysctls()))
+
+    async def _select_container(
+        self, limits: Limits, degraded_retry: bool = True
+    ) -> Selection:
+        """M1's container selection (M1 step 5, S7-D3), unchanged but for `degraded_retry`."""
         _warn_unpinned(limits)
         runtime = await self._resolve_runtime(limits)
 
@@ -360,6 +531,8 @@ class BackendSelector:
                 log.warning("selection: running DEGRADED — %s", detail)
             return Selection(backend, verdict, detail)
         await backend.drain(_CANDIDATE_DRAIN_S)
+        if not degraded_retry:
+            raise _ProbeFailed(f"the full container profile failed its probe ({failure})")
 
         # S5-D2: one retry with every soft limit off. Hard controls are never
         # stripped, so a hard-tier failure fails this retry too and blocks.
@@ -382,11 +555,7 @@ class BackendSelector:
             # The guest owns the workspace (D1): a run can leave it unusable, e.g. by
             # chmod-ing its root on a Linux host where the guest runs as your uid. That
             # is a fixable folder problem, not a runtime that can't isolate.
-            raise RunRefusedError(
-                f"the sandbox could not use the workspace ({second}). Check that "
-                f"{limits.workspace_path} exists and that you can read and write it "
-                "(code run earlier may have changed its permissions), then retry"
-            )
+            raise RunRefusedError(_workspace_refusal(second, limits))
         # Neutral on cause: a hard-tier failure and an override image that cannot run
         # the probe look identical from here; the parenthetical says which.
         raise RunRefusedError(
@@ -397,12 +566,7 @@ class BackendSelector:
         )
 
     async def _resolve_runtime(self, limits: Limits) -> str:
-        order = _RUNTIME_ORDER.get(limits.runtime)
-        if order is None:
-            raise _RestartRequired(
-                f"unknown VESTIBULE_RUNTIME {limits.runtime!r}; "
-                "use 'auto', 'docker', or 'podman'. " + _RESTART_HINT
-            )
+        order = _RUNTIME_ORDER[limits.runtime]  # _select checked it first
         problems: list[str] = []
         statuses: list[str] = []
         for rt in order:
@@ -434,11 +598,7 @@ class BackendSelector:
         RunRefusedError propagates (e.g. the image preflight's pull message IS the
         actionable verdict).
         """
-        probe_file = f"/workspace/.vestibule-probe-{secrets.token_hex(6)}"
-        script = (_PROBE_RO if limits.workspace_ro else _PROBE_RW).replace(
-            _PROBE_FILE, probe_file
-        )
-        r = await backend.run("bash", script, _PROBE_TIMEOUT_S, limits)
+        r = await backend.run("bash", _probe_script(limits), _PROBE_TIMEOUT_S, limits)
         warnings = [ln.strip() for ln in r.stderr.splitlines() if _RUNTIME_WARNING.match(ln)]
         for w in warnings:  # misconfiguration is never silent, whatever the verdict
             log.warning("probe: runtime warning: %s", w[:300])
@@ -458,6 +618,64 @@ class BackendSelector:
         # Generous: runc's "exec: \"timeout\": not found" lands past char 200.
         first_err = (r.stderr.strip().splitlines() or ["no error output"])[0][:400]
         return f"probe exit {r.exit_code}, timed_out={r.timed_out}: {first_err}"
+
+
+def _probe_script(limits: Limits) -> str:
+    """The workspace round-trip, its file name fresh per probe (M1 step 7 plan §4.1)."""
+    probe_file = f"/workspace/.vestibule-probe-{secrets.token_hex(6)}"
+    return (_PROBE_RO if limits.workspace_ro else _PROBE_RW).replace(_PROBE_FILE, probe_file)
+
+
+def _workspace_refusal(reason: str, limits: Limits) -> str:
+    return (
+        f"the sandbox could not use the workspace ({reason}). Check that "
+        f"{limits.workspace_path} exists and that you can read and write it "
+        "(code run earlier may have changed its permissions), then retry"
+    )
+
+
+def _native_reason(r: RunResult, limits: Limits, sysctls: dict[str, str]) -> str:
+    """S6-D4: why a native probe failed, with a hint naming the fix where there is one."""
+    if r.isolation == "none":  # the sandbox itself failed
+        reason = r.isolation_detail or "the native sandbox gave no reason"
+    else:  # the sandbox was fine and the guest failed: say so, as M1's probe does
+        first = (r.stderr.strip().splitlines() or ["no error output"])[0][:400]
+        reason = (f"probe exit {r.exit_code}, timed out {'yes' if r.timed_out else 'no'}: "
+                  f"{first}")
+        if "/workspace" in first:
+            return _workspace_refusal(reason, limits)
+    hint = _native_hint(reason, sysctls)
+    return f"{reason}. {hint}" if hint else reason
+
+
+def _native_hint(reason: str, sysctls: dict[str, str]) -> str | None:
+    """The fix for a known cause (S6-D4). Evidence in the reason itself comes first. The two
+    sysctls only make a cause likely, so they explain an actual setup failure, at any stage:
+    stock Ubuntu fails the helper's own id-map write, not a mount."""
+    if "libseccomp" in reason:
+        return "install libseccomp2 (apt install libseccomp2); native isolation requires it"
+    if "failed at mounts" in reason and "/proc: " in reason and "not permitted" in reason:
+        return ("the server runs where /proc isn't fully visible (inside a container, or "
+                "under systemd's ProtectProc=), so native can't build its sandbox here")
+    if "setup failed at" not in reason:
+        return None
+    if sysctls.get("apparmor_restrict_unprivileged_userns") == "1":
+        return ("Ubuntu restricts unprivileged user namespaces on this host, the likely cause; "
+                "lifting that needs root, so use the container backend")
+    if sysctls.get("max_user_namespaces") == "0":
+        return "user namespaces are disabled on this host (user.max_user_namespaces=0)"
+    return None
+
+
+def _read_sysctls() -> dict[str, str]:
+    out = {}
+    for name, path in _SYSCTLS.items():
+        try:
+            with open(path) as f:
+                out[name] = f.read().strip()
+        except OSError:  # absent on this kernel, or not Linux
+            pass
+    return out
 
 
 def _limits_note(

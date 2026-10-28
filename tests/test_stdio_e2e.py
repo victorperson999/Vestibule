@@ -73,8 +73,9 @@ def trace_file(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 async def server(tmp_path, trace_file):
-    srv = await StdioServer.start(
-        tmp_path / "ws", {"VESTIBULE_CLEANUP_TRACE": str(trace_file)}
+    srv = await StdioServer.start(  # M1's container path; `auto` tries native first on Linux
+        tmp_path / "ws", {"VESTIBULE_CLEANUP_TRACE": str(trace_file),
+                          "VESTIBULE_BACKEND": "container"}
     )
     try:
         yield srv
@@ -212,6 +213,7 @@ async def test_stdio_real_sdk_client_hands_off_a_run_in_flight(tmp_path, trace_f
     params = StdioServerParameters(command=str(SERVER_EXE), env={
         "VESTIBULE_WORKSPACE": str(tmp_path / "ws"),
         "VESTIBULE_CLEANUP_TRACE": str(trace_file),
+        "VESTIBULE_BACKEND": "container",  # this test drives a container run (S6-D8)
     })
 
     def spawned() -> list[str]:

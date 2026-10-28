@@ -89,7 +89,7 @@ Set these as environment variables in Vestibule's entry in your MCP client's con
 | `VESTIBULE_WORKSPACE` | `~/.vestibule/workspace` | Host folder mounted at `/workspace`, the one place runs can keep files. Created on first use. |
 | `VESTIBULE_WORKSPACE_RO` | off | `1`/`true`/`yes`/`on` mounts the workspace read-only. |
 | `VESTIBULE_RUNTIME` | `auto` | `auto` (Docker, then Podman), `docker`, or `podman`. |
-| `VESTIBULE_BACKEND` | `auto` | `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
+| `VESTIBULE_BACKEND` | `auto` | `auto` uses native isolation on Linux once `vestibule-mcp setup` has run, and the container backend otherwise (or when it protects more). `native` and `container` force one backend. `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
 | `VESTIBULE_IMAGE_PYTHON` | pinned `python:3.12-slim` | Image for `python` and `bash` runs. See the override rules above. |
 | `VESTIBULE_IMAGE_NODE` | pinned `node:22-slim` | Image for `node` runs. |
 | `VESTIBULE_DEFAULT_TIMEOUT_S` | `10` | Timeout when a call doesn't set `timeout_seconds`. |
@@ -112,7 +112,7 @@ Set these as environment variables in Vestibule's entry in your MCP client's con
 
 ## How it works (design)
 
-Two halves: the **MCP server** decides *whether/what* (validation, limits, schemas, audit), and a **warden** backend decides *how* to isolate and run. Every result carries an `isolation:` field stating what actually protected the run — `container`, `container-degraded` (contained, but some resource limits could not be applied or verified; the result names them), `none`, and from M2 `native` — and the tool never claims protection that wasn't applied.
+Two halves: the **MCP server** decides *whether/what* (validation, limits, schemas, audit), and a **warden** backend decides *how* to isolate and run. Every result carries an `isolation:` field stating what actually protected the run — `native` and `container`, `native-degraded` and `container-degraded` (isolated, but some resource limits could not be applied or verified; the result names them and why), and `none` — and the tool never claims protection that wasn't applied.
 
 Honest scope, stated up front: this is namespace/container isolation sharing the host kernel, **not** a hardened VM boundary. The goal is to make the common, realistic agent risks — prompt-injected exfiltration, destructive commands, resource exhaustion — structurally impossible, not to defend against kernel 0-days. The full threat model ships as `SECURITY.md` in M4.
 

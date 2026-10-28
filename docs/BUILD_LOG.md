@@ -44,7 +44,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 2 | Rootfs: registry client, unpacker, `vestibule-mcp setup` | 2026-10-25 | `2af2c0c` `9197a55` + review fixes and Karpathy re-review `4c8afcf` | 358 Linux (0 skipped); 305 + 33 POSIX/Linux-only skips on Windows |
 | M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | `1ef1b46` | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
 | M2 step 4 | cgroups v2: per-run scope, guest limits, OOM note, fork-bomb backstop (not reachable from the server yet) | 2026-10-26 | `8b1de5e` | 470 Linux (0 skipped); 367 + 83 POSIX/Linux-only skips on Windows |
-| M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | pending | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
+| M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | `06bd899` | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
+| M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | pending | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -76,9 +77,81 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M2 step 5 — seccomp: libseccomp binding, Docker-derived allowlist, bounded reporting (2026-10-27)
+## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M2/M2-step6-selection.md`](plans/M2/M2-step6-selection.md) S6-D1 to
+  S6-D10 (v2 after the `skeptic` review; S6-D1 and S6-D10 decided by Victor). Contract
+  amendments in M2 §4, §5, §7 and §10.
+- **What:**
+  - **`select.py`:**
+    - **The four values:** `VESTIBULE_BACKEND` is `auto | native | container | naive`, and
+      `VESTIBULE_RUNTIME` is checked before any probe.
+    - **`auto` on Linux** follows N5's order in `_select_auto_linux`: native > container >
+      native-degraded > container-degraded > refused. With native-degraded in hand, the
+      container's soft-off retry is skipped.
+    - **`_try_native`:** the pin, overlap and rootfs pre-checks, then the probe. The probe is a
+      normal native run of M1's round-trip, and its own verdict is the check (S6-D1).
+    - **The reasons:** `_native_reason` and `_native_hint` name the fix.
+    - **Provisional selections:** `_recheck_container` asks only the container, postpones
+      while every slot is busy, and switches to it once it's full. A native-degraded selection
+      is final only on `_RestartRequired` or `_ProbeFailed` (S6-D6).
+    - **`note_result`** drops a `native` selection after a degraded run.
+  - **`native.py`:**
+    - `slots` (the shared budget, S6-D5);
+    - `_skip_seccomp_for_tests` deleted (S6-D10);
+    - `unplaced`, the placement reason, into the verdict's detail (S6-D7).
+  - **`native_cgroup.place`** returns a short reason instead of `None`. A `busctl` that can't
+    connect counts as "no systemd user bus".
+  - **`native_helper.py`:** the bypass branch is removed; every run loads the filter.
+  - **`rootfs.setup_command`:** the exact `setup` line, naming all four settings setup reads.
+  - **`config.py`** comment, the README's `VESTIBULE_BACKEND` row and its isolation values, and
+    the contract amendments.
+- **Tests:**
+  - **M1's tests pinned to `backend=container`:** `test_select._limits()`, `test_container`'s
+    selection tests, `test_acceptance`, and `test_stdio_e2e`'s fixture plus the SDK test's env.
+    `stdioutil`'s spawn pattern also matches native, and `StdioServer.start(base_env=…)` was
+    added.
+  - **New, offline (`test_select.py`):** N5's order table, provisional and re-check rows,
+    `note_result`, the reasons and hints, the mixed refusal, and the `_ProbeFailed` raise site.
+  - **New, Linux (`test_native_select.py`):** real selection, the shared budget, no bus, the
+    drain, unpinned images, no rootfs, overlap, a guest that can't use the workspace, a rootfs
+    removed after selection, the four injected causes, and criteria 17 and 11 over stdio.
+  - **Migrated:** `test_native.py`'s bypass sites run the real filter; the all-limits details
+    name their reason; the stalled-stderr runner asserts a native-tier verdict; and a new test
+    covers a bus that can't be reached.
+- **What broke along the way:**
+  1. *A vacuous assertion*, found by a surviving mutant: pytest's `tmp_path` holds the test's
+     name, so `"overlap" in msg` matched the path inside the "no native rootfs" refusal that
+     follows. Assert on a message's own words, not on words the test name may hold.
+  2. *Windows path rendering* in `setup_command`'s tests (`shlex.quote` of `C:\…`). The
+     expectations are built with `shlex.quote` too.
+  3. *Docker Hub timed out once* on the `network`-marked fetch tests ("token request: The read
+     operation timed out"). A re-run passed, and nothing in this step touches the registry.
+- **Where to start if it breaks:**
+  - **Linux `auto` picks the container though native works:** look at `_try_native`'s
+    pre-checks and the "native isolation unavailable" warning in the log.
+  - **A session stuck on native-degraded after Docker came up:** check whether the container
+    refusal was `_RestartRequired` or `_ProbeFailed` (final) or anything else (provisional),
+    and the slot postponement in `_recheck_container`.
+  - **A wrong hint:** `_native_hint`'s order is evidence first, then the sysctls, and only for
+    a "setup failed at" reason.
+- **Review:**
+  - **`skeptic` on the plan:** "sound with amendments", 14 findings, all applied in v2.
+  - **`critic` round 1:** 8 findings, all CONFIRMED and fixed. The medium one: the re-check
+    reprobed native and could block every call for 30 s.
+  - **`critic` round 2:** 1 medium and 3 lows, all CONFIRMED. The medium one: the preflight's
+    refusals made native-degraded final; fixed by inverting the rule. One low (a drain) was
+    kept with its reason.
+  - **Mutants:** 29, all red.
+- **Gate:** green on both platforms. Linux: 539 passed, 0 skipped, about 248 s of tests
+  (the script's 251 s). Windows: 412 passed + 107 skips.
+- **Sizes** (code lines): `select.py` 493 (estimate ~460, look again past ~480; the extra is the
+  round-1 fix, `_recheck_container`), `native.py` 445, `native_helper.py` 379.
+
+## M2 step 5 — seccomp: libseccomp binding, Docker-derived allowlist, bounded reporting (2026-10-27)
+
+- **Commit:** `06bd899`.
 - **Plan:** [`docs/plans/M2/M2-step5-seccomp.md`](plans/M2/M2-step5-seccomp.md) S5-D1 to S5-D10
   (v2, after the `skeptic` rework). Contract amendment in M2 N4 (Q1/Q2 resolved + the mechanism).
 - **What:**

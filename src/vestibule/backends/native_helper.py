@@ -148,12 +148,10 @@ def _helper(cfg: dict[str, Any]) -> None:
     os._exit(0)
 
 
-def _build_seccomp(cfg: dict[str, Any]) -> int | None:
+def _build_seccomp(cfg: dict[str, Any]) -> int:
     """Import the binding and compile the filter, in the helper before it forks init (S5-D3), so
     every ctypes type is materialized while the stdlib is still reachable. Returns the ctx init
-    will load, or None in the test-only bypass."""
-    if cfg["skip_seccomp"]:
-        return None
+    loads; every run loads it (S6-D10)."""
     global _SECCOMP
     sys.path.insert(0, cfg["pkg_dir"])
     sys.dont_write_bytecode = True  # don't write __pycache__ into a read-only install
@@ -171,7 +169,7 @@ def _supervise(status_fd: int, sock: socket.socket, pidfd: int, stop: Callable[[
 
     The *first* read of the init socket is `recv_fds` (S5-D7): if an fd rides along it is the
     notification listener (and the one-byte "L" tag is dropped); if not, those bytes are the
-    first status chunk. So the filter path, the bypass, and an early init abort all frame right.
+    first status chunk. So a filtered run and an early init abort (no fd) both frame right.
     """
     deadline: float | None = time.monotonic() + self_deadline_s
     poller = select.poll()
@@ -244,7 +242,7 @@ def _relay_lines(fd: int, data: bytes) -> bytes:
 
 
 def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int,
-          seccomp_ctx: int | None) -> None:
+          seccomp_ctx: int) -> None:
     out = sock.fileno()
     stage = "start"
     try:
@@ -289,15 +287,14 @@ def _init(cfg: dict[str, Any], sock: socket.socket, last_cap: int, pivot_nr: int
             n = cfg["nproc"] if hard == resource.RLIM_INFINITY else min(cfg["nproc"], hard)
             resource.setrlimit(resource.RLIMIT_NPROC, (n, n))
         stage = "seccomp"  # load before the checks, so _checks reads Seccomp: 2 (S5-D6)
-        if seccomp_ctx is not None:
-            chan = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=os.dup(out))
-            try:
-                _SECCOMP.load(seccomp_ctx)  # init is filtered too; the guest, forked below,
-                lfd = _SECCOMP.notify_fd(seccomp_ctx)  # inherits the filter (N4)
-                socket.send_fds(chan, [b"L"], [lfd])  # hand the listener to the helper (N7)
-                os.close(lfd)  # init keeps no copy of the listener
-            finally:
-                chan.close()  # closes the dup of fd 3, not fd 3 itself
+        chan = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM, fileno=os.dup(out))
+        try:
+            _SECCOMP.load(seccomp_ctx)  # init is filtered too; the guest, forked below,
+            lfd = _SECCOMP.notify_fd(seccomp_ctx)  # inherits the filter (N4)
+            socket.send_fds(chan, [b"L"], [lfd])  # hand the listener to the helper (N7)
+            os.close(lfd)  # init keeps no copy of the listener
+        finally:
+            chan.close()  # closes the dup of fd 3, not fd 3 itself
         stage = "checks"
         checks = _checks(cfg)
         _send(out, {"ready": {
@@ -403,8 +400,8 @@ def _checks(cfg: dict[str, Any]) -> dict[str, bool]:
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
         raise RuntimeError("checks failed: " + ", ".join(failed))
-    # seccomp is reported, not run-blocking: the bypass still runs the guest, and the server's
-    # verdict (not init) decides none-vs-native from this kernel-reported mode (S5-D6).
+    # seccomp is reported, not run-blocking: the server's verdict (not init) judges this
+    # kernel-reported mode (S5-D6).
     checks["seccomp"] = status.get("Seccomp") == "2"  # 2 = SECCOMP_MODE_FILTER
     return checks
 

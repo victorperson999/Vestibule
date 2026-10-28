@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -489,3 +490,25 @@ def test_our_tree_matches_docker_export(real_trees, ref):
     different = {n for n in set(theirs) & set(ours) if theirs[n] != ours[n]}
     assert (only_docker, only_ours, different) == (ONLY_DOCKER, ONLY_OURS, DIFFERENT), (
         {n: theirs[n] for n in different}, {n: ours[n] for n in different})
+
+
+# --- M2 step 6: the exact setup line for the server's own settings (step 2 §6, S6-D4) ------
+
+def test_setup_command_names_every_setting_setup_reads():
+    """Defaults included: a value exported in the user's shell must not win (critic round)."""
+    lim = Limits()
+    q = shlex.quote
+    assert rootfs.setup_command(lim) == (
+        f"VESTIBULE_ROOTFS_DIR={q(str(lim.rootfs_path))} "
+        f"VESTIBULE_WORKSPACE={q(str(lim.workspace_path))} "
+        f"VESTIBULE_IMAGE_PYTHON={lim.image_python} VESTIBULE_IMAGE_NODE={lim.image_node} "
+        "vestibule-mcp setup")
+
+
+def test_setup_command_quotes_and_expands():
+    lim = Limits(rootfs_dir="/data/v root", workspace_dir="~/ws")
+    line = rootfs.setup_command(lim)
+    quoted = shlex.quote(str(lim.rootfs_path))
+    assert quoted.startswith("'") and line.startswith(f"VESTIBULE_ROOTFS_DIR={quoted} ")
+    assert f"VESTIBULE_WORKSPACE={shlex.quote(str(lim.workspace_path))} " in line
+    assert "~" not in line

@@ -95,6 +95,22 @@ def test_everything_this_step_can_confirm_is_still_degraded():
     assert _verdict([_ready()]) == ("native-degraded", "limits not applied: cpu, memory, pids")
 
 
+def test_a_failed_placement_names_its_reason():
+    """The model reads the detail, not the log (M2 step 6, S6-D7)."""
+    assert native._verdict(
+        [_ready()], uid=UID, gid=GID, host_ns=HOST_NS, host_proc=HOST_PROC, limits=Limits(),
+        unplaced="no systemd user bus",
+    ) == ("native-degraded", "limits not applied: cpu, memory, pids — no systemd user bus")
+
+
+def test_a_placed_run_never_carries_a_placement_reason():
+    """A reason only explains a missing cgroup: with one, a missing limit is named alone."""
+    assert native._verdict(
+        [_ready()], uid=UID, gid=GID, host_ns=HOST_NS, host_proc=HOST_PROC, limits=Limits(),
+        cgroup=SANDBOX, applied=ALL - {"cpu"}, unplaced="stale",
+    ) == ("native-degraded", "limits not applied: cpu")
+
+
 @pytest.mark.parametrize("ready, applied, detail", [
     (_ready(), ALL, None),
     (_ready(), ALL - {"cpu"}, "limits not applied: cpu"),  # it didn't read back
@@ -309,7 +325,7 @@ async def test_without_a_rootfs_nothing_is_spawned(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", no_spawn)
     lim = Limits(workspace_dir=str(tmp_path / "ws"), rootfs_dir=str(tmp_path / "empty"))
-    r = await native.NativeBackend(_skip_seccomp_for_tests=True).run("python", "1", 5, lim)
+    r = await native.NativeBackend().run("python", "1", 5, lim)
     assert r.isolation == "none" and r.exit_code == -1 and r.stdout == ""
     assert r.isolation_detail.endswith("; nothing was executed")
     assert "vestibule-mcp setup" in r.isolation_detail or "needs Linux" in r.isolation_detail

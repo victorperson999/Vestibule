@@ -118,7 +118,9 @@ async def make_tool(tmp_path, monkeypatch):
     made: list[Tool] = []
 
     def make(**overrides) -> Tool:
-        limits = Limits(**{"workspace_dir": str(tmp_path / "ws"), **overrides})
+        # M1's exam is the container path; `auto` would try native first on Linux (S6-D8)
+        limits = Limits(**{"workspace_dir": str(tmp_path / "ws"), "backend": "container",
+                           **overrides})
         tool = Tool(limits, BackendSelector())
         monkeypatch.setattr(srv, "LIMITS", limits)
         # Computed at import from the dev shell's VESTIBULE_* settings; these limits replace them.

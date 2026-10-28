@@ -592,6 +592,12 @@ Exact syscall order, flags and fd numbers come from the step-3/4/5 plans after t
 > the emptied scope with our sub-cgroups when the helper exits, and `CollectMode=inactive-or-
 > failed` removes one that failed. The finisher is step 3's. Shutdown writes no `cgroup.kill`.
 
+> **Amendment 2026-10-27 (step 6, [`M2-step6-selection.md`](M2-step6-selection.md) S6-D2):** step 1b's "What step 6 must add" is
+> nothing. Step 3's S3-D1 removed the host temp dir, so a native run owns no host files, and
+> when the server exits the PDEATHSIG chain and systemd end everything it started. Native
+> backends aren't tracked for shutdown: `cleanup_job()` and `aclose()` stay container-only.
+> A stdio test closes the server mid-run and finds nothing left within 2 s (criterion 11).
+
 ## 5. Backend selection & probing on Linux
 
 **The probe is a real run through the normal native path**, so it can't drift from what real
@@ -620,6 +626,24 @@ Actionable messages (each names the fix):
 `VESTIBULE_BACKEND=native` forces native: degraded is allowed and reported, with no
 fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux host,
 `native` is a restart-required refusal ("native isolation needs Linux").
+
+> **Amendment 2026-10-27 (step 6, [`M2-step6-selection.md`](M2-step6-selection.md); S6-D1 signed by Victor):**
+> - **The probe** is a normal native run of M1's workspace round-trip, and the run's own
+>   per-run verdict is the check (S6-D1). Steps 3–5 already judge every fact listed above on
+>   every run, from what init reads from the kernel; a fact the guest prints would be weaker.
+> - **Pre-checks before it,** cheapest first: digest-pinned image refs (S2-D4), the overlap
+>   (S2-D9), both trees present (the message is the exact `setup` line with any non-default
+>   setting in front, step 2 §6).
+> - **A failed probe's reason** is the setup failure, or, when the sandbox was fine and the
+>   guest failed, M1's "probe exit …" form. Hints name Ubuntu's restriction (keyed on the
+>   sysctl, at any stage), disabled user namespaces, a missing libseccomp, and a hidden `/proc`.
+> - **The degraded detail names why the limits are missing** (S6-D7), e.g. "limits not applied:
+>   cpu, memory, pids — no systemd user bus".
+> - **Re-checks** (S6-D6): a native-degraded selection that beat a container refused only for
+>   now is re-checked after the 30 s cooldown; a `native` selection whose run comes back
+>   degraded is dropped and selected again.
+> - **`VESTIBULE_RUNTIME`** is checked before anything is probed (S6-D3), and with
+>   native-degraded in hand the container's soft-off retry is skipped.
 
 ## 6. Rootfs setup (N2)
 
@@ -668,6 +692,7 @@ fallback. `VESTIBULE_BACKEND=container` forces M1's selection. On a non-Linux ho
 - **`select.py`:**
   - generalized from "container backends" to any backend (tracking, the shared semaphore,
     `cleanup_job()`; `aclose` stays Windows-only and container-only, per step-1b S1-D5);
+    *(step 6, S6-D2: only the shared semaphore; native needs no tracking or shutdown work)*
   - the native probe and N5's order;
   - `note_result` extended to native-tier runs that report `none`.
 - **`config.py`:**
@@ -810,7 +835,7 @@ On WSL Ubuntu 26.04 (kernel 6.6), through `server.call_tool` like M1's suite:
    - the `native` and `container` backend values;
    - the selector generalized beyond containers (tracking, shared semaphore, and
      `cleanup_job()` per step-1b S1-D5), so shutdown reaches native runs from the first
-     commit that can start one;
+     commit that can start one; *(as built: only the shared semaphore, S6-D2)*
    - the native probe, tier order, per-run verification with `note_result`, and the
      actionable messages.
 7. **Acceptance, benchmark and docs:**

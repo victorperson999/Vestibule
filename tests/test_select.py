@@ -11,20 +11,24 @@ import asyncio
 import logging
 import re
 import time
+import types
 
 import anyio
 import pytest
 
 import vestibule.backends.select as select_mod
-from vestibule.backends.base import RunRefusedError, RunResult
+from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
 from vestibule.backends.select import BackendSelector
 
 
 def _limits(**kw):
+    """M1's container selection: on a Linux host with a native rootfs, `auto` now probes
+    native first (M2 step 6, S6-D8), so these tests pin `container` unless they say otherwise."""
     from vestibule.config import Limits
 
+    kw.setdefault("backend", "container")
     return Limits(**kw)
 
 
@@ -824,3 +828,302 @@ async def test_unusable_workspace_gets_its_own_refusal(docker_ok, monkeypatch):
     assert str(lim.workspace_path) in msg
     assert "Permission denied" in msg
     assert "cannot enforce" not in msg
+
+
+# --- M2 step 6: the four values, N5's order, provisional selections, the reasons -------
+# (docs/plans/M2/M2-step6-selection.md §4.1). `_try_native` and `_select_container` are
+# replaced by fakes; the platform is the module's own `sys` reference, nothing global.
+
+class _FakeWarden(Warden):
+    def __init__(self) -> None:
+        self.drained = False
+
+    async def run(self, language, code, timeout_s, limits):  # pragma: no cover
+        raise AssertionError("selection tests never run code")
+
+    async def drain(self, timeout=None):
+        self.drained = True
+        return True
+
+
+def _on(monkeypatch, platform):
+    monkeypatch.setattr(select_mod, "sys", types.SimpleNamespace(platform=platform))
+
+
+def _fake_backends(monkeypatch, native, container):
+    """`native`/`container`: a verdict, or an exception to raise. Returns what was called."""
+    calls = {"native": 0, "retry": []}
+    nw, cw = _FakeWarden(), _FakeWarden()
+
+    async def try_native(self, limits):
+        calls["native"] += 1
+        if isinstance(native, BaseException):
+            raise native
+        return select_mod.Selection(nw, native, None)
+
+    async def select_container(self, limits, degraded_retry=True):
+        calls["retry"].append(degraded_retry)
+        if isinstance(container, BaseException):
+            raise container
+        return select_mod.Selection(cw, container, None)
+
+    monkeypatch.setattr(BackendSelector, "_try_native", try_native)
+    monkeypatch.setattr(BackendSelector, "_select_container", select_container)
+    return calls, nw, cw
+
+
+_LATER = RunRefusedError("daemon not reachable")  # may clear up on its own
+_FAILED = select_mod._ProbeFailed("the full container profile failed its probe (exit 1)")
+_UNPULLED = RunRefusedError("image python@sha256:… is not usable (No such image); run "
+                            "`docker pull python@sha256:…` once and retry")
+_NEVER = select_mod._RestartRequired("not installed; restart your agent")
+
+
+@pytest.mark.parametrize("native, container, chosen, drained, provisional", [
+    ("native", "container", "native", None, False),
+    ("native-degraded", "container", "container", "native", False),
+    ("native-degraded", "container-degraded", "native", "container", False),
+    ("native-degraded", _LATER, "native", None, True),
+    ("native-degraded", _FAILED, "native", None, False),  # deterministic: final (F2)
+    ("native-degraded", _UNPULLED, "native", None, True),  # a pull fixes it (round 2, G1)
+    ("native-degraded", _NEVER, "native", None, False),
+    (RunRefusedError("no native rootfs"), "container", "container", None, False),
+    (RunRefusedError("no native rootfs"), "container-degraded", "container", None, False),
+])
+async def test_auto_on_linux_follows_n5s_order(monkeypatch, native, container, chosen, drained,
+                                                provisional):
+    _on(monkeypatch, "linux")
+    calls, nw, cw = _fake_backends(monkeypatch, native, container)
+    sel = await BackendSelector().get(_limits(backend="auto"))
+    assert sel.warden is (nw if chosen == "native" else cw)
+    assert (nw.drained, cw.drained) == (drained == "native", drained == "container")
+    assert (sel.recheck_at is not None) == provisional
+    if native == "native":
+        assert calls["retry"] == []  # full native: the container is never probed
+    else:  # the soft-off retry only when no native-degraded is in hand (S6-D3)
+        assert calls["retry"] == [isinstance(native, BaseException)]
+
+
+async def test_auto_with_neither_names_both_and_retries(monkeypatch):
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, RunRefusedError("no native rootfs"), _LATER)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits(backend="auto"))
+    assert not isinstance(ei.value, select_mod._RestartRequired)  # one part can still change
+    assert "native: no native rootfs" in str(ei.value)
+    assert "container: daemon not reachable" in str(ei.value)
+
+
+async def test_a_restart_refusal_next_to_a_retryable_one_is_not_restart_only(monkeypatch):
+    """Only when both parts need a restart is the whole refusal restart-required (F6)."""
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, select_mod._RestartRequired("overlap"), _LATER)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits(backend="auto"))
+    assert not isinstance(ei.value, select_mod._RestartRequired)
+
+
+async def test_auto_with_neither_fixable_without_restart_says_restart(monkeypatch):
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, select_mod._RestartRequired("overlap"), _NEVER)
+    with pytest.raises(select_mod._RestartRequired):
+        await BackendSelector().get(_limits(backend="auto"))
+
+
+@pytest.mark.parametrize("native, refused", [
+    (RunRefusedError("no native rootfs"), True),
+    ("native-degraded", False),
+])
+async def test_forced_native_never_probes_the_container(monkeypatch, native, refused):
+    _on(monkeypatch, "linux")
+    calls, nw, _ = _fake_backends(monkeypatch, native, "container")
+    if refused:
+        with pytest.raises(RunRefusedError, match="native isolation is unavailable: no native"):
+            await BackendSelector().get(_limits(backend="native"))
+    else:
+        assert (await BackendSelector().get(_limits(backend="native"))).warden is nw
+    assert calls["retry"] == []
+
+
+async def test_native_off_linux_is_restart_required(monkeypatch):
+    _on(monkeypatch, "win32")
+    with pytest.raises(select_mod._RestartRequired, match="needs Linux"):
+        await BackendSelector().get(_limits(backend="native"))
+
+
+async def test_auto_off_linux_never_tries_native(monkeypatch):
+    _on(monkeypatch, "darwin")
+    calls, _, cw = _fake_backends(monkeypatch, AssertionError("probed"), "container")
+    assert (await BackendSelector().get(_limits(backend="auto"))).warden is cw
+    assert calls["native"] == 0
+
+
+async def test_unknown_backend_names_all_four():
+    with pytest.raises(select_mod._RestartRequired) as ei:
+        await BackendSelector().get(_limits(backend="nativ"))
+    assert all(f"'{v}'" in str(ei.value) for v in ("auto", "native", "container", "naive"))
+
+
+async def test_a_runtime_typo_is_refused_before_native_is_probed(monkeypatch):
+    _on(monkeypatch, "linux")
+    calls, _, _ = _fake_backends(monkeypatch, "native", "container")
+    with pytest.raises(select_mod._RestartRequired, match="VESTIBULE_RUNTIME"):
+        await BackendSelector().get(_limits(backend="auto", runtime="dokcer"))
+    assert calls["native"] == 0
+
+
+async def test_a_provisional_selection_is_rechecked_after_the_cooldown(monkeypatch):
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, "native-degraded", _LATER)
+    s = BackendSelector()
+    first = await s.get(_limits(backend="auto"))
+    assert first.recheck_at is not None and await s.get(_limits(backend="auto")) is first
+    calls, _, cw = _fake_backends(monkeypatch, "native-degraded", "container")  # Docker's up
+    first.recheck_at = time.monotonic() - 1  # the cooldown passed
+    assert (await s.get(_limits(backend="auto"))).warden is cw
+    # the switch sticks: cached, and never asked again (round 2, G2)
+    assert s._selection.warden is cw and (await s.get(_limits(backend="auto"))).warden is cw
+    assert calls["retry"] == [False]
+
+
+@pytest.mark.parametrize("selected, run, dropped", [
+    ("native", "native-degraded", True),  # it lost its limits: N5 may now pick the container
+    ("native-degraded", "native-degraded", False),  # can't loop
+    ("native-degraded", "none", True),
+    ("native", "native", False),
+])
+async def test_note_result_for_native(monkeypatch, selected, run, dropped):
+    _on(monkeypatch, "linux")
+    _, nw, _ = _fake_backends(monkeypatch, selected, _NEVER)
+    s = BackendSelector()
+    await s.get(_limits(backend="native"))
+    s.note_result(nw, RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
+                                isolation=run))
+    assert (s._selection is None) == dropped
+
+
+def _r(isolation, detail=None, exit_code=0, stderr="", timed_out=False):
+    return RunResult(stdout="", stderr=stderr, exit_code=exit_code, timed_out=timed_out,
+                     isolation=isolation, isolation_detail=detail)
+
+
+_SETUP_FAILED = "native sandbox setup failed at helper: [Errno 1] Operation not permitted"
+
+
+@pytest.mark.parametrize("r, sysctls, hint", [
+    (_r("none", _SETUP_FAILED), {"apparmor_restrict_unprivileged_userns": "1"},
+     "Ubuntu restricts unprivileged user namespaces"),
+    (_r("none", "native sandbox setup failed at mounts: [Errno 1] mount /: "
+                "Operation not permitted"), {"apparmor_restrict_unprivileged_userns": "1"},
+     "Ubuntu restricts unprivileged user namespaces"),  # any stage, keyed on the setting
+    (_r("none", _SETUP_FAILED), {"max_user_namespaces": "0"}, "user namespaces are disabled"),
+    (_r("none", "native sandbox setup failed at helper: libseccomp.so.2: cannot open shared "
+                "object file"), {}, "install libseccomp2"),
+    (_r("none", "native sandbox setup failed at mounts: [Errno 1] mount /r/proc: Operation "
+                "not permitted; nothing was executed"), {}, "/proc isn't fully visible"),
+    (_r("none", _SETUP_FAILED), {}, None),
+])
+def test_the_native_reason_names_the_fix(r, sysctls, hint):
+    reason = select_mod._native_reason(r, _limits(), sysctls)
+    assert reason.startswith(r.isolation_detail)
+    assert (hint in reason) if hint else reason == r.isolation_detail
+
+
+def test_a_rootfs_path_holding_proc_is_not_a_hidden_proc():
+    """Round 2, G3: only a mount *of* /proc failing is that evidence."""
+    reason = select_mod._native_reason(
+        _r("none", "native sandbox setup failed at mounts: [Errno 1] mount "
+                   "/home/u/procurement/rootfs/abc: Operation not permitted"),
+        _limits(), {"apparmor_restrict_unprivileged_userns": "1"})
+    assert "Ubuntu restricts" in reason and "/proc isn't fully visible" not in reason
+
+
+def test_a_failed_guest_still_gets_a_reason():
+    """The sandbox was fine (`native`, no detail) but the guest failed: M1's form, not ''."""
+    reason = select_mod._native_reason(
+        _r("native", exit_code=124, timed_out=True, stderr="slow\n"), _limits(), {})
+    assert reason == "probe exit 124, timed out yes: slow"
+
+
+def test_a_guest_that_cannot_use_the_workspace_gets_m1s_message():
+    lim = _limits(workspace_dir="~/vestibule-ws-under-test")
+    reason = select_mod._native_reason(
+        _r("native", exit_code=127, stderr="vestibule: cannot start the program: [Errno 13] "
+                                           "Permission denied: '/workspace'\n"), lim, {})
+    assert "could not use the workspace" in reason and str(lim.workspace_path) in reason
+
+
+# --- the provisional re-check asks only the container (critic round, F1 and F2) -------------
+
+async def _provisional(monkeypatch):
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, "native-degraded", _LATER)
+    s = BackendSelector()
+    first = await s.get(_limits(backend="auto"))
+    assert first.recheck_at is not None
+    first.recheck_at = time.monotonic() - 1  # the cooldown passed
+    return s, first
+
+
+async def test_a_failing_recheck_keeps_the_working_native_selection(monkeypatch):
+    """F1: native is never probed again (its probe would compete for the shared slots); a
+    container still not up keeps the working native-degraded selection, still provisional."""
+    s, first = await _provisional(monkeypatch)
+    calls, _, _ = _fake_backends(monkeypatch, RunRefusedError("too many concurrent runs"), _LATER)
+    assert await s.get(_limits(backend="auto")) is first
+    assert calls["native"] == 0 and calls["retry"] == [False]
+    assert first.recheck_at is not None and first.recheck_at > time.monotonic()
+
+
+async def test_a_recheck_that_finds_the_image_unpulled_keeps_waiting(monkeypatch):
+    s, first = await _provisional(monkeypatch)
+    _fake_backends(monkeypatch, "native-degraded", _UNPULLED)
+    assert await s.get(_limits(backend="auto")) is first
+    assert first.recheck_at is not None and first.recheck_at > time.monotonic()
+
+
+async def test_a_recheck_that_fails_for_good_makes_native_final(monkeypatch):
+    s, first = await _provisional(monkeypatch)
+    _fake_backends(monkeypatch, "native-degraded", _FAILED)
+    assert await s.get(_limits(backend="auto")) is first
+    assert first.recheck_at is None
+
+
+async def test_a_recheck_that_finds_a_degraded_container_keeps_native(monkeypatch):
+    s, first = await _provisional(monkeypatch)
+    _, _, cw = _fake_backends(monkeypatch, "native-degraded", "container-degraded")
+    assert await s.get(_limits(backend="auto")) is first
+    assert first.recheck_at is None and cw.drained  # N5: native-degraded ranks first
+
+
+async def test_a_recheck_waits_while_every_slot_is_busy(monkeypatch):
+    """Never compete with real runs for the shared budget: postpone instead."""
+    s, first = await _provisional(monkeypatch)
+    calls, _, _ = _fake_backends(monkeypatch, "native-degraded", "container")
+    for _ in range(_limits().max_concurrent):
+        await s._slots.acquire()
+    assert await s.get(_limits(backend="auto")) is first
+    assert calls["retry"] == [] and first.recheck_at > time.monotonic()
+
+
+def test_a_missing_library_is_named_before_the_apparmor_guess():
+    """F5: concrete evidence in the reason wins over the sysctl, which only makes a cause
+    likely; and the AppArmor hint needs an actual setup failure, not a missing report."""
+    apparmor = {"apparmor_restrict_unprivileged_userns": "1"}
+    reason = select_mod._native_reason(
+        _r("none", "native sandbox setup failed at helper: libseccomp.so.2: cannot open "
+                   "shared object file"), _limits(), apparmor)
+    assert "install libseccomp2" in reason and "Ubuntu" not in reason
+    reason = select_mod._native_reason(
+        _r("none", "the sandbox sent no status report; no isolation is claimed for this run"),
+        _limits(), apparmor)
+    assert "Ubuntu" not in reason
+
+
+async def test_the_full_profile_failing_its_probe_is_final(docker_ok, monkeypatch):
+    """The real raise site: next to native-degraded, a full-profile probe failure is
+    `_ProbeFailed`, the refusal that makes the selection final (round 2, G1)."""
+    probe, _ = _probe_that("probe exit 1, timed_out=False: boom")
+    monkeypatch.setattr(BackendSelector, "_probe", probe)
+    with pytest.raises(select_mod._ProbeFailed):
+        await BackendSelector()._select_container(_limits(), degraded_retry=False)
