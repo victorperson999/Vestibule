@@ -45,7 +45,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | `1ef1b46` | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
 | M2 step 4 | cgroups v2: per-run scope, guest limits, OOM note, fork-bomb backstop (not reachable from the server yet) | 2026-10-26 | `8b1de5e` | 470 Linux (0 skipped); 367 + 83 POSIX/Linux-only skips on Windows |
 | M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | `06bd899` | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
-| M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | pending | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
+| M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | `3cf3024` | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
+| M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | pending | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -77,9 +78,68 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
+## M2 step 7a — acceptance suite and cold-start benchmark (2026-10-31)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M2/M2-step7-acceptance.md`](plans/M2/M2-step7-acceptance.md) §2, §3.1,
+  §3.2, §3.4 and §6 (v2, signed 2026-10-28); what changed in the build is in its §8.
+- **What:**
+  - **`tests/test_native_acceptance.py`** (new, `native`-marked, `@cgroups_required`): one test
+    per criterion 1–13, each through `server.call_tool` with a fresh selector, a temp workspace
+    and `CONFIG_ERROR` cleared, so selection, the run, the rendering and the server's
+    `note_result` hook are all in the path. Backend `auto` in c01, forced `native` elsewhere.
+    The teardown drains every warden used and checks that this test's own scopes (named from
+    its "starting a native sandbox" log lines) are gone. c11 `SIGKILL`s the real stdio server.
+    The module docstring maps every criterion to its test, the earlier ones relied on included.
+  - **`scripts/bench_coldstart.py`** (new, a dev script, not in the gate): builds a wheel of the
+    working tree, checks it holds the helper, the seccomp binding and the profile, installs it
+    into `~/.venvs/vestibule-bench` with the constraints, then times 50 `print(1)` calls per
+    forced backend after a warm-up. It stops on any call that isn't exactly `isolation:
+    <backend>` or that changes the selection, and drains between calls.
+- **Benchmark (criterion 14),** WSL2 Ubuntu 26.04.1, kernel 6.6.87.2-microsoft-standard-WSL2,
+  12 CPUs, Python 3.14.4, Docker Desktop 28.5.1, wheel from `3cf3024`:
+
+  | Backend | Median | p95 |
+  |---|---|---|
+  | native | 81.9 ms | 106.9 ms |
+  | container | 392.3 ms | 413.0 ms |
+
+  Two earlier runs: native 84.3 / 114.1 and 79.0 / 121.1 ms; container 384.4 / 430.0 and
+  387.1 / 439.9 ms. Each container sample includes one reaper pass (`docker ps`), as every call
+  does in use. No ratio is quoted: the container path here crosses Docker Desktop's VM.
+- **What broke along the way:**
+  1. *The teardown scope check was empty* (draft): at fixture teardown `caplog.messages` holds
+     only the teardown phase's records. Now `caplog.get_records("call")`, plus a guard that
+     fails on an empty set; the guard is what found it.
+  2. *c09's helper check was circular* (draft); the helper is now found by its parent PID.
+  3. *c09 flaked* (draft): a second `holders(token)` call caught the guest mid-`exec`. The
+     wait loop's PID is kept; 20 of 20 after. `test_native.py:677` has the same pattern.
+  4. *Three mutants modelled the wrong thing* and were redone (plan §8): one equivalent to the
+     real code (the finisher also stops a timed-out run), two that broke selection instead of
+     the property under test.
+- **Where to start if it breaks:**
+  - **"scopes left behind" at teardown:** `systemctl --user list-units 'vestibule-*'`; a
+    leftover process in a scope keeps it (the scope-check mutant reproduces this).
+  - **c09's cgroup reads:** the helper must be this process's own `vestibule-warden` child in
+    `<scope>/supervisor`, and the scope's `cpu.max` the envelope (`cpu_pct` + 25 %).
+  - **The benchmark stops on a degraded run:** the stop message ends with the server's log
+    tail, which names the reason; a host without a user manager can't produce `native`.
+- **Review:** `critic` 1 medium + 8 low; `verifier` 8 confirmed, 1 refuted. The medium one:
+  §6.2 named c08 as the guard for two mutants it can't catch. §6.2 is corrected in the plan's
+  §8. Seven lows fixed; one kept with its reason (plan §8's table). Mutants: 10, all red.
+- **Gate:** check_env, ruff and mypy green on both platforms. Linux (269 s): 3.14 full suite
+  553 tests, 0 skipped; 3.11 Docker-free 510; stdio 5 of 5. Windows: 412 + 121 skips. On every
+  pytest run the one failure was `test_docs` on `README.md:7`, a badge in an uncommitted README
+  edit that isn't part of this step (`](<https://…>)`, which the link check reads as a local
+  path). Everything in this step passed.
+- **Sizes:** the acceptance file 499 lines (estimate 450–500), the benchmark 150 (estimate
+  ~120, look again past 170).
+- **Outside this step, noticed:** the server's outer-deadline message (`server.py`, "sandbox
+  did not return in time") carries no `isolation:` line.
+
+## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
+
+- **Commit:** `3cf3024`.
 - **Plan:** [`docs/plans/M2/M2-step6-selection.md`](plans/M2/M2-step6-selection.md) S6-D1 to
   S6-D10 (v2 after the `skeptic` review; S6-D1 and S6-D10 decided by Victor). Contract
   amendments in M2 §4, §5, §7 and §10.

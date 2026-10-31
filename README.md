@@ -4,7 +4,7 @@
 
 A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg)](https://www.python.org/downloads/) [![MCP Server](https://img.shields.io/badge/MCP-Server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io) [![Status: Early Development](https://img.shields.io/badge/status-early%20development-orange.svg)](#status)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg)](https://www.python.org/downloads/) [![MCP Server](https://img.shields.io/badge/MCP-Server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io) [![Status: Early Development](<https://img.shields.io/badge/status-early%20development-orange.svg>)](#status) [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/victorperson999/badge.svg)](https://hub.xerj.org/contributors/victorperson999)
 
 > A *vestibule* is the small sealed entry chamber you pass through between outside and inside. Vestibule sits between an AI agent and your host machine: the agent's generated code runs *inside* the chamber, never touching the real system.
 
@@ -46,13 +46,13 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 > ⚠️ **Early development — do not rely on this for hostile code yet.**
 > The container backend (M1) is accepted, on Windows with Docker Desktop: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps), and every result states the isolation that actually applied. It passed its 14-criterion acceptance suite and a check from a live Claude Code session. Not yet published to PyPI.
 
-| Milestone | What                                                                                         | Status                                                                                                 |
-| --------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                |
+| Milestone | What                                                                                         | Status                                                                                                                                                          |
+| --------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                                                                         |
 | M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) |
-| M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                |
-| M3        | Audit log + resource reporting                                                               | planned                                                                                                |
-| M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                |
+| M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | planned                                                                                                                                                         |
+| M3        | Audit log + resource reporting                                                               | planned                                                                                                                                                         |
+| M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                                                                         |
 
 ## One-time setup
 
@@ -84,23 +84,23 @@ Dev install and hand-editing the MCP config: [`docs/GETTING_STARTED.md`](docs/GE
 
 Set these as environment variables in Vestibule's entry in your MCP client's config ([how](docs/GETTING_STARTED.md#register-the-server-with-an-agent)). They are read once, when the agent starts the server, so restart it after a change. Numbers must be positive whole numbers, and on/off settings take `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; a blank value counts as unset. If any setting is invalid, the server still starts, but it refuses every tool call with a `Blocked:` message that names the setting, so your agent can tell you what to fix. Nothing runs until you fix it and restart the server.
 
-| Variable | Default | What it does |
-| --- | --- | --- |
-| `VESTIBULE_WORKSPACE` | `~/.vestibule/workspace` | Host folder mounted at `/workspace`, the one place runs can keep files. Created on first use. |
-| `VESTIBULE_WORKSPACE_RO` | off | `1`/`true`/`yes`/`on` mounts the workspace read-only. |
-| `VESTIBULE_RUNTIME` | `auto` | `auto` (Docker, then Podman), `docker`, or `podman`. |
-| `VESTIBULE_BACKEND` | `auto` | `auto` uses native isolation on Linux once `vestibule-mcp setup` has run, and the container backend otherwise (or when it protects more). `native` and `container` force one backend. `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
-| `VESTIBULE_IMAGE_PYTHON` | pinned `python:3.12-slim` | Image for `python` and `bash` runs. See the override rules above. |
-| `VESTIBULE_IMAGE_NODE` | pinned `node:22-slim` | Image for `node` runs. |
-| `VESTIBULE_DEFAULT_TIMEOUT_S` | `10` | Timeout when a call doesn't set `timeout_seconds`. |
-| `VESTIBULE_MAX_TIMEOUT_S` | `60` | Ceiling on `timeout_seconds`. |
-| `VESTIBULE_MAX_CODE_BYTES` | `262144` | Larger code is refused before anything runs. |
-| `VESTIBULE_MAX_OUTPUT_BYTES` | `20000` | Output returned per stream. Longer output is truncated, and a run printing more than twice this is stopped. |
-| `VESTIBULE_MEM_MB` | `256` | Memory cap, with no swap on top. |
-| `VESTIBULE_CPU_PCT` | `75` | CPU cap, as a percentage of one core. |
-| `VESTIBULE_PIDS_MAX` | `128` | Cap on processes and threads inside a run. |
-| `VESTIBULE_TMPFS_MB` | `64` | Size of the run's `/tmp`, which is also its `$HOME`. |
-| `VESTIBULE_MAX_CONCURRENT` | `4` | Runs at once. A further call waits up to 5 s for a slot, then is `Blocked:`. |
+| Variable                        | Default                     | What it does                                                                                                                                                                                                                                                                                                                |
+| ------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VESTIBULE_WORKSPACE`         | `~/.vestibule/workspace`  | Host folder mounted at `/workspace`, the one place runs can keep files. Created on first use.                                                                                                                                                                                                                             |
+| `VESTIBULE_WORKSPACE_RO`      | off                         | `1`/`true`/`yes`/`on` mounts the workspace read-only.                                                                                                                                                                                                                                                               |
+| `VESTIBULE_RUNTIME`           | `auto`                    | `auto` (Docker, then Podman), `docker`, or `podman`.                                                                                                                                                                                                                                                                  |
+| `VESTIBULE_BACKEND`           | `auto`                    | `auto` uses native isolation on Linux once `vestibule-mcp setup` has run, and the container backend otherwise (or when it protects more). `native` and `container` force one backend. `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
+| `VESTIBULE_IMAGE_PYTHON`      | pinned `python:3.12-slim` | Image for `python` and `bash` runs. See the override rules above.                                                                                                                                                                                                                                                       |
+| `VESTIBULE_IMAGE_NODE`        | pinned `node:22-slim`     | Image for `node` runs.                                                                                                                                                                                                                                                                                                    |
+| `VESTIBULE_DEFAULT_TIMEOUT_S` | `10`                      | Timeout when a call doesn't set `timeout_seconds`.                                                                                                                                                                                                                                                                        |
+| `VESTIBULE_MAX_TIMEOUT_S`     | `60`                      | Ceiling on `timeout_seconds`.                                                                                                                                                                                                                                                                                             |
+| `VESTIBULE_MAX_CODE_BYTES`    | `262144`                  | Larger code is refused before anything runs.                                                                                                                                                                                                                                                                                |
+| `VESTIBULE_MAX_OUTPUT_BYTES`  | `20000`                   | Output returned per stream. Longer output is truncated, and a run printing more than twice this is stopped.                                                                                                                                                                                                                 |
+| `VESTIBULE_MEM_MB`            | `256`                     | Memory cap, with no swap on top.                                                                                                                                                                                                                                                                                            |
+| `VESTIBULE_CPU_PCT`           | `75`                      | CPU cap, as a percentage of one core.                                                                                                                                                                                                                                                                                       |
+| `VESTIBULE_PIDS_MAX`          | `128`                     | Cap on processes and threads inside a run.                                                                                                                                                                                                                                                                                  |
+| `VESTIBULE_TMPFS_MB`          | `64`                      | Size of the run's `/tmp`, which is also its `$HOME`.                                                                                                                                                                                                                                                                    |
+| `VESTIBULE_MAX_CONCURRENT`    | `4`                       | Runs at once. A further call waits up to 5 s for a slot, then is `Blocked:`.                                                                                                                                                                                                                                              |
 
 ## Know the limits
 
@@ -118,17 +118,17 @@ Honest scope, stated up front: this is namespace/container isolation sharing the
 
 ## Documentation
 
-| File                                                                        | What's in it                                                                               |
-| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                             | Deep technical design: the warden lifecycle, layered isolation, MCP server design.         |
-| [`docs/PLAN.md`](docs/PLAN.md)                                             | Roadmap: milestones 0–4 with acceptance criteria.                                         |
+| File                                                                              | What's in it                                                                               |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)                                   | Deep technical design: the warden lifecycle, layered isolation, MCP server design.         |
+| [`docs/PLAN.md`](docs/PLAN.md)                                                   | Roadmap: milestones 0–4 with acceptance criteria.                                         |
 | [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) | The detailed M1 contract (container profile,`read_workspace` jail, acceptance criteria). |
-| [`docs/plans/`](docs/plans/)                                               | Per-milestone folders of step plans, each with its decisions and review findings.         |
-| [`docs/HISTORY.md`](docs/HISTORY.md)                                       | The build story in plain language: every decision, sign-off, and finished step.           |
-| [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md)                                   | Regression index: per step, its commits, files, guarding tests, and known open issues.    |
-| [`docs/reviews/`](docs/reviews/)                                           | Pre-implementation adversarial design reviews.                                             |
-| [`CLAUDE.md`](CLAUDE.md)                                                   | Invariants and operating rules for AI-assisted development of this repo.                   |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                       | Developer guide: dev install, registration, running the checks, troubleshooting.          |
+| [`docs/plans/`](docs/plans/)                                                     | Per-milestone folders of step plans, each with its decisions and review findings.          |
+| [`docs/HISTORY.md`](docs/HISTORY.md)                                             | The build story in plain language: every decision, sign-off, and finished step.            |
+| [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md)                                         | Regression index: per step, its commits, files, guarding tests, and known open issues.     |
+| [`docs/reviews/`](docs/reviews/)                                                 | Pre-implementation adversarial design reviews.                                             |
+| [`CLAUDE.md`](CLAUDE.md)                                                         | Invariants and operating rules for AI-assisted development of this repo.                   |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                             | Developer guide: dev install, registration, running the checks, troubleshooting.           |
 
 ## License
 
