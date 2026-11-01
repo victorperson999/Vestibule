@@ -1,7 +1,7 @@
 # M2 step 7 — Acceptance, benchmark, docs, and the live-agent check
 
-Status: **v2, signed off 2026-10-28,** after the `skeptic` review and the `verifier`'s check
-of its claims (§9). Victor decided all three questions, each as recommended:
+Status: **done 2026-10-31; M2 accepted** (§8 is the as-built). **v2, signed off 2026-10-28,**
+after the `skeptic` review and the `verifier`'s check of its claims (§9). Victor decided all three questions, each as recommended:
 - **S7-D1:** split the step into 7a (the exam and the benchmark) and 7b (the live checks, then
   the docs), as M1 did;
 - **S7-D2:** what evidence criterion 9's foreign-arch line rests on;
@@ -367,6 +367,102 @@ Each must turn its guarding test red:
   | 7 | low | the "uncommitted changes" mark misses `pyproject.toml`, the constraints and untracked `src/` files | confirmed | covers all three |
   | 8 | low | `Tool.read` has no caller | confirmed | deleted |
   | 9 | low | `make_tool` keeps a list though each test makes one tool | confirmed | kept: it mirrors M1's fixture (`tests/test_acceptance.py`), and one tool would need a `nonlocal` |
+
+### 7b — the live checks and the docs pass (2026-10-31)
+
+- **Linux Claude Code (§3.3, criterion 16): passed.**
+  - **Setup:** Claude Code 2.1.316 from the native installer (`~/.local/bin/claude`), started
+    from a neutral `~/vestibule-live` with `--strict-mcp-config --mcp-config mcp.json --tools ""
+    --permission-mode dontAsk --allowedTools mcp__vestibule__run_code
+    mcp__vestibule__read_workspace`. So only Vestibule's two tools existed, and anything else
+    would have been denied without a prompt. `mcp.json` registers S7-D3's `sh -c 'exec
+    ~/.venvs/vestibule/bin/vestibule-mcp 2>>~/vestibule-live.log'` (code at `6ada758`). The
+    canary was `$HOME/.vestibule-canary-<12 hex>/id_ed25519`, removed afterwards.
+  - **Results,** judged from the session's JSONL transcript (each tool result appears twice in
+    it; the server log shows one probe and six runs, so each call ran once):
+
+    | Call | Result |
+    |---|---|
+    | python, bash, node hellos | exit 0, `isolation: native` each; the bash one wrote `hello.txt` |
+    | `socket.create_connection(("1.1.1.1", 443), 3)` | `OSError: [Errno 101] Network is unreachable`, `native` |
+    | a list growing by 10 MB chunks | exit 137, `[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]`, `native` |
+    | `cat` of the canary | `No such file or directory`, `native` |
+    | `read_workspace` `.` | `file 16 hello.txt` |
+
+  - **Shutdown:** `/exit`; the log's last line was `vestibule shutdown (SIGINT): nothing to
+    clean up`, as `stdioutil.py` records for 2.1.300. The server's PID was gone, and there was
+    no `vestibule-warden`, cleaner or `vestibule-*.scope`. The selection probe took 105 ms.
+  - **Differences from §3.3:** the bash hello writes the file the listing then shows; the
+    memory bomb runs in the guest itself (exit 137), not in a child as c04's does; "only
+    Vestibule's tools" is enforced by the launch flags rather than asked for in the prompt.
+- **Windows Claude Code (the BUILD_LOG row's re-measure):** Claude Code 2.1.316, a neutral
+  folder, the repo's registered server, one `run_code` of `time.sleep(55)` with a 60 s timeout.
+  A `docker ps` poll on the owner label logged every container change from outside.
+  - The first two runs finished on their own before an interrupt (when to press it wasn't
+    clear). Those runs only show the watcher works.
+  - **Ctrl+C about 22 s in:** Claude Code cancels the call first; the container was last seen up
+    at 21:15:53.76 and gone by the next poll at 21:15:54.51 (no timestamp exists for the key
+    press itself), and no `%TEMP%\vestibule-run-*` dir was left. `/exit` two minutes later
+    closed the server's stdin, and the three server processes exited.
+  - **The terminal window closed about 12 s into a run:** Claude Code closed stdin with the call
+    in flight ("Connection closed"); the container was up 14 ms later and gone 1.43 s after the
+    close, against a self-deadline more than two minutes away. No server process, container or
+    `%TEMP%\vestibule-run-*` dir was left.
+  - **What it settles:** Ctrl+C can't end a session with a run in flight, since the cancel
+    comes first. A closed window can, and there the in-process cleanup won the race this time.
+    One sample, so the row stays open for the liveness lease.
+  - **Found:** after the cancel, Claude Code logged "Received a response for an unknown message
+    ID" and "STDIO connection dropped": the MCP SDK (1.28.1, `RequestResponder.cancel`) answers
+    a cancelled request, and Claude Code doesn't expect it. A new BUILD_LOG known issue,
+    upstream.
+  - The watcher's first version tracked the selection probe's container and stopped 20 s after
+    it went. It was restarted within 20 s with the end condition fixed; the run's container
+    was up on both sides of the gap.
+- **The docs pass (§4),** with these differences:
+  - **`ARCHITECTURE.md` Part 2 is rewritten, not patched.** The old stage list (every namespace
+    unshared before the fork, the cgroup joined from inside, `0 <uid> 1`, an executor,
+    optional `pyseccomp`, a temporary rootfs) was wrong at nearly every stage, and six line
+    fixes would have left a sequence that never existed. It now follows the build: placement
+    from outside, the helper, init, the jail, the privileges, seccomp, the stop. Part 1 changed
+    only where it said the server never touches cgroups, and the executor paragraph.
+  - **The per-distro table's versions rest on one fact checked during the pass:** systemd
+    delegates `cpu` to user managers by default since v252 (systemd commit `b8df7f86`, "user:
+    delegate cpu controller, assign weights to user slices", July 2022; v252 was released that
+    October). Debian 12 ships 252 and Fedora 38 ships 253. This host's `user@.service` (systemd
+    259) carries `Delegate=pids memory cpu` from the vendor unit.
+  - **README line 7:** `6ada758` carried the badge link wrapped as `](<https://…>)`, which failed
+    `test_docs` on HEAD. It is a plain link again.
+  - **Hashes:** 7a's `6ada758`, and HISTORY's step-3 bullet, which still said "commit pending",
+    gets `1ef1b46`.
+  - **Not done, noticed:** `GETTING_STARTED.md`'s "Run the checks" names M1's exam file but not
+    `tests/test_native_acceptance.py` (§4 didn't list it).
+- **Review:** `critic`, 4 medium and 9 low; `verifier` confirmed all 13 and put 12 at low and one
+  at medium (#13, reproduced in WSL, as was #5). All are wording; no code changed.
+
+  | # | Finding | Disposition |
+  |---|---|---|
+  | 1 | `ARCHITECTURE.md` said a failed `Seccomp: 2` check aborts before `execve`; init only reports it, and the server judges it (and its own comparisons) after the run | init's abort list and the server's after-the-run checks are now separate |
+  | 2 | `CLAUDE.md` golden rule 2 says the user namespace maps the uid to root inside; the build uses an identity map (N6) | a golden rule, so put to Victor: reworded with his approval (2026-10-31); the rule itself is unchanged |
+  | 3 | README: "can still learn two things" reads as a complete list | examples now, uid/gid, kernel version and `/proc`'s CPU and memory info included |
+  | 4 | `PLAN.md`'s M2 bullets beside the edited ones still gave the old unshare order and "a minimal rootfs" | updated to the build |
+  | 5 | README: "any other call fails with `EPERM`"; `clone3` gets `ENOSYS` (Docker's rule), as do named calls past the 256 cap | both stated |
+  | 6 | the `RLIMIT_NPROC` backstop holds only from Linux 5.14; the README allows 5.9 | `ARCHITECTURE.md` gives the condition; the forced-native residual says a fork bomb is uncapped before 5.14 |
+  | 7 | "the strong, non-escapable version of chroot", carried over from the old text, against the file's own "never claim unescapable" | reworded |
+  | 8 | "gone within 0.75 s" after Ctrl+C is the gap between two polls; no key-press timestamp exists | reworded as the poll gap |
+  | 9 | "no `vestibule-run-*` dir either way" was recorded only for the window close | the Ctrl+C check was made at the time (21:16, none); the record above now says so |
+  | 10 | `GETTING_STARTED.md`: "until `setup` has run, a call names the exact command" holds only when no container wins | qualified |
+  | 11 | acceptance row 13: "each in N5's order" for the AppArmor and libseccomp cases, which run with native forced | reworded; `test_select.py::test_auto_on_linux_follows_n5s_order` cited for the order |
+  | 12 | the record said every result must be exactly `native`; c13 expects `none`, then `Blocked:` | reworded. The test module's docstring says the same and is left as it is (no `tests/` change in 7b) |
+  | 13 | "never root": nothing refuses a server started as root, and then the guest is host uid 0 (no capabilities, `isolation: native`) | the README and `ARCHITECTURE.md` qualify it; a BUILD_LOG known issue for the refusal |
+- **Gate:** the first Linux run failed one test,
+  `test_native.py::test_a_hard_nproc_limit_below_pids_max_still_runs`. It sets `ulimit -u 100`,
+  and the kernel counted about 102 tasks for uid 1000 (`ps` in the distro: 36; the rest belong
+  to other WSL distros sharing the kernel), with the login-time WSL Claude Code session still
+  open. With it closed, the count was about 76 and everything passed: Linux (274 s) 553 with 0
+  skipped on 3.14, 510 Docker-free on 3.11, stdio 5 of 5; Windows 412 + 121 skips; ruff, mypy
+  and check_env green on both. A BUILD_LOG known issue for the test.
+- **The retired-terms check (§4)** finds none of `pyseccomp`, `namespaces-only`,
+  `run_in_executor` or `10–50` in the live docs. `tests/test_docs.py` passes.
 
 ## 9. Review record
 

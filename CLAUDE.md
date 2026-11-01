@@ -6,17 +6,17 @@ This file is read automatically by Claude Code. It defines the invariants, conve
 
 ## What this project is (one paragraph)
 
-Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, shipped as an MCP server (`vestibule-mcp` on PyPI). An agent calls a `run_code` tool; the code runs inside an isolated sandbox (Linux user/mount/pid/net namespaces + cgroups v2 + optional seccomp + a `pivot_root` filesystem jail) with no network by default, resource limits, and a full audit log. The MCP **server** decides *whether/what*; the **warden** decides *how* to isolate and run. Both are Python.
+Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, shipped as an MCP server (`vestibule-mcp` on PyPI). An agent calls a `run_code` tool; the code runs inside an isolated sandbox (Linux user/mount/pid/net namespaces + cgroups v2 + a seccomp allowlist + a `pivot_root` filesystem jail) with no network by default, resource limits, and a full audit log. The MCP **server** decides *whether/what*; the **warden** decides *how* to isolate and run. Both are Python.
 
 ---
 
 ## Golden rules (invariants — never violate these)
 
 1. **NEVER write to stdout except through the MCP SDK.** The stdio transport uses stdout as the JSON-RPC channel; any stray `print()` corrupts the protocol and breaks the session. All logging goes to **stderr** or a file. This applies to the server *and* anything it spawns.
-2. **Always run unprivileged.** No feature may require `sudo` or real root. Isolation is achieved via a user namespace (`CLONE_NEWUSER`) that maps the unprivileged UID to root *inside* the namespace. If a capability needs real root, it doesn't ship.
+2. **Always run unprivileged.** No feature may require `sudo` or real root. Isolation is achieved via a user namespace (`CLONE_NEWUSER`): the warden holds capabilities only inside it, and the guest keeps the user's own uid through an identity map (N6), so it isn't root inside the namespace either. If a capability needs real root, it doesn't ship.
 3. **Untrusted code NEVER runs in the server process.** All execution happens in a `fork`'d/`subprocess` child that has been isolated. The long-lived server process stays clean.
 4. **Tool handlers return errors as content; they do not raise.** An unhandled exception can kill the MCP session. Every handler path returns readable `TextContent` — including "Blocked: …" messages — because the *model reads them and adapts*.
-5. **Report isolation honestly, every time.** Every `run_code` result includes an `isolation:` field stating what actually protected the run (`native`, `container`, `namespaces-only`, `none`). Never claim protection that wasn't applied. Never oversell: this is namespace isolation sharing the host kernel, **not** a hardened VM. Say so in `SECURITY.md`.
+5. **Report isolation honestly, every time.** Every `run_code` result includes an `isolation:` field stating what actually protected the run (`native`, `native-degraded`, `container`, `container-degraded`, `none`). Never claim protection that wasn't applied. Never oversell: this is namespace isolation sharing the host kernel, **not** a hardened VM. Say so in `SECURITY.md`.
 6. **It must RUN everywhere, even where best-in-class isolation is unavailable.** Native isolation is Linux-only; on macOS/Windows fall back to the container backend. A user who can't install/run it is a lost user. Degrade loudly and clearly, never fail silently.
 7. **Validate before executing.** Clamp `timeout_seconds` to the max, cap code size, enforce the `language` enum — in the clean server process, before any untrusted code is spawned.
 8. **Truncate guest output.** Bound stdout/stderr returned to the agent so a chatty program can't flood the model's context window.
@@ -28,7 +28,7 @@ Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, ship
 - **Python ≥ 3.11.** Type hints everywhere. `from __future__ import annotations` where useful.
 - **MCP:** the official `mcp` SDK. Low-level `Server` API (not FastMCP) — we want explicit control over tool schemas because *tool descriptions are prompts read by the model*. (The SDK evolves; if an import/signature has drifted, fix it against current docs and note the change.)
 - **Isolation:** `ctypes` calling libc/syscalls directly. cgroups v2 is just filesystem writes (no ctypes). seccomp uses our own small `ctypes` binding over the system `libseccomp.so.2` (`src/vestibule/backends/native_seccomp.py`), required for native since M2 step 5 — never hand-assemble BPF (libseccomp compiles it).
-- **Async:** the MCP server is `async`. The container backend uses `asyncio.create_subprocess_exec`. The native-fork warden does blocking syscalls → run it in an executor (`run_in_executor`), never directly in the event loop.
+- **Async:** the MCP server is `async`. Both backends use `asyncio.create_subprocess_exec`: the container backend for the runtime CLI, the native warden for a fresh helper process per run, which makes the blocking syscalls itself (N1). Never block the event loop; the one blocking step left in the server (moving a process between cgroups) runs in a thread.
 - **Layout:** `src/` layout. Import package `vestibule`; distribution `vestibule-mcp`.
 - **Tooling:** `ruff` (lint+format), `mypy` (types), `pytest` + `pytest-asyncio` (tests). Line length 100.
 - **Commits:** small, milestone-scoped. Conventional-commits style (`feat:`, `fix:`, `docs:`) is nice-to-have.
@@ -54,7 +54,10 @@ vestibule/
 │       ├── base.py          # Warden ABC + RunResult dataclass
 │       ├── naive.py         # M0: subprocess, NO isolation (plumbing only)
 │       ├── container.py     # M1: Docker/Podman backend (cross-platform floor)
-│       └── native.py        # M2: ctypes namespaces + cgroups + seccomp (Linux)
+│       ├── native.py        # M2: native backend, server side (Linux)
+│       ├── native_helper.py # M2: the per-run helper: namespaces, jail, PID 1, the guest
+│       ├── native_cgroup.py # M2: per-run systemd scope + cgroup v2 limits
+│       └── native_seccomp.py # M2: ctypes libseccomp binding + Docker-derived allowlist
 └── tests/
     └── test_smoke.py
 ```

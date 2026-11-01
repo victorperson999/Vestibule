@@ -129,8 +129,10 @@ Git Bash:    MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash /mnt/c/<repo>/scripts/
 
 Native isolation runs each sandbox in an unpacked copy of the same digest-pinned images the
 container backend uses. `setup` downloads them straight from Docker Hub (no Docker needed),
-checks every byte against the pin, and unpacks them. Nothing in the server uses them yet:
-native becomes reachable in M2 step 6.
+checks every byte against the pin, and unpacks them. Every native run uses them, and the
+server never downloads them itself. Until `setup` has run, native isn't available: under
+`auto` a working container is used instead, and otherwise the call is `Blocked:` with the
+exact command.
 
 ```bash
 # inside WSL, with a dev venv:
@@ -160,6 +162,19 @@ native becomes reachable in M2 step 6.
     server.
 - **`isolation: container-degraded (…)`**: the run was still containerized, but the
   detail names the resource limits that were not applied or could not be verified.
+- **`isolation: native-degraded (…)`**: every namespace, the jail and the seccomp filter
+  held, but the detail names the limits that weren't applied and, when no scope was made,
+  why (for example "limits not applied: cpu, memory, pids — no systemd user bus").
+  - *No user bus:* the server needs a systemd user manager it can reach. Check with
+    `systemctl --user status`; on WSL, enable systemd for the distro.
+  - *A limit missing on its own* (often `cpu`): the user manager doesn't delegate that
+    controller. `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`
+    must list `cpu memory pids`; systemd 252 and later delegate all three by default.
+  - Restart the server after fixing it. Under `VESTIBULE_BACKEND=auto`, a full container, if
+    one works, is chosen over native-degraded anyway.
+- **Leftover native sandboxes**: `systemctl --user list-units 'vestibule-*'` lists each run's
+  scope. It should be empty when no run is in flight; systemd removes a scope when its run
+  ends, and `systemctl --user stop <unit>` stops one at once.
 - **After switching Docker Desktop's image store** (classic ↔ containerd): pull the images
   again. The two stores are separate.
 - **Logs** go to the server's stderr, never stdout (stdout is the MCP channel). Your MCP

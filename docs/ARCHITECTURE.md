@@ -13,19 +13,28 @@ The technical design. Two halves: the **MCP server** (front desk — decides *wh
 │  Cursor / etc.) │    tool results + logs    │   — validation/policy  │
 └─────────────────┘                           │   — audit logger       │
                                                └──────────┬───────────┘
-                                                          │ in-process call → executor
+                                                          │ async subprocess, one per run;
+                                                          │ systemd scope + cgroup limits first
                                                           ▼
-                                          ┌───────────────────────────────┐
-                                          │      Warden (Python + ctypes)  │
-                                          │  isolation + execution core     │
-                                          │                                 │
-                                          │  unshare(NEWUSER|NEWNS|NEWPID|  │
-                                          │          NEWNET|NEWUTS|NEWIPC)  │
-                                          │  uid/gid map → fork() (PID 1)   │
-                                          │  mount /proc → pivot_root       │
-                                          │  cgroup v2: mem/cpu/pids caps   │
-                                          │  no_new_privs → seccomp → exec  │
-                                          └───────────────┬───────────────┘
+                                         ┌─────────────────────────────────┐
+                                         │  warden helper, one per run     │
+                                         │  (Python + ctypes, no shell)    │
+                                         │                                 │
+                                         │  unshare(NEWUSER|NEWPID)        │
+                                         │  identity uid/gid map → fork()  │
+                                         │  relays status; answers seccomp │
+                                         │  notifications with EPERM       │
+                                         └────────────────┬────────────────┘
+                                                          ▼
+                                         ┌─────────────────────────────────┐
+                                         │  init = PID 1 of the sandbox    │
+                                         │                                 │
+                                         │  unshare(NEWNS|NEWNET|NEWUTS|   │
+                                         │          NEWIPC|NEWCGROUP)      │
+                                         │  mounts → pivot_root            │
+                                         │  drop caps → no_new_privs       │
+                                         │  → seccomp → fork the guest     │
+                                         └────────────────┬────────────────┘
                                                           ▼
                                                  ┌─────────────────┐
                                                  │  Guest process  │
@@ -33,7 +42,7 @@ The technical design. Two halves: the **MCP server** (front desk — decides *wh
                                                  └─────────────────┘
 ```
 
-**Separation of concerns:** the server never sets up namespaces, touches cgroups, or runs untrusted code in its own process. All danger is downstream in the warden's isolated child.
+**Separation of concerns:** the server never sets up namespaces or runs untrusted code in its own process. Its one hands-on step is placing each run's helper in a cgroup from outside, before the sandbox exists. All danger is downstream in the helper's isolated children.
 
 ---
 
@@ -55,7 +64,7 @@ Flow: `initialize` handshake → host calls `tools/list` to discover tools → h
 6. **Audit logging** — structured record per call (stderr/file, never stdout).
 7. **Config** — limits/policy from env or file so users tune without editing code.
 
-It explicitly does **not** isolate, touch cgroups, or execute untrusted code in-process.
+It explicitly does **not** isolate or execute untrusted code in-process. Its only cgroup work is placing each run's helper from outside, before the sandbox starts (Part 2, stages 1–3).
 
 ### Tool schema design = UX for a model
 
@@ -74,123 +83,140 @@ The "user" of your schema is an LLM reading `description` fields to decide how t
 4. **Truncate guest output** — bound stdout/stderr so a chatty program can't flood the model's context window (and cost).
 5. **Report `isolation:` in every result** — honest transparency about what actually protected the run.
 
-### Sync warden vs. async server
+### A blocking warden, an async server
 
-The MCP SDK is `async`; the native warden does blocking syscalls (`fork`, `waitpid`, file writes). **Never run blocking fork/exec directly in the event loop** — it stalls the server. Native warden → run in an executor (`loop.run_in_executor(...)`). Container backend → use `asyncio.create_subprocess_exec` (already async). The M0 naive backend uses `create_subprocess_exec` and needs no executor.
+The MCP SDK is `async`, and the native warden is all blocking syscalls (`unshare`, `mount`, `fork`, `waitpid`). **None of them runs in the server's process.** Each run starts a fresh, single-threaded helper interpreter with `asyncio.create_subprocess_exec` (N1), the same call the container backend uses for `docker run` and the M0 naive backend for its subprocess. The helper makes the blocking calls; the server only reads pipes.
+
+Forking the server instead (from an executor thread, as this document first said) was rejected: the server is multi-threaded (the event loop, the SDK's machinery), and `fork()` copies only the calling thread, so a lock another thread held stays locked forever in the child. The one blocking step left in the server, moving the helper between cgroups (the kernel takes a global lock for it), runs in a thread (`asyncio.to_thread`).
 
 ---
 
 ## Part 2 — The warden
 
-The technical heart. Sequence: *become root in a private world → seal every dimension → drop in → run the guest.* Order matters — several operations are irreversible or must happen before a privilege boundary closes.
+The technical heart. Three processes per run, each with one job (N1, N7): the **server** places and supervises from outside; a fresh **helper** builds the sandbox and stays outside its PID namespace; **init**, PID 1 inside, seals the remaining dimensions, drops every privilege and starts the **guest**. Order matters — several operations are irreversible or must happen before a privilege boundary closes.
 
 ### Full lifecycle
 
 ```
-Parent (warden)                          Child (becomes the guest)
-───────────────                          ─────────────────────────
-1. create cgroup, set limits
-2. unshare(NEWUSER|NEWNS|NEWPID
-        |NEWNET|NEWUTS|NEWIPC)
-3. write uid_map / gid_map
-   (now "root" inside the userns)
-4. fork()  ─────────────────────────────▶ 5. child is PID 1 in new PID ns
-                                           6. mount fresh /proc
-                                           7. pivot_root into minimal rootfs
-                                           8. join cgroup (write cgroup.procs)
-                                           9. prctl(PR_SET_NO_NEW_PRIVS, 1)
-                                          10. install seccomp-bpf allowlist
-                                          11. drop remaining capabilities
-                                          12. execve(interpreter, [code])
-   13. wait4(); enforce wall-clock timeout
-   14. read cgroup peak usage, denied syscalls
-   15. tear down cgroup + temp rootfs
-   16. return {stdout, stderr, exit, usage} ◀── (streamed via pipe)
+server (async, clean)      helper (one per run)           init (PID 1)              guest
+─────────────────────      ────────────────────           ────────────              ─────
+1. spawn the helper,
+   paused                  PDEATHSIG; waits
+2. systemd scope for it;
+   guest limits, read back
+3. release ─────────────▶  4. compile the filter
+                           5. unshare(USER|PID);
+                              identity maps
+                           6. fork ─────────────────────▶ 7. wait for "go"
+                              init → guest/sandbox; go
+                                                          8. setsid; unshare(NS|
+                                                             NET|UTS|IPC|CGROUP)
+                                                          9. jail, lo up,
+                                                             pivot_root
+                                                          10. drop caps; not
+                                                              dumpable; NNP
+                                                          11. load the filter;
+                                                              listener → helper
+                                                          12. self-checks → ready
+                           13. relay status; answer       14. fork ────────────▶    15. execve
+                               notifications (EPERM)          reap; report exit
+16. collect output (capped);
+    timeout: SIGTERM ────▶ 17. SIGKILL init via
+                               its pidfd: the PID ns dies
+                           18. after init: OOM counts,
+                               denied list; exit
+19. verdict from the report;
+    systemd drops the scope
 ```
 
-### Stage 1–3 — Become root in a private world (user namespace)
+A failure in steps 4–11, or in one of init's own checks in step 12, means the guest never runs: init reports the stage that failed, and the result says `isolation: none … nothing was executed`. The checks the server makes on the `ready` report are judged after the run; one that fails makes the result `isolation: none` (stage 12–19). A failure in step 2 only loses the limits: the run goes ahead as `native-degraded`, naming what is missing and why (N5).
 
-The key trick for unprivileged operation: `unshare(CLONE_NEWUSER)` creates a namespace where the unprivileged real UID maps to UID 0 *inside*. Full capabilities inside, zero outside. (Same mechanism as rootless Podman / bubblewrap.)
+### Stages 1–3 — Limits first, placed from outside (cgroups v2 through systemd)
 
-**Footgun:** when unprivileged, write `deny` to `/proc/self/setgroups` **before** writing `/proc/self/gid_map`, or the gid_map write fails with `EPERM`.
+cgroup v2 lets a process be moved only by someone who can write the common ancestor's `cgroup.procs`, and an unprivileged user owns nothing under `/sys/fs/cgroup` except what systemd delegates. A sandbox also can't join a cgroup itself after `pivot_root`: the cgroup filesystem isn't in its view. So the server does it, from outside, while the helper waits paused on a pipe (N3):
+
+- It asks the user's systemd manager (`busctl --user call … StartTransientUnit`) for a transient scope, `vestibule-<run>.scope`, holding only the helper, with `Delegate=yes`. The scope's own properties are the helper's *envelope*, the guest's limits plus a margin (+25 % of a CPU, +64 MiB, +16 tasks), and an outside deadline, `RuntimeMaxSec` with `SIGKILL`, that no guest can stop.
+- Under the scope, `supervisor/` takes the helper (a cgroup that hands controllers to its children can't hold processes itself), and `guest/sandbox/` will take init. The guest's limits go on `guest/`. cgroups v2 is just filesystem writes, no ctypes:
 
 ```python
-import os, ctypes
-libc = ctypes.CDLL("libc.so.6", use_errno=True)
+# native_cgroup.py (abridged): M1's values, written once the subtree is delegated
+wanted = {
+    "cpu": {"cpu.max": f"{cpu_pct * 1000} 100000"},   # what Docker writes for --cpus
+    "memory": {"memory.max": str(mem_mb << 20), "memory.swap.max": "0"},
+    "pids": {"pids.max": str(pids_max)},              # fork-bomb containment
+}
+for name, files in wanted.items():
+    _write(f"{scope}/cgroup.subtree_control", f"+{name}")
+    for file, value in files.items():
+        _write(f"{scope}/guest/{file}", value)
+    # counted as applied only if every file reads back what was written
+```
 
+- The release message names the cgroup for init. Any failure here (no user bus, a controller not delegated, a refused property, more than 5 s) only degrades the run, and the result's detail says which limits are missing and why. Limits are the soft tier; the namespaces, the jail and seccomp are the hard tier (N5).
+- Sandboxes therefore live in the user manager's `app.slice`, outside the agent client's own cgroup. When the helper exits, the scope is empty and systemd removes it. Nothing is left to tear down.
+
+### Stages 4–6 — The helper: a private user namespace, then init
+
+Released, the helper compiles the seccomp filter (stage 11) while the standard library and ctypes are still reachable. After `pivot_root` nothing new can be imported. Then it unshares a user and a PID namespace and writes the maps:
+
+```python
+# native_helper.py (abridged)
 CLONE_NEWUSER = 0x10000000
-CLONE_NEWNS   = 0x00020000
 CLONE_NEWPID  = 0x20000000
-CLONE_NEWNET  = 0x40000000
-CLONE_NEWUTS  = 0x04000000
-CLONE_NEWIPC  = 0x08000000
 
-def _unshare(flags: int) -> None:
-    if libc.unshare(flags) != 0:
-        e = ctypes.get_errno()
-        raise OSError(e, os.strerror(e), "unshare")
+uid, gid = os.getuid(), os.getgid()
+_check(libc.unshare(CLONE_NEWUSER | CLONE_NEWPID), "unshare")
 
-real_uid, real_gid = os.getuid(), os.getgid()
-_unshare(CLONE_NEWUSER | CLONE_NEWNS | CLONE_NEWPID |
-         CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC)
-
-# ORDER IS MANDATORY when unprivileged:
-with open("/proc/self/setgroups", "w") as f:
-    f.write("deny")
-with open("/proc/self/uid_map", "w") as f:
-    f.write(f"0 {real_uid} 1")     # inside-uid 0 -> outside real_uid
-with open("/proc/self/gid_map", "w") as f:
-    f.write(f"0 {real_gid} 1")
+# ORDER IS MANDATORY when unprivileged: setgroups first, or the gid_map write fails (EPERM)
+_write("/proc/self/setgroups", "deny")
+_write("/proc/self/uid_map", f"{uid} {uid} 1")   # identity: the guest is you, not root
+_write("/proc/self/gid_map", f"{gid} {gid} 1")
+pid = os.fork()                                  # the child is PID 1 of the new PID namespace
 ```
 
-`CLONE_NEWNET` with no veth pair created = the guest gets a network namespace with only a down loopback interface. **That is the "no network egress" guarantee, and it's free** — you simply never bridge it to the host. Stronger and simpler than firewall rules.
+- **An identity map, not `0 <uid> 1`.** Mapping your uid to 0 would make the guest root inside its namespace. With the identity map the helper and init still hold a full capability set *inside* the new user namespace, which is what lets init mount and `pivot_root`, and none outside it. The guest is the server's own uid (you, not root, unless the server itself was started as root, which Vestibule never needs), its capabilities are dropped before `execve`, and files it writes to the workspace are owned by you (N6). Your supplementary groups still count, since no unprivileged process can drop them, but nothing they unlock is visible in the jail.
+- **Why the helper unshares only user and PID.** `unshare(CLONE_NEWPID)` doesn't move the caller: the *next* `fork()` becomes PID 1 of the new namespace. So the helper stays outside the PID namespace it supervises, where the guest can neither see nor signal it, and init does the other namespaces itself.
+- The helper moves init into `guest/sandbox/` before sending it "go", so init is limited before it does anything. `PR_SET_PDEATHSIG(SIGKILL)` ties the helper to the server and init to the helper, and the kernel kills every process in a PID namespace when its PID 1 dies.
 
-### Stage 4–5 — fork() and the PID namespace
+### Stages 7–9 — init: the other namespaces and the filesystem jail
 
-Subtlety: `unshare(CLONE_NEWPID)` does **not** move the caller into the new PID namespace — it arranges for the *next* `fork()`'d child to be **PID 1** there. So: unshare, then fork; the child wakes as PID 1 in a world where it can't see or signal host processes. This is exactly the fork/exec pattern from mysh, with namespace flags flipped on first. (Being PID 1 means reaping responsibilities/different signal semantics — fine for a short-lived single command; just don't leave the child hanging.)
+init waits for "go", starts its own session (no controlling terminal, so no way to the server's `/dev/tty`), then unshares the rest: `CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWCGROUP`. The cgroup namespace makes the guest's `/proc/self/cgroup` read `/` instead of the host's path.
 
-### Stage 6–7 — Filesystem jail (mount ns + pivot_root)
+**The jail** is built under the rootfs, then entered with `pivot_root` (the stronger form of chroot: the old root is detached after, so no path leads back to it):
+- **The rootfs** is an unpacked copy of the same digest-pinned images the container backend runs (`python:3.12-slim`, `node:22-slim`). `vestibule-mcp setup` fetches it once (N2), and every run bind-mounts it read-only. No host binaries, no download per run, no temporary rootfs.
+- **A fresh `/proc`** reflecting the sandboxed process tree, with Docker's masked and read-only paths. A minimal `/dev` (`null`, `zero`, `full`, `random`, `urandom`, `tty`, a new `devpts`, a 64 MiB `/dev/shm`), and no `/sys`.
+- **`/tmp`**, a size-capped tmpfs; **`/workspace`**, the one bind-mounted host folder and the only file channel in and out; **`/sandbox`**, a per-run tmpfs that init writes the script into, then remounts read-only.
+- `~/.ssh`, `~/.aws` and `.env` are simply *not present* in the guest's filesystem. Exfiltration is structurally prevented, not policy-blocked.
 
-The mount namespace gives the child a private mount view. Two operations:
+**The network.** A new network namespace with no veth pair has only a loopback interface. init brings `lo` up, as Docker's `--network none` does; nothing is ever bridged to the host, and that is the "no network egress" guarantee. It is not the whole story: a network namespace doesn't isolate `AF_VSOCK` sockets (on WSL a sandbox's vsock `connect` reaches the Hyper-V transport to Windows), so the seccomp filter refuses that socket family (stage 11).
 
-- **Mount fresh `/proc`** — the guest needs a `/proc` reflecting the *sandboxed* process tree, not the host's.
-- **`pivot_root`** into a minimal rootfs (the strong, non-escapable version of chroot; unmount the old root after). Guest sees only: read-only minimal rootfs (busybox + interpreter), writable `/tmp` (size-capped tmpfs), and the single bind-mounted **workspace** dir (the only file channel in/out). `~/.ssh`, `~/.aws`, `.env` are simply *not present* in the guest's filesystem — exfiltration is structurally prevented, not policy-blocked.
+### Stage 10 — Drop every privilege (PID 1 hardened against its own guest)
 
-**Rootfs options** (easiest first): (a) bind-mount host `/usr`, `/lib` read-only + tmpfs overlay — fast, no download, but exposes host binaries; (b) ship a tiny busybox + static-Python rootfs tarball per run — cleaner isolation; (c) reuse an OCI image layer. Start with (a) read-only for MVP; move to (b) for the security-story version.
+init and the guest share a uid, so without hardening the guest could open `/proc/1/*`, read init's environment, or forge its status report (N7). In order:
+- **fds:** 0 is `/dev/null`, 1 and 2 are the guest's pipes, 3 is the status socket, and everything else is closed (`close_range`).
+- **Capabilities:** the bounding set dropped, the ambient set cleared, then `capset` to nothing.
+- **`PR_SET_DUMPABLE 0`,** which makes `/proc/1/*` unreadable to the guest.
+- **`PR_SET_NO_NEW_PRIVS 1`,** the prerequisite for an unprivileged seccomp filter.
+- **Without a pids limit,** on Linux 5.14 and later, an `RLIMIT_NPROC` backstop against fork bombs. (Before 5.14 the kernel counts that limit across all of the user's processes, so it can't serve as a per-sandbox cap.)
 
-### Stage 8 — cgroups v2 (resource cage)
+### Stage 11 — Lock the syscall surface (seccomp)
 
-Created by the parent in stage 1 (while it has permission); the child joins by writing its PID to `cgroup.procs`. cgroups v2 is just filesystem writes — no ctypes:
+**Do not hand-assemble BPF.** Vestibule has its own small ctypes binding over the system's `libseccomp.so.2`, and libseccomp compiles the filter (N4). The allowlist is derived from Docker's default profile, vendored in the repo at a pinned commit. It is **required**: without libseccomp, native isn't used.
+- **Default action `EPERM`,** as in Docker's profile.
+- **A named set of dangerous calls** (`mount`, `unshare`, `setns`, `bpf`, `keyctl`, `reboot`, the module and kexec calls, `socket(AF_VSOCK)`, and a few more) goes to a *user notification* instead. The helper holds the listener, answers `EPERM` and records the name, so the result can say `blocked syscalls: mount`. After 256 notifications it closes the listener; the rest then fail with `ENOSYS`, and the result says reporting stopped.
+- **`socket` and `socketpair`** only for `AF_UNIX`, `AF_INET`, `AF_INET6` and `AF_NETLINK`.
+- **`ptrace` stays allowed,** as in Docker (S5-D1), so debuggers work inside the sandbox.
+- **A syscall from a foreign architecture kills the process** (the filter's bad-arch action).
 
-```python
-import os
-CG_ROOT = "/sys/fs/cgroup"
+Ordering: the filter is compiled in the helper before the fork, so every ctypes type exists before `pivot_root`, and init loads it **last**, after `no_new_privs`, so its own setup isn't caught. init is filtered too, and the guest inherits the filter.
 
-def make_cgroup(name: str, mem_mb: int, cpu_pct: int, pids_max: int) -> str:
-    cg = f"{CG_ROOT}/vestibule/{name}"
-    os.makedirs(cg, exist_ok=True)
-    _write(f"{cg}/memory.max", str(mem_mb * 1024 * 1024))  # mem bomb -> OOM guest, not host
-    _write(f"{cg}/pids.max",  str(pids_max))               # fork-bomb containment
-    _write(f"{cg}/cpu.max",   f"{cpu_pct * 1000} 100000")  # quota period, e.g. 75% of a core
-    return cg
+### Stages 12–19 — Check, run, supervise, stop, report
 
-def join_cgroup(cg: str) -> None:
-    _write(f"{cg}/cgroup.procs", str(os.getpid()))
-```
-
-After the run, `memory.peak` and `cpu.stat` give the high-water marks reported in the result (the observability angle). **Gotcha:** unprivileged cgroup control needs cgroup v2 with delegation — common but not universal. Degrade gracefully ("limits unavailable, reduced guarantees") rather than hard-fail, and report it in `isolation:`.
-
-### Stage 9–11 — Lock the syscall surface
-
-- **`no_new_privs`** — `prctl(PR_SET_NO_NEW_PRIVS, 1)`. Prerequisite for unprivileged seccomp; one line.
-- **seccomp-bpf** — the syscall allowlist. **Do not hand-assemble BPF.** Use optional `pyseccomp`: allow `read/write/mmap/brk/exit/exit_group/…`; deny (`EPERM` or kill) `socket`, `ptrace`, `mount`, `keyctl`, `reboot`, etc. Keep degradable — namespaces + cgroups already give strong isolation; seccomp is defense-in-depth on top.
-- **Drop capabilities** — even as userns-root, drop the ambient/bounding set.
-
-Ordering: `no_new_privs` **before** seccomp; seccomp **last, right before `execve`**, so your own setup code isn't caught by the filter.
-
-### Stage 12–16 — Run, supervise, report, tear down
-
-Child `execve`s the interpreter with the code. Parent `wait4`s while enforcing a **wall-clock timeout** (a separate alarm/timer — CPU limits alone don't catch `sleep(99999)`). stdout/stderr flow back over pipes (same plumbing as mysh). On completion/timeout: kill the process group, read peak usage from cgroup files, record denied syscalls, tear down cgroup + temp rootfs, return the structured result to the server.
+- **Checks before the guest exists.** init verifies what it reads from the kernel: the mount flags (`ro,nosuid,nodev` on the rootfs and `/sandbox`), every capability set 0, `NoNewPrivs: 1`, not dumpable, only `lo`, no controlling terminal. Any of these failing aborts before `execve`. Then it reports `ready` with those results, its `Seccomp:` mode, namespace inodes, identity maps, mount table and cgroup, and forks the guest. The server judges the rest when the run is over: the seccomp mode must be 2 (filtering), and the namespaces, maps and mount table must match its own values. If any of those fails, the result says `isolation: none`, never `native`. `isolation: native` means every check held, for this run.
+- **The guest** is forked by init: fds above 2 closed, default signals, its own `PATH` search, then `execve` of the interpreter. init stays as a minimal reaper, like M1's `--init`, and reports the guest's exit.
+- **Output** flows over pipes to the server, capped as in M1; a run printing more than twice the cap is stopped.
+- **The stop** (timeout or output overflow): the server sends `SIGTERM` to the helper, which `SIGKILL`s init through a pidfd, so a reaped PID can't be reused under it. When PID 1 dies, the kernel kills everything in its PID namespace, stopped processes included, so no guest can block the stop. The helper exits only after init has, so its exit means the sandbox is empty; `SIGKILL` to the helper 5 s later is the fallback. Two deadlines outside the server back this up: the helper's own self-deadline and systemd's `RuntimeMaxSec` on the scope.
+- **The report.** Before it exits, the helper sends the guest cgroup's OOM counters (so a memory bomb's result says the kernel killed a process at its limit) and the denied syscalls' names. Peak usage (`memory.peak`, `cpu.stat`) waits for M3. Once the helper has exited, the scope is empty and systemd removes it.
 
 ---
 
