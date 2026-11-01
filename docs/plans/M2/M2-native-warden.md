@@ -1,6 +1,7 @@
 # M2 contract — Native Linux warden
 
-Status: **signed off by Victor 2026-10-14** (v2, revised after the `skeptic` review, §12).
+Status: **accepted 2026-10-31** (M2 step 7; the acceptance record follows §9's criteria).
+Signed off by Victor 2026-10-14 (v2, revised after the `skeptic` review, §12).
 - **Signed off:** E1–E3; the three choices the review raised (in N4 and N5): seccomp is a
   hard control, the filter is an allowlist derived from Docker's, and Ubuntu's
   user-namespace restriction is tested by injection in M2 and on a real VM in M4; and N1–N5
@@ -756,10 +757,16 @@ On WSL Ubuntu 26.04 (kernel 6.6), through `server.call_tool` like M1's suite:
    within `timeout_s + 30`, and nothing survives: the run cgroup is gone, with no helper,
    init or guest PID left.
 9. **Denied syscalls:**
-   - `unshare`, `mount` and `ptrace` attempts get `EPERM` and are listed in the result.
+   - `unshare` and `mount` attempts get `EPERM` and are listed in the result. (`ptrace` is
+     allowed, as in Docker's profile: S5-D1.)
    - A notification storm (many threads looping on `mount`) returns, with deduplicated
      names, the helper's CPU inside the envelope, and "reporting stopped".
-   - A foreign-arch syscall kills the process (the step-5 plan picks the exact test).
+   - A foreign-arch syscall kills the process. *Amended in step 7 (S7-D2):* this rests on
+     step 5's filter-level proof, not a live test. The 32-bit ABI is refused by the filter's
+     architecture check: the bad-arch action is `KILL_PROCESS`, and only the host
+     architecture is registered, both pinned by step 5's unit tests. The x32 ABI shares the
+     host's architecture token, so that check doesn't catch it; libseccomp's own handling of a
+     native filter does, and no Vestibule test covers that part.
 10. **From inside the guest:**
     - uid and gid are the host user's; supplementary groups as N6 documents.
     - `CapEff`, `CapPrm`, `CapBnd` and `CapAmb` are all 0; `NoNewPrivs: 1`; `Seccomp: 2`.
@@ -792,6 +799,34 @@ On WSL Ubuntu 26.04 (kernel 6.6), through `server.call_tool` like M1's suite:
 17. **Minimal-environment launch:** the server started with the MCP SDK's default POSIX
     environment (`HOME LOGNAME PATH SHELL TERM USER` only) still selects `native`, finding
     the user bus itself.
+
+**Acceptance record (2026-10-31, M2 steps 7a and 7b).** Every criterion has evidence, on WSL2
+Ubuntu 26.04.1 (kernel 6.6.87.2-microsoft-standard-WSL2, systemd 259), with Python 3.14 and
+3.11. The handler tests in `tests/test_native_acceptance.py` go through `server.call_tool`
+with a fresh selector each, so selection, the run, the rendering and the server's own
+`note_result` hook are all in the path. Every result is checked against the allowed isolation
+values (`native`, `native-degraded`, `none`), every test but c13 expects exactly `native`, and
+each test checks that no `vestibule-*.scope` of its own runs is left. Plan: [`M2-step7-acceptance.md`](M2-step7-acceptance.md).
+
+| # | Evidence (`tests/` unless noted) | What was observed |
+|---|---|---|
+| 1 | `test_native_acceptance.py::test_c01_*`; the live check | python, bash and node ⇒ `isolation: native`, chosen by `auto` |
+| 2 | `test_c02_*`; the live check | an absolute-path canary is unreachable by path, through `/proc/1/root` and `/proc/1/cwd` (both denied) and by `find /`; the mount table is exactly the expected list; `/proc` shows PIDs 1 and 2 only; nothing on `/sys`. Live: the canary read was `No such file or directory` |
+| 3 | `test_c03_*`; the live check | TCP, DNS and UDP fail; `socket(AF_VSOCK)` gets `EPERM` from the filter and is named (`blocked syscalls: socket`); the only interface is `lo`. Live: `Network is unreachable` |
+| 4 | `test_c04_*`; the live check | a child touching 1 GiB dies by SIGKILL, the result carries the OOM note at the 256 MiB limit (from `guest/memory.events`), and the next run works on the same selection. Live: exit 137 with the note |
+| 5 | `test_c05_*` | forks refused with `EAGAIN` at `pids_max` − 2 (init and the guest count), still `native`, so `pids.max` did it, not the `RLIMIT_NPROC` backstop; the classic bash bomb returns within its 8 s timeout, the grace and a margin; the next run works |
+| 6 | `test_c06_*`; `test_native.py::test_the_limits_from_outside` | `cpu.max` reads back `75000 100000`; a 2 s busy loop uses at most 85 % of a CPU (`cpu_pct` 75) |
+| 7 | `test_c07_*` | `/tmp` fills to its cap, then `ENOSPC`; writes to `/` and to `/sandbox` fail with `EROFS` |
+| 8 | `test_c08_*` (a busy loop; a self-`SIGSTOP`ped guest) | both return `[timed out …]` within the 2 s timeout, the 2 s grace and a 3 s margin; no process of the run survives, and its scope is gone |
+| 9 | `test_c09_*`; `test_native.py::test_the_limits_from_outside`; `test_native_seccomp.py::test_bad_arch_kills_the_process` and `::test_only_the_host_arch_is_in_the_filter` | `mount`, `unshare` and `keyctl` each get `EPERM` and are named; a storm of threads looping on `mount` returns deduplicated (`blocked syscalls: mount`) with "reporting stopped" at the 256 cap, while the helper sits in the scope's `supervisor/` and the scope's `cpu.max` is the envelope (`100000 100000`: 75 % + 25 %); the foreign-arch line as amended above |
+| 10 | `test_c10_*` | from inside: the host user's uid and gid (supplementary groups only as that gid or the overflow gid, N6); no fd beyond 0–2; all four capability sets 0; `NoNewPrivs: 1`; `Seccomp: 2`; M1's environment; `/proc/1/{environ,fd,cwd,root,mem}` all denied; `/proc/1/cmdline` starts `vestibule-warden` with no host path; hostname `vestibule`, cwd `/workspace` |
+| 11 | `test_c11_*` | the real stdio server `SIGKILL`ed mid-run: within 2 s no guest process and none of its scopes remain |
+| 12 | `test_c12_*` | 4 simultaneous runs, all `native`, in 4 distinct PID namespaces |
+| 13 | `test_c13_*`; `test_native_select.py`; `test_select.py::test_auto_on_linux_follows_n5s_order` | through the handler, a rootfs removed after selection ⇒ that run is `isolation: none … nothing was executed`, the server's `note_result` drops the selection, and the next call is `Blocked:` with the `setup` line. At selection level, with real probes: no rootfs and no delegation (the no-bus injection) under `auto`, in N5's order; user namespaces refused (AppArmor-style) and no libseccomp with native forced, each an honest refusal. Every native refusal is the same error to the selector, and N5's order for it is shown with fakes |
+| 14 | `scripts/bench_coldstart.py` (not a test) | from a wheel on ext4, 50 runs each: native 81.9 ms median, 106.9 ms p95; container 392.3 / 413.0 ms, through Docker Desktop's VM (BUILD_LOG, step 7a) |
+| 15 | the gate | Linux 553 passed, 0 skipped (3.14, Docker included), and the Docker-free suite on 3.11; Windows: every native test skips with its reason and the rest pass; ruff and mypy clean on both |
+| 16 | the live check (step 7b; HISTORY) | Linux Claude Code 2.1.316 in WSL ran hellos in three languages, a TCP attempt, a memory bomb, the canary read and `read_workspace`, every run `isolation: native`; it shuts the server down with `SIGINT`, and nothing was left |
+| 17 | `test_native_select.py::test_the_sdks_minimal_environment_still_selects_native` | started with the SDK's minimal POSIX environment, the server finds the user bus and selects `native` |
 
 ## 10. Implementation order (each step ≈ one commit)
 

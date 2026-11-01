@@ -45,7 +45,9 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 3 | Warden core: helper, jail, PID-1 hardening, kill path (not reachable from the server yet) | 2026-10-25 | `1ef1b46` | 428 Linux (0 skipped); 348 + 60 POSIX/Linux-only skips on Windows |
 | M2 step 4 | cgroups v2: per-run scope, guest limits, OOM note, fork-bomb backstop (not reachable from the server yet) | 2026-10-26 | `8b1de5e` | 470 Linux (0 skipped); 367 + 83 POSIX/Linux-only skips on Windows |
 | M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | `06bd899` | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
-| M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | pending | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
+| M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | `3cf3024` | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
+| M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | `6ada758` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
+| M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | pending | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -55,19 +57,30 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
 | 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) was considered for M2 step 5 and **rejected** (N4): denying `symlink`/`symlinkat` breaks `python -m venv` and npm `.bin` links in the workspace. M1's measures stay. | Documented (README, contract D1); revisit in M4 `SECURITY.md` |
-| 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. | Later milestone (liveness lease); M2 step 7 re-measures with a real session |
+| 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. **Re-measured in M2 step 7b** (Claude Code 2.1.316, one sample each): Ctrl+C cancels the call before Claude Code exits, and the cancel path removed the container (seen up at one poll, gone at the next, 0.75 s later); closing the terminal window mid-run closed the server's stdin with the call in flight, and the container was gone within 1.43 s, more than two minutes before its self-deadline. The race wasn't hit, but nothing rules it out. | Later milestone (liveness lease) |
+| 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. | Upstream; look again with the `mcp<2` move |
+| 2026-10-31 (M2 step 7b review) | native, server started as root | Nothing refuses a server started as root (euid 0). The helper copies its own uid into the identity map, so the guest is then host uid 0, without capabilities and inside the jail, and the result still says `isolation: native` (reproduced in WSL). Golden rule 2 says no feature needs root; nothing stops a user starting the server as root anyway. The README and `ARCHITECTURE.md` say so. | Open; refusing or labeling a root server needs its own small step |
+| 2026-10-31 (M2 step 7b gate) | `tests/test_native.py` | `test_a_hard_nproc_limit_below_pids_max_still_runs` sets `ulimit -u 100`. Since Linux 5.14 that limit is checked at every user-namespace level up to the host's, where all of the uid's tasks count: on WSL2 also those in other distros sharing the kernel, which `ps` in the distro can't see. Measured during 7b: the kernel counted about 102 tasks for uid 1000 while `ps` showed 36, so every fork in the test's sandbox failed. With one WSL Claude Code session closed, the count was about 76 (`ps`: 10) and the gate passed. The test passes only while the user has well under 100 tasks. | Open; the test needs a limit set relative to the current count (its own small change) |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
 | 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
-| 2026-10-26 (M2 step 4, S4-D1) | native limits | Sandboxes run in the user manager's `app.slice`, outside the client's own cgroup, so a `MemoryMax=` a user put on their agent doesn't count them. Each sandbox has its own limits instead. | Accepted by Victor; README note in step 7 |
-| 2026-10-26 (M2 step 4) | native placement | A host where systemd accepts the scope job and then fails it, with the helper alive, makes every run wait the full 5 s placement bound before running without limits. Not seen on any tested host. | Step 6's probe reports placement time |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
+- The 2026-10-26 S4-D1 issue (sandboxes run in the user manager's `app.slice`, outside the
+  client's own cgroup, so a `MemoryMax=` on the agent doesn't count them) is documented in the
+  README's "Know the limits" (M2 step 7b), as Victor accepted. Each sandbox has its own limits.
+- The 2026-10-26 placement-time issue (a host where systemd accepts the scope job and then
+  fails it makes every run wait the full 5 s bound) is visible now: the selection probe's log
+  line carries its time (105 ms in the 7b live session), and a run that waits out the bound
+  says "systemd did not place the run within 5 s" in its degraded detail (step 6). Still not
+  seen on any tested host.
 - The 2026-10-11 `SIGTERM` issue (a POSIX client that signals without closing stdin first
   skipped cleanup) was closed in M2 step 1b, **Linux verified, macOS untested.** The real
   case was worse than recorded: Claude Code on Linux sends `SIGINT`, then `SIGTERM` 100 ms
   later, then `SIGKILL`, and the server *hung* on that `SIGINT`. Now every trigger runs the
-  hand-off and the server exits within milliseconds (S1-D5).
+  hand-off and the server exits within milliseconds (S1-D5). M2 step 7b's live session
+  confirmed it with Claude Code 2.1.316: the server's last log line was `vestibule shutdown
+  (SIGINT): nothing to clean up`, and nothing was left.
 - The 2026-10-10 issue (dropped and live backends never drained; cleanup cut off at
   shutdown) was fixed in step 7a (S7-D1). It was reproduced first as an indefinite
   shutdown hang.
@@ -77,9 +90,118 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
+## M2 step 7b — live checks and docs pass (2026-10-31)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M2/M2-step7-acceptance.md`](plans/M2/M2-step7-acceptance.md) §3.3 and
+  §4; what happened is in its §8.
+- **What:** no code.
+  - **Live check, Linux (criterion 16).** Linux Claude Code 2.1.316 in WSL, started from a
+    neutral folder with only Vestibule's two tools (`--strict-mcp-config`, `--tools ""`,
+    `--permission-mode dontAsk`), the server registered from the dev venv as S7-D3 says. Seven
+    calls, judged from the session transcript: hellos in python, bash and node; TCP to
+    `1.1.1.1:443` (`Network is unreachable`); a memory bomb (exit 137 with the OOM note); `cat`
+    of a planted absolute-path canary (`No such file or directory`); `read_workspace` (lists
+    `hello.txt`). Every run `isolation: native`. The server log shows one selection probe (105
+    ms) and six runs. After `/exit` its last line was `vestibule shutdown (SIGINT): nothing to
+    clean up`; the server process was gone, with no `vestibule-warden`, cleaner or
+    `vestibule-*.scope` left.
+  - **Live check, Windows (the shutdown re-measure).** Windows Claude Code 2.1.316, the repo's
+    registered server, a 55 s `sleep` in a container, watched from outside by a `docker ps`
+    poll. Ctrl+C cancels the call first (the container was gone by the next poll, 0.75 s
+    later); closing the terminal window mid-run ends the session with the call in flight
+    (stdin closed, container gone within 1.43 s). No server process, container or
+    `vestibule-run-*` dir was left either way.
+  - **Docs pass:** `README.md` (setup without Docker on Linux, `VESTIBULE_ROOTFS_DIR`, a "Native
+    isolation on Linux" section with the benchmark and a per-distro table, the native limits,
+    the badge link `6ada758` broke), `CLAUDE.md` (intro, golden rule 5, the Async bullet, the
+    repo tree), `docs/ARCHITECTURE.md` (Part 2 rewritten as built: helper, init, placement
+    from outside, identity map, the jail, seccomp, the stop), `docs/PLAN.md`,
+    `docs/GETTING_STARTED.md` (native-degraded troubleshooting, the leftover-scope check), the
+    contract (criterion 9 amended, the acceptance record), this file and `docs/HISTORY.md`.
+- **Found:** the SDK's answer to a cancelled call makes Claude Code mark the connection
+  dropped (new known issue above). The Windows re-measure is recorded on its row. The
+  `SIGINT` shutdown, the S4-D1 note and the placement time close their issues. Two more known
+  issues came from the review and the gate: a server started as root, and the process-limit
+  test that depends on the uid's task count across all of WSL.
+- **Review:** `critic` 4 medium + 9 low; `verifier` confirmed all 13, at 1 medium and 12 low,
+  all wording; all fixed (the plan's §8 table). The medium one: "never root" didn't hold for a
+  server started as root. Golden rule 2's explanation reworded with Victor's approval.
+- **Gate:** the first Linux run failed only
+  `test_native.py::test_a_hard_nproc_limit_below_pids_max_still_runs`, on the uid's task count
+  (known issue above). After a leftover WSL Claude Code session was closed: check_env, ruff and
+  mypy green on both platforms; Linux (274 s) 3.14 full suite 553 passed, 0 skipped; 3.11
+  Docker-free 510; stdio 5 of 5. Windows 412 passed + 121 POSIX/Linux-only skips.
+- **Where to start if it breaks:**
+  - **A live session gets something other than `native`:** the detail names the reason; the
+    server's stderr (in the S7-D3 setup, `~/vestibule-live.log`) has the selection lines.
+  - **Shutdown on Linux:** the server's last stderr line names the trigger; `tests/test_stdio_e2e.py`
+    replays Claude Code's signal sequence.
+  - **The per-distro table:** its "expected" rows rest on the prerequisites, not on runs.
+
+## M2 step 7a — acceptance suite and cold-start benchmark (2026-10-31)
+
+- **Commit:** `6ada758` (it also carried the README badge edit that failed `test_docs`, fixed in
+  7b).
+- **Plan:** [`docs/plans/M2/M2-step7-acceptance.md`](plans/M2/M2-step7-acceptance.md) §2, §3.1,
+  §3.2, §3.4 and §6 (v2, signed 2026-10-28); what changed in the build is in its §8.
+- **What:**
+  - **`tests/test_native_acceptance.py`** (new, `native`-marked, `@cgroups_required`): one test
+    per criterion 1–13, each through `server.call_tool` with a fresh selector, a temp workspace
+    and `CONFIG_ERROR` cleared, so selection, the run, the rendering and the server's
+    `note_result` hook are all in the path. Backend `auto` in c01, forced `native` elsewhere.
+    The teardown drains every warden used and checks that this test's own scopes (named from
+    its "starting a native sandbox" log lines) are gone. c11 `SIGKILL`s the real stdio server.
+    The module docstring maps every criterion to its test, the earlier ones relied on included.
+  - **`scripts/bench_coldstart.py`** (new, a dev script, not in the gate): builds a wheel of the
+    working tree, checks it holds the helper, the seccomp binding and the profile, installs it
+    into `~/.venvs/vestibule-bench` with the constraints, then times 50 `print(1)` calls per
+    forced backend after a warm-up. It stops on any call that isn't exactly `isolation:
+    <backend>` or that changes the selection, and drains between calls.
+- **Benchmark (criterion 14),** WSL2 Ubuntu 26.04.1, kernel 6.6.87.2-microsoft-standard-WSL2,
+  12 CPUs, Python 3.14.4, Docker Desktop 28.5.1, wheel from `3cf3024`:
+
+  | Backend | Median | p95 |
+  |---|---|---|
+  | native | 81.9 ms | 106.9 ms |
+  | container | 392.3 ms | 413.0 ms |
+
+  Two earlier runs: native 84.3 / 114.1 and 79.0 / 121.1 ms; container 384.4 / 430.0 and
+  387.1 / 439.9 ms. Each container sample includes one reaper pass (`docker ps`), as every call
+  does in use. No ratio is quoted: the container path here crosses Docker Desktop's VM.
+- **What broke along the way:**
+  1. *The teardown scope check was empty* (draft): at fixture teardown `caplog.messages` holds
+     only the teardown phase's records. Now `caplog.get_records("call")`, plus a guard that
+     fails on an empty set; the guard is what found it.
+  2. *c09's helper check was circular* (draft); the helper is now found by its parent PID.
+  3. *c09 flaked* (draft): a second `holders(token)` call caught the guest mid-`exec`. The
+     wait loop's PID is kept; 20 of 20 after. `test_native.py:677` has the same pattern.
+  4. *Three mutants modelled the wrong thing* and were redone (plan §8): one equivalent to the
+     real code (the finisher also stops a timed-out run), two that broke selection instead of
+     the property under test.
+- **Where to start if it breaks:**
+  - **"scopes left behind" at teardown:** `systemctl --user list-units 'vestibule-*'`; a
+    leftover process in a scope keeps it (the scope-check mutant reproduces this).
+  - **c09's cgroup reads:** the helper must be this process's own `vestibule-warden` child in
+    `<scope>/supervisor`, and the scope's `cpu.max` the envelope (`cpu_pct` + 25 %).
+  - **The benchmark stops on a degraded run:** the stop message ends with the server's log
+    tail, which names the reason; a host without a user manager can't produce `native`.
+- **Review:** `critic` 1 medium + 8 low; `verifier` 8 confirmed, 1 refuted. The medium one:
+  §6.2 named c08 as the guard for two mutants it can't catch. §6.2 is corrected in the plan's
+  §8. Seven lows fixed; one kept with its reason (plan §8's table). Mutants: 10, all red.
+- **Gate:** check_env, ruff and mypy green on both platforms. Linux (269 s): 3.14 full suite
+  553 tests, 0 skipped; 3.11 Docker-free 510; stdio 5 of 5. Windows: 412 + 121 skips. On every
+  pytest run the one failure was `test_docs` on `README.md:7`, a badge in an uncommitted README
+  edit that isn't part of this step (`](<https://…>)`, which the link check reads as a local
+  path). Everything in this step passed.
+- **Sizes:** the acceptance file 499 lines (estimate 450–500), the benchmark 150 (estimate
+  ~120, look again past 170).
+- **Outside this step, noticed:** the server's outer-deadline message (`server.py`, "sandbox
+  did not return in time") carries no `isolation:` line.
+
+## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
+
+- **Commit:** `3cf3024`.
 - **Plan:** [`docs/plans/M2/M2-step6-selection.md`](plans/M2/M2-step6-selection.md) S6-D1 to
   S6-D10 (v2 after the `skeptic` review; S6-D1 and S6-D10 decided by Victor). Contract
   amendments in M2 §4, §5, §7 and §10.

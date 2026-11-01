@@ -444,12 +444,12 @@ floor — plus the persistent workspace and the `read_workspace` tool.
 
 ---
 
-## M2 — Native Linux isolation (in planning)
+## M2 — Native Linux isolation (✅ accepted 2026-10-31)
 
 Goal: on Linux, run each sandbox with the kernel's own isolation (namespaces, a filesystem
 jail, cgroup limits, seccomp) without root and without Docker, faster than the container
 backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-warden.md)
-(draft; decisions N1–N5 wait on review and sign-off).
+(signed off 2026-10-14, accepted 2026-10-31).
 
 ### Decision sign-offs
 
@@ -650,7 +650,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   - **2026-10-25:** `skeptic` and `critic` check plans and diffs against the rules too. Step 2's
     build reviews had checked correctness only, so step 2 got the re-review above.
 - **Step 3 — warden core, done 2026-10-25
-  ([plan](plans/M2/M2-step3-warden-core.md); commit pending).**
+  ([plan](plans/M2/M2-step3-warden-core.md); commit `1ef1b46`).**
   - **Now:** `NativeBackend` runs a snippet in a fresh sandbox built from the step-2 image
     folders:
     - its own user, process, mount, network and other namespaces;
@@ -742,7 +742,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   - **S6-D10:** the test-only switch that skipped the seccomp filter is **deleted**, not kept.
     The tests that used it now run the real filter, as users do.
 - **Step 6 — native isolation reachable from the server, done 2026-10-27
-  ([plan](plans/M2/M2-step6-selection.md); commit pending).**
+  ([plan](plans/M2/M2-step6-selection.md); commit `3cf3024`).**
   - **Now:** on Linux, a user who ran `vestibule-mcp setup` gets `isolation: native` from the
     MCP server. `auto` tries native first. If native is missing its limits (no systemd user
     manager), a full container wins; a container that's only down for now is asked again every
@@ -764,3 +764,94 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
       every call for 30 s when the run limit was reached;
     - a Docker that was half-started, or images not yet pulled, would have left the session
       without resource limits until a restart.
+- **Step 7 plan signed off, 2026-10-28
+  ([plan](plans/M2/M2-step7-acceptance.md)).** The last step of M2. It has an exam (one test
+  per acceptance criterion, through the same entry point an agent uses), a speed benchmark
+  native against container, a live session with Linux Claude Code in WSL, and a pass over
+  every doc written before M2 that is now wrong. `skeptic` found 21 issues, 8 of them medium,
+  and every one changed the plan. The main ones:
+  - one criterion was never tested through the server itself;
+  - the benchmark had no guard on what it measured;
+  - the design doc kept claims the build had already disproved.
+
+  Victor decided three questions, all as recommended:
+  - **S7-D1:** two parts, as in M1. 7a is the exam and the benchmark. 7b is the live checks
+    first, then the docs, with "M2 accepted" written last.
+  - **S7-D2:** the "foreign-architecture calls are killed" criterion rests on step 5's
+    filter-level tests, and its wording says exactly what they cover.
+  - **S7-D3:** Linux Claude Code goes into WSL through its native installer, with no Node.
+- **Step 7a — the exam and the benchmark, done 2026-10-31
+  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit `6ada758`).**
+  - **Now:** one test per M2 criterion goes through the same entry point an agent's tool call
+    reaches, on a real Linux host: hellos in three languages, no host files, no network, memory
+    and fork bombs contained, the CPU and `/tmp` limits, timeouts with nothing left behind,
+    blocked syscalls named, the guest's own view, a server killed mid-run, four runs at once,
+    and a rootfs that vanishes under a running server. All 14 pass, with Python 3.14 and 3.11.
+  - **The speed number the README will quote,** measured on this machine through the server
+    itself: a native run takes about 80 ms (p95 about 110 ms), a container run about 390 ms.
+    The container path here goes through Docker Desktop's VM, which a Docker Engine user on
+    Linux doesn't pay, so there is no "N× faster" headline.
+  - **How we know the tests can fail:** 10 deliberately broken versions of the code each turned
+    the right test red.
+  - **What it caught:** the test draft had three bugs of its own. Its "nothing left behind"
+    check looked at an empty list, so it could never fail; one check proved itself in a
+    circle; and one test flaked. All three are fixed.
+  - **Review:** `critic` found 1 medium and 8 small issues, and `verifier` confirmed 8. The
+    medium one: one of the plan's broken versions could never have been caught by the test it
+    named, because a second safety net hides it. The plan's list now says which test guards
+    what.
+- **Step 7b — the live checks and the docs, done 2026-10-31
+  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit pending).**
+  - **Linux Claude Code, live.** Claude Code 2.1.316, installed in WSL with its native
+    installer, ran a session with only Vestibule's two tools available. Every run reported
+    `isolation: native`:
+    - hellos in python, bash and node;
+    - a TCP connection to `1.1.1.1` failed with `Network is unreachable`;
+    - a memory bomb died with exit 137 and the note that the kernel killed it at its 256 MiB
+      limit;
+    - reading a fake key planted at an absolute path in the home folder got `No such file or
+      directory`;
+    - `read_workspace` listed the file the bash hello had written.
+
+    When the session ended, the server's last log line was `vestibule shutdown (SIGINT):
+    nothing to clean up`, as step 1b predicted, and no process or scope was left.
+  - **Windows Claude Code, the shutdown re-measure.** A long container run, watched from
+    outside. Pressing Ctrl+C cancels the call before Claude Code exits, and the container was
+    gone by the next check, under a second later. Closing the terminal window mid-run ends the session with the call still
+    going, and the container was gone within 1.43 s, more than two minutes before its own
+    deadline. The race the known issue describes didn't happen in either case, but one sample
+    can't rule it out, so the issue stays open for its planned fix.
+  - **Seen on the way:** after an interrupted call, Claude Code reports Vestibule's connection
+    as dropped, because the MCP SDK answers the cancelled call and Claude Code doesn't expect
+    that answer. Nothing leaks, and `/exit` still shuts the server down. Logged as an upstream
+    known issue.
+  - **Docs:** the README explains native isolation on Linux (what it is, what `auto` picks, the
+    speed numbers, which distros should get it and why, and the new limits), and Linux setup no
+    longer asks for Docker. `ARCHITECTURE.md`'s warden part is rewritten to match what was
+    built, and `CLAUDE.md`, `PLAN.md`, `GETTING_STARTED.md` and the contract are brought up to
+    date. The contract has its acceptance record, criterion by criterion.
+  - **Golden rule 2's explanation reworded — approved by Victor 2026-10-31.** It said the user
+    namespace maps your uid to root inside; the build keeps your own uid (N6). The rule itself,
+    never needing real root, is unchanged.
+  - **Review:** `critic` found 13 issues in the docs, and `verifier` confirmed all 13: one
+    medium, the rest small, all wording. The medium one: the docs said a sandbox's guest is
+    never root, but nothing stops someone starting the server itself as root, and then the
+    guest is root too (without any capabilities). The docs now say so, and refusing a root
+    server is a known issue for its own small step. Others: the design doc said a failed
+    seccomp check stops the run before it starts (the server judges it after the run, and the
+    result then says `none`), and a few claims were worded as complete lists or as more precise
+    than the measurements.
+  - **A test that depends on the machine.** The first gate run failed one Linux test, which caps
+    the user at 100 processes. The kernel counts every process of that user across all of WSL,
+    including ones in other distros that Ubuntu can't see: 102 then, with a leftover Claude Code
+    session open, and 76 after Victor closed it, when the gate passed. Logged as a known issue;
+    the test needs its own small fix.
+  - **Totals:** 553 tests on Linux with none skipped, 412 plus the 121 Linux-only skips on
+    Windows; ruff and mypy clean.
+- **M2 accepted — 2026-10-31.** Every one of the 17 criteria has its evidence: the exam
+  through the server (7a), the benchmark, both platform gates, and the live session with Linux
+  Claude Code (7b), shutdown included. Proven on WSL2 Ubuntu 26.04 (Microsoft's kernel 6.6,
+  systemd 259); other distros are expected from their prerequisites, and M4's fresh-machine
+  test runs a stock Ubuntu 24.04 VM. What carries forward is in the BUILD_LOG known issues: a
+  server started as root, the process-limit test, the SDK's answer to a cancelled call, and the
+  Windows shutdown race (a liveness lease); and `SECURITY.md` in M4.

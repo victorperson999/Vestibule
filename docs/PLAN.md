@@ -32,7 +32,7 @@ Several "agent sandbox / MCP gateway" projects exist (some even named "Airlock")
 | Product name                     | **Vestibule** (`vestibule-mcp` on PyPI)                |
 | MCP server language              | **Python** (official `mcp` SDK)                        |
 | Warden (isolation core) language | **Python + ctypes** (direct syscalls)                    |
-| seccomp layer                    | **Optional / degradable** (via `pyseccomp` if present) |
+| seccomp layer                    | **Required for native** (our own ctypes binding over libseccomp; allowlist derived from Docker's) |
 | License                          | **MIT**                                                  |
 | Ownership                        | **Solo**                                                 |
 
@@ -68,16 +68,20 @@ Make it *usable by ~80% of the audience* on day one.
 
 ### Milestone 2 — Native Linux isolation core · ~weeks 2–3 · **the differentiator**
 
-The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage lifecycle.
+The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
-- `unshare(NEWUSER|NEWNS|NEWPID|NEWNET|NEWUTS|NEWIPC)` → uid/gid map → `fork()` (child = PID 1).
-- Mount fresh `/proc`; `pivot_root` into a minimal rootfs; writable `/tmp` (tmpfs) + bind-mounted workspace.
+- A fresh helper per run: `unshare(NEWUSER|NEWPID)` → identity uid/gid map → `fork()` init (PID 1), which unshares `NEWNS|NEWNET|NEWUTS|NEWIPC|NEWCGROUP`.
+- Mount fresh `/proc`; `pivot_root` into the pinned images, unpacked once by `vestibule-mcp setup`; writable `/tmp` (tmpfs) + bind-mounted workspace.
 - cgroups v2: `memory.max`, `cpu.max`, `pids.max` (filesystem writes).
-- `no_new_privs` + optional seccomp allowlist (`pyseccomp`) + drop capabilities.
-- Run in an executor (blocking syscalls must not stall the async server).
-- **Benchmark cold-start latency vs. the container backend** — expect to win by 10–50×. That number is a README headline.
+- `no_new_privs` + a required seccomp allowlist (our own libseccomp binding, derived from Docker's profile) + drop capabilities.
+- A fresh helper process per run makes the blocking syscalls, so they never stall the async server.
+- **Benchmark cold-start latency vs. the container backend.** Measured on WSL2: native 82 ms median, container 392 ms. The container path there goes through Docker Desktop's VM, so the README quotes both numbers with that caveat, not a ratio.
 
-**Acceptance:** on Linux, code runs with no host filesystem visibility (can't read `~/.ssh`), no network, enforced mem/cpu/pids caps, and denied syscalls reported. Result reports `isolation: native`. Cold-start benchmark recorded.
+**Acceptance:** on Linux, code runs with no host filesystem visibility (a canary planted at an absolute host path can't be read), no network, enforced mem/cpu/pids caps, and denied syscalls reported. Result reports `isolation: native`. Cold-start benchmark recorded.
+
+**Detailed contract:** `docs/plans/M2/M2-native-warden.md`; its 17 acceptance criteria supersede the list above.
+
+**Status (2026-10-31):** ✅ accepted. Built in steps 0–7; the acceptance suite, `tests/test_native_acceptance.py`, covers criteria 1–13 through the server on WSL2 Ubuntu 26.04, and the live-agent check from Linux Claude Code in WSL passed (results in `docs/HISTORY.md`).
 
 ### Milestone 3 — Audit log + resource reporting · ~week 3 · the observability story
 
@@ -105,7 +109,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage life
 | Linux (native)                               | warden: namespaces + cgroups + seccomp       | Strongest — the headline     |
 | Linux (no privileges / no cgroup delegation) | rootless Podman, or reduced-guarantee native | Strong / degraded (report it) |
 | macOS                                        | container (Docker / Podman)                  | Good                          |
-| Windows                                      | WSL2 → native, else Docker Desktop          | Good                          |
+| Windows                                      | container (Docker Desktop); a server run inside WSL2 gets native, and a bridge for Windows clients is an M4 candidate | Good                          |
 
 **Rule:** the tool must *run* everywhere even if best-in-class isolation is Linux-only. Degrade loudly (report `isolation:` honestly), never fail silently.
 
@@ -123,7 +127,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full 16-stage life
 
 ## Résumé bullets (draft — fill in real numbers)
 
-- *Built and shipped an open-source MCP server providing kernel-isolated code execution for AI agents (Linux user/mount/pid/net namespaces, cgroups v2, seccomp-bpf), adopted by N developers (X GitHub stars); cut sandbox cold-start latency ~Y× vs. a Docker-based backend.*
+- *Built and shipped an open-source MCP server providing kernel-isolated code execution for AI agents (Linux user/mount/pid/net namespaces, cgroups v2, seccomp-bpf), adopted by N developers (X GitHub stars); native sandbox cold start ~82 ms median vs. ~392 ms for the Docker-based backend on the same host (Docker Desktop on WSL2).*
 - *Designed a layered "defense-in-depth" threat model for autonomous LLM code execution, mitigating prompt-injection-driven filesystem and network abuse; documented syscall-level guarantees in a public security spec.*
 
 Every N/X/Y must be measured and defensible — interview-proof.
