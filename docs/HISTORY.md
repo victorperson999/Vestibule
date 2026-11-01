@@ -801,7 +801,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     named, because a second safety net hides it. The plan's list now says which test guards
     what.
 - **Step 7b — the live checks and the docs, done 2026-10-31
-  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit pending).**
+  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit `f318e0c`).**
   - **Linux Claude Code, live.** Claude Code 2.1.316, installed in WSL with its native
     installer, ran a session with only Vestibule's two tools available. Every run reported
     `isolation: native`:
@@ -855,3 +855,39 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   test runs a stock Ubuntu 24.04 VM. What carries forward is in the BUILD_LOG known issues: a
   server started as root, the process-limit test, the SDK's answer to a cancelled call, and the
   Windows shutdown race (a liveness lease); and `SECURITY.md` in M4.
+- **Follow-up: four small fixes before M3 — plan signed off 2026-11-01**
+  ([plan](plans/M2/M2-followups.md), v2 after the `skeptic` review; `verifier` confirmed all
+  seven findings).
+  - **What's in it:**
+    - the process-limit test stops depending on the user's task count;
+    - a server started as root;
+    - an `isolation:` line on the two `run_code` results that lacked one;
+    - two stale doc lines.
+  - **F-D1 — Victor chose option 1: a server started as root runs no code.** On Linux and
+    macOS, every isolating backend refuses it with a `Blocked:` message: start Vestibule as
+    your own user, then restart. Only the explicit dev-only naive backend, which claims no
+    isolation, still runs. v1 had recommended refusing native only. The review showed that
+    the container then runs as `--user 0:0` and still says `isolation: container`, against
+    M1's signed-off D3 and the README's "non-root user". So the false claim would only have
+    moved. The other option, running as root and labelling every result degraded, was
+    declined.
+- **Follow-up done 2026-11-01** ([plan](plans/M2/M2-followups.md) §7; commit pending).
+  - **A server started as root runs no code.** The first `run_code` call says why and how to
+    fix it. Only the dev-only naive backend still runs.
+  - **Every `run_code` result now states its isolation.** Before, two results had no
+    `isolation:` line: the one when the server's own time limit fires, and the one when
+    something unexpected breaks. Both now say `isolation: none`, because nothing confirmed what
+    protected the run.
+  - **The test that broke the 7b gate** no longer depends on how many processes you have open.
+    It failed for the old version with 40 extra sleeping processes and passed for the new one.
+  - **Changed during the build:**
+    - The planned second root check, in native's per-run verdict, was dropped. It couldn't tell
+      real root from root inside a user namespace mapped to your own uid, and two existing tests
+      run the sandbox exactly that way. The check at selection covers every path the server
+      takes.
+    - The root check's Windows guard was rewritten, because tests that pretend to be on Linux
+      reached a function Windows doesn't have.
+  - **Review:** `critic` found 1 low issue, which `verifier` confirmed. The selection unit tests
+    failed when pytest itself ran as root. A small test fixture fixed that, and they now pass
+    as root. The docs now say to run the checks as your own user.
+  - **Totals:** 553 → 562 tests on Linux, none skipped; ruff and mypy clean.

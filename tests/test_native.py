@@ -775,7 +775,8 @@ _LOW_NPROC_RUNNER = textwrap.dedent("""
 
     async def main():
         b = NativeBackend()
-        r = await b.run("bash", "echo ran", 10, Limits(workspace_dir=sys.argv[1]))
+        r = await b.run("bash", "echo ran", 10,
+                        Limits(workspace_dir=sys.argv[1], pids_max=int(sys.argv[2])))
         await b.drain(10)
         print(json.dumps({"exit": r.exit_code, "out": r.stdout, "detail": r.isolation_detail}))
 
@@ -787,11 +788,19 @@ _LOW_NPROC_RUNNER = textwrap.dedent("""
                     reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
 def test_a_hard_nproc_limit_below_pids_max_still_runs(tmp_path):
     """Critic finding 1: no process can raise its hard limit, so the backstop must clamp to it,
-    never refuse the run (S4-D3: limits degrade, never block)."""
+    never refuse the run (S4-D3: limits degrade, never block). The limit is the uid's own
+    hard limit (or the system's task cap), not a small one: since 5.14 it is also checked at
+    the host's level, where every task of the uid counts, on WSL2 other distros' too (M2
+    follow-ups F1). So this fails only where the user's own shell couldn't fork either."""
+    import resource  # POSIX only; this module is collected on Windows too
+
+    hard = resource.getrlimit(resource.RLIMIT_NPROC)[1]
+    n = hard if hard != resource.RLIM_INFINITY else int(
+        Path("/proc/sys/kernel/threads-max").read_text())
     runner = tmp_path / "runner.py"
     runner.write_text(_LOW_NPROC_RUNNER)
-    p = subprocess.run(["bash", "-c", 'ulimit -u 100 && exec "$0" "$1" "$2"', sys.executable,
-                        str(runner), str(tmp_path / "ws")],
+    p = subprocess.run(["bash", "-c", f'ulimit -u {n} && exec "$0" "$1" "$2" "$3"',
+                        sys.executable, str(runner), str(tmp_path / "ws"), str(n + 1)],
                        capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
     assert p.returncode == 0, p.stderr
     assert json.loads(p.stdout.strip().splitlines()[-1]) == {

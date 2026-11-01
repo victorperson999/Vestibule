@@ -83,6 +83,7 @@ docker pull docker.io/library/node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339
 Then ask your agent to run some code. The first `run_code` call checks your setup, and every result states the isolation that actually applied (normally `isolation: native` on Linux and `isolation: container` elsewhere).
 
 - If a call is ever `Blocked:`, the message names the exact fix and says whether to retry or restart.
+- Run Vestibule as your own user. It never needs root, and on Linux and macOS a server started as root refuses to run code, because the code would run as root too.
 - `setup` unpacks about 357 MB into `~/.vestibule/rootfs`, checking every byte against the pins; a second run doesn't touch the network. If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
 - The images are `python:3.12-slim` and `node:22-slim` as of 2026-10-10, pinned by digest so they can never change silently. The flip side: they get no upstream security fixes until Vestibule re-pins them.
 - Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
@@ -117,7 +118,7 @@ Set these as environment variables in Vestibule's entry in your MCP client's con
 
 On Linux, Vestibule doesn't need Docker. Each run gets a fresh sandbox built from the kernel's own features, without root:
 
-- **Its own world:** new user, PID, mount, network, UTS, IPC and cgroup namespaces. The guest runs as the server's own uid and gid, so as you, not root (unless you start the server as root, which Vestibule never needs), with every capability dropped and `no_new_privs` set.
+- **Its own world:** new user, PID, mount, network, UTS, IPC and cgroup namespaces. The guest runs as the server's own uid and gid, so as you, never root (a server started as root refuses to run code), with every capability dropped and `no_new_privs` set.
 - **A filesystem jail:** `pivot_root` into a read-only copy of the same pinned images the container backend uses, plus `/workspace`, a size-capped `/tmp`, and a read-only `/sandbox` holding the script. None of your other files exist in there.
 - **No network:** the network namespace has only `lo`. `AF_VSOCK`, which a network namespace doesn't isolate, is refused by the syscall filter.
 - **Resource limits:** each run gets its own systemd scope with cgroup v2 limits on memory (no swap), CPU and processes, the same values as the container backend.

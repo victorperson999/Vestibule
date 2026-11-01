@@ -1,6 +1,6 @@
 # M2 step 5 — seccomp: our libseccomp binding, a Docker-derived allowlist, bounded denial reporting
 
-Status: **draft (v2), revised after the `skeptic` review (§7); pending Victor's build sign-off.**
+Status: **v2, revised after the `skeptic` review (§7); built 2026-10-27, commit `06bd899`.**
 S5-D1 (the ptrace policy, spike Q2) was **resolved by Victor on 2026-10-26: option (B), follow
 Docker — `PTRACE_POLICY = "allow"`.** Everything else is fixed: one defensible answer each, most
 forced by the spike.

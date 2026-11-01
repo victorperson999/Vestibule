@@ -159,6 +159,12 @@ def _blocked(msg: str) -> list[TextContent]:
     return [TextContent(type="text", text=f"Blocked: {msg}")]
 
 
+# A run_code result with no RunResult behind it (M2 follow-ups F3): nothing confirmed what
+# protected the run, worded like the native verdict for a sandbox that sent no report.
+_NO_REPORT = ("isolation: none (the sandbox did not report back; no isolation is claimed for "
+              "this run)")
+
+
 async def _handle_run_code(args: dict) -> list[TextContent]:
     # Validation is total (M1 finding 18): every argument is type-checked here, in
     # the clean server process, before any subprocess can exist. Out-of-type input
@@ -201,7 +207,11 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     except TimeoutError:
         log.error("warden exceeded outer deadline")
         return [TextContent(type="text",
-                            text="Execution failed: sandbox did not return in time.")]
+                            text="Execution failed: sandbox did not return in time.\n"
+                                 + _NO_REPORT)]
+    except Exception as e:  # golden rule 5 here too; call_tool's catch-all has no isolation line
+        log.exception("run_code crashed")
+        return [TextContent(type="text", text=f"Internal error: {e}\n{_NO_REPORT}")]
 
     # Honesty hook: a container-tier run that reports no isolation means the
     # runtime died mid-session — drop the cached selection so the next call

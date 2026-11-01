@@ -72,6 +72,8 @@ The definition of done for any change (`CLAUDE.md`) is a clean run of all four:
 
 `check_env.py` comes first: it fails if the venv differs from the constraints in any
 package, so a stale or upgraded dependency can't quietly change what the tests run against.
+Run them as your own user, not root: a server started as root refuses to run code, so every
+test that selects a real backend fails there.
 
 - **Docker-marked tests** (`pytest -m docker`) need a running daemon and both pinned images.
   Anywhere else they *skip*, and `pytest -rs` shows why, including the exact pull commands.
@@ -87,6 +89,9 @@ package, so a stale or upgraded dependency can't quietly change what the tests r
 - `tests/test_acceptance.py` is the M1 exam: one test per acceptance criterion, run through
   the real tool handler against real Docker. It includes a memory bomb and a fork bomb, both
   bounded by the sandbox's own caps.
+- `tests/test_native_acceptance.py` is the M2 exam: criteria 1–13 of the native contract,
+  run through the real tool handler with real native sandboxes. It runs on Linux and needs
+  what the native-marked resource-limit tests need, the user manager included.
 - `tests/test_stdio_e2e.py` starts the real `vestibule-mcp` from the venv and talks raw
   JSON-RPC to it, including shutting it down the way a client does.
 - `tests/test_docs.py` fails when a doc link or a `docs/…` path goes stale.
