@@ -31,6 +31,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import os
 import re
 import secrets
 import sys
@@ -372,6 +373,16 @@ class BackendSelector:
             raise _RestartRequired(
                 f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto', 'native', "
                 "'container' or 'naive'. " + _RESTART_HINT
+            )
+        # M2 follow-ups F-D1: both backends run the guest as the server's own uid (native's
+        # identity map, the container's --user), so a root server's guest would be host root.
+        # Windows has no uid; its container runs as a fixed uid in Docker Desktop's VM.
+        getuid, geteuid = getattr(os, "getuid", None), getattr(os, "geteuid", None)
+        if getuid is not None and geteuid is not None and 0 in (getuid(), geteuid()):
+            raise _RestartRequired(
+                "the server runs as root, so the code it runs would run as root too; "
+                "Vestibule never needs root. Start it as your own user (on a WSL distro "
+                "with only root, create one with `adduser`), then restart your agent."
             )
         on_linux = sys.platform == "linux"
         if limits.backend == "native":

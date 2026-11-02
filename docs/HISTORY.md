@@ -801,7 +801,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     named, because a second safety net hides it. The plan's list now says which test guards
     what.
 - **Step 7b — the live checks and the docs, done 2026-10-31
-  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit pending).**
+  ([plan](plans/M2/M2-step7-acceptance.md) §8; commit `f318e0c`).**
   - **Linux Claude Code, live.** Claude Code 2.1.316, installed in WSL with its native
     installer, ran a session with only Vestibule's two tools available. Every run reported
     `isolation: native`:
@@ -855,3 +855,65 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
   test runs a stock Ubuntu 24.04 VM. What carries forward is in the BUILD_LOG known issues: a
   server started as root, the process-limit test, the SDK's answer to a cancelled call, and the
   Windows shutdown race (a liveness lease); and `SECURITY.md` in M4.
+- **Follow-up: four small fixes before M3 — plan signed off 2026-11-01**
+  ([plan](plans/M2/M2-followups.md), v2 after the `skeptic` review; `verifier` confirmed all
+  seven findings).
+  - **What's in it:**
+    - the process-limit test stops depending on the user's task count;
+    - a server started as root;
+    - an `isolation:` line on the two `run_code` results that lacked one;
+    - two stale doc lines.
+  - **F-D1 — Victor chose option 1: a server started as root runs no code.** On Linux and
+    macOS, every isolating backend refuses it with a `Blocked:` message: start Vestibule as
+    your own user, then restart. Only the explicit dev-only naive backend, which claims no
+    isolation, still runs. v1 had recommended refusing native only. The review showed that
+    the container then runs as `--user 0:0` and still says `isolation: container`, against
+    M1's signed-off D3 and the README's "non-root user". So the false claim would only have
+    moved. The other option, running as root and labelling every result degraded, was
+    declined.
+- **Follow-up done 2026-11-01** ([plan](plans/M2/M2-followups.md) §7; commit `c5fe2a2`).
+  - **A server started as root runs no code.** The first `run_code` call says why and how to
+    fix it. Only the dev-only naive backend still runs.
+  - **Every `run_code` result now states its isolation.** Before, two results had no
+    `isolation:` line: the one when the server's own time limit fires, and the one when
+    something unexpected breaks. Both now say `isolation: none`, because nothing confirmed what
+    protected the run.
+  - **The test that broke the 7b gate** no longer depends on how many processes you have open.
+    It failed for the old version with 40 extra sleeping processes and passed for the new one.
+  - **Changed during the build:**
+    - The planned second root check, in native's per-run verdict, was dropped. It couldn't tell
+      real root from root inside a user namespace mapped to your own uid, and two existing tests
+      run the sandbox exactly that way. The check at selection covers every path the server
+      takes.
+    - The root check's Windows guard was rewritten, because tests that pretend to be on Linux
+      reached a function Windows doesn't have.
+  - **Review:** `critic` found 1 low issue, which `verifier` confirmed. The selection unit tests
+    failed when pytest itself ran as root. A small test fixture fixed that, and they now pass
+    as root. The docs now say to run the checks as your own user.
+  - **Totals:** 553 → 562 tests on Linux, none skipped; ruff and mypy clean.
+
+## M3 — Audit log + resource reporting (in progress)
+
+Goal: every `run_code` result carries real usage numbers, every call leaves a record in a
+local audit log, and `vestibule-mcp audit` shows what agents have been doing. Contract:
+[`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) (signed off 2026-11-01).
+
+### Decision sign-offs
+
+- **The M3 contract — signed off 2026-11-01 (v2).** `skeptic` reviewed v1 and `verifier`
+  confirmed all 13 findings; v2 takes every one (the contract's §7). Victor chose option 1 on
+  each open decision:
+  - **A1 — usage numbers only from outside the sandbox.** Native runs report cpu, peak
+    memory, peak processes and the limits they hit, read from the run's cgroup by the helper,
+    timed-out runs included. Container runs report wall time and say why the rest is missing:
+    the numbers could only come out through the guest's own output, which it can fake. This
+    amends PLAN.md's "in every result" for containers. Declined: numbers measured inside the
+    container, labelled unverified.
+  - **A2 — the record keeps the code up to 4 KiB, with its SHA-256 and size, and only the
+    sizes of the output.** Declined: the hash alone, and the full code up to 256 KiB.
+  - **A3 — a failed audit write doesn't stop the run.** The result says "audit: not recorded"
+    or "not confirmed". Declined: refusing to run without a confirmed record.
+  - **Out of M3:** workspace quotas (they need root), per-run workspace change reports,
+    automatic retention, tamper-proofing, and `%TEMP%` leftovers (moved to M4).
+
+### Build steps (5 planned)

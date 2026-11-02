@@ -47,7 +47,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 5 | seccomp: libseccomp binding, Docker-derived allowlist, bounded denial reporting; first real `native` (not reachable from the server yet) | 2026-10-27 | `06bd899` | 480 Linux (0 skipped); 369 + 91 POSIX/Linux-only skips on Windows |
 | M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | `3cf3024` | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
 | M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | `6ada758` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
-| M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | pending | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
+| M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | `f318e0c` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
+| M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -59,13 +60,20 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) was considered for M2 step 5 and **rejected** (N4): denying `symlink`/`symlinkat` breaks `python -m venv` and npm `.bin` links in the workspace. M1's measures stay. | Documented (README, contract D1); revisit in M4 `SECURITY.md` |
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. **Re-measured in M2 step 7b** (Claude Code 2.1.316, one sample each): Ctrl+C cancels the call before Claude Code exits, and the cancel path removed the container (seen up at one poll, gone at the next, 0.75 s later); closing the terminal window mid-run closed the server's stdin with the call in flight, and the container was gone within 1.43 s, more than two minutes before its self-deadline. The race wasn't hit, but nothing rules it out. | Later milestone (liveness lease) |
 | 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. | Upstream; look again with the `mcp<2` move |
-| 2026-10-31 (M2 step 7b review) | native, server started as root | Nothing refuses a server started as root (euid 0). The helper copies its own uid into the identity map, so the guest is then host uid 0, without capabilities and inside the jail, and the result still says `isolation: native` (reproduced in WSL). Golden rule 2 says no feature needs root; nothing stops a user starting the server as root anyway. The README and `ARCHITECTURE.md` say so. | Open; refusing or labeling a root server needs its own small step |
-| 2026-10-31 (M2 step 7b gate) | `tests/test_native.py` | `test_a_hard_nproc_limit_below_pids_max_still_runs` sets `ulimit -u 100`. Since Linux 5.14 that limit is checked at every user-namespace level up to the host's, where all of the uid's tasks count: on WSL2 also those in other distros sharing the kernel, which `ps` in the distro can't see. Measured during 7b: the kernel counted about 102 tasks for uid 1000 while `ps` showed 36, so every fork in the test's sandbox failed. With one WSL Claude Code session closed, the count was about 76 (`ps`: 10) and the gate passed. The test passes only while the user has well under 100 tasks. | Open; the test needs a limit set relative to the current count (its own small change) |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
 | 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
+- The 2026-10-31 root-server issue is closed in the M2 follow-ups (F-D1). A server started as
+  root had its guest run as host uid 0 under native (the identity map copied uid 0) and under
+  the container too (`--user 0:0`, against M1's D3, which the review found), while the results
+  still said `native` or `container`. Now, on Linux and macOS, selection refuses every
+  isolating backend for a root server, with a message that says to start Vestibule as your own
+  user and restart.
+- The 2026-10-31 nproc-test issue is closed in the M2 follow-ups (F1). The test now runs under
+  the uid's own hard limit (or `threads-max` when unlimited) instead of `ulimit -u 100`, and it
+  passed with 40 extra sleeping tasks that made the old version fail.
 - The 2026-10-26 S4-D1 issue (sandboxes run in the user manager's `app.slice`, outside the
   client's own cgroup, so a `MemoryMax=` on the agent doesn't count them) is documented in the
   README's "Know the limits" (M2 step 7b), as Victor accepted. Each sandbox has its own limits.
@@ -90,9 +98,65 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M2 follow-ups — a root server refused, `isolation:` on every result, the nproc test (2026-11-01)
+
+- **Commit:** `c5fe2a2`.
+- **Plan:** [`docs/plans/M2/M2-followups.md`](plans/M2/M2-followups.md) (v2 after the `skeptic`
+  review, signed 2026-11-01, F-D1 option 1). The build's two changes and the review are in its
+  §7.
+- **What:**
+  - **`select.py`:** in `_select`, after the naive branch and the unknown-backend check and
+    before anything is built, a server whose real or effective uid is 0 gets
+    `_RestartRequired` ("the server runs as root … start it as your own user …, then restart
+    your agent"). This covers `auto`, `native` and `container`. The `getattr(os, "getuid",
+    None)` guard skips Windows, which has no uid. The explicit naive backend still runs.
+  - **`server.py`:** the outer deadline's result and the result of any unexpected exception
+    in `_handle_run_code` now end with `isolation: none (the sandbox did not report back; no
+    isolation is claimed for this run)`. Before, the second one fell through to `call_tool`'s
+    `Internal error: …` with no isolation line.
+  - **`tests/test_native.py`:** the nproc test runs under the uid's own hard limit (or
+    `threads-max`), with `pids_max` one above it.
+  - **Tests:**
+    - `test_select.py`:
+      - the root refusal, 6 parametrized cases (each backend × `getuid`/`geteuid`), with
+        stand-ins that fail the test if any backend is touched, and a second call to check
+        the cached copy has no retry note;
+      - naive as root;
+      - the two no-report handler cases;
+      - an autouse fixture that pins an ordinary uid on `select.py`'s own `os`.
+    - Docs: the step-5 plan's status line, GETTING_STARTED's "Run the checks" (the M2 exam;
+      run the checks as your own user), README and `ARCHITECTURE.md` (a root server refuses to
+      run code).
+- **Found:**
+  - **A root server was a container problem too.** The `skeptic` review showed that a native-only
+    refusal would only move the false claim to the container, which ran root servers as
+    `--user 0:0` under `isolation: container`, against M1's D3. That's why F-D1 refuses every
+    backend.
+  - **The build dropped the planned `uid != 0` in native's verdict.** It can't tell uid 0 inside an
+    `unshare -r` namespace, which is how `test_a_locked_workspace_mount_keeps_its_flags`
+    gets locked mounts, from host root.
+- **Review:** `critic` found 1 low issue, and `verifier` confirmed it: the Docker-free selection
+  tests depended on the user running pytest; as root, 55 failed. Fixed with the autouse
+  fixture, after which all 115 passed as real root.
+- **Gate:** the first run failed:
+  - on Windows, 26 tests whose `sys` stand-in says `linux` reached `os.getuid`, so the guard
+    became the `getattr` form;
+  - on Linux, the two locked-mount tests failed on the verdict condition, which was dropped.
+
+  Then green: check_env, ruff and mypy on both platforms; Linux 3.14 full suite 562 passed,
+  0 skipped; 3.11 Docker-free 519; stdio 5 of 5. Windows 414 passed + 128 POSIX/Linux-only
+  skips.
+- **Where to start if it breaks:**
+  - **A `Blocked:` "runs as root" on a normal account:** `_select`'s check reads
+    `os.getuid()` and `os.geteuid()`. A server inside `unshare -r` or a rootless container is
+    uid 0 there and is refused by design.
+  - **A `run_code` result without an `isolation:` line:** the result came from a path that
+    neither returns a `RunResult` nor goes through `_NO_REPORT` (`server.py`). The two cases in
+    `test_select.py` are `test_a_run_that_never_reports_back_claims_no_isolation`.
+
 ## M2 step 7b — live checks and docs pass (2026-10-31)
 
-- **Commit:** pending.
+- **Commit:** `f318e0c`.
 - **Plan:** [`docs/plans/M2/M2-step7-acceptance.md`](plans/M2/M2-step7-acceptance.md) §3.3 and
   §4; what happened is in its §8.
 - **What:** no code.
@@ -197,7 +261,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 - **Sizes:** the acceptance file 499 lines (estimate 450–500), the benchmark 150 (estimate
   ~120, look again past 170).
 - **Outside this step, noticed:** the server's outer-deadline message (`server.py`, "sandbox
-  did not return in time") carries no `isolation:` line.
+  did not return in time") carries no `isolation:` line. Fixed in the M2 follow-ups (F3).
 
 ## M2 step 6 — selection on Linux: native reachable from the server (2026-10-27)
 

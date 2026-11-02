@@ -10,6 +10,7 @@ group, exactly as the MCP SDK delivers it, never only plain task.cancel().
 import asyncio
 import logging
 import re
+import sys
 import time
 import types
 
@@ -21,6 +22,15 @@ from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
 from vestibule.backends.select import BackendSelector
+
+
+@pytest.fixture(autouse=True)
+def _not_root(monkeypatch):
+    """The root check (M2 follow-ups F2) reads the uid: an ordinary one here, so these tests
+    don't depend on who runs pytest. Only select.py's own `os` reference is replaced, as `_on`
+    does for `sys`; the root tests set 0 on it."""
+    monkeypatch.setattr(select_mod, "os", types.SimpleNamespace(getuid=lambda: 1000,
+                                                                geteuid=lambda: 1000))
 
 
 def _limits(**kw):
@@ -74,6 +84,40 @@ async def test_unknown_backend_value_refused():
 async def test_unknown_runtime_value_refused():
     with pytest.raises(RunRefusedError, match="VESTIBULE_RUNTIME"):
         await BackendSelector().get(_limits(runtime="dokcer"))
+
+
+_posix_only = pytest.mark.skipif(sys.platform == "win32", reason="Windows has no uid to check")
+
+
+@_posix_only
+@pytest.mark.parametrize("which", ["getuid", "geteuid"])
+@pytest.mark.parametrize("backend", ["auto", "native", "container"])
+async def test_a_server_running_as_root_runs_no_code(backend, which, monkeypatch):
+    """M2 follow-ups F2 (F-D1): a root server's guest would be host root under either backend,
+    so every isolating backend is refused before one is touched, and only a restart helps."""
+    async def must_not_check(runtime):  # pragma: no cover - the assertion IS the test
+        raise AssertionError("a root server must not touch any runtime")
+
+    def must_not_build(**kw):  # pragma: no cover - the assertion IS the test
+        raise AssertionError("a root server must not build a native sandbox")
+
+    monkeypatch.setattr(select_mod, "_version_check", must_not_check)
+    monkeypatch.setattr(select_mod, "NativeBackend", must_not_build)
+    monkeypatch.setattr(select_mod.os, which, lambda: 0)
+    selector = BackendSelector()
+    for _ in range(2):  # the cached copy too: final, so no retry-cooldown note
+        with pytest.raises(select_mod._RestartRequired) as ei:
+            await selector.get(_limits(backend=backend))
+        assert "runs as root" in str(ei.value) and "re-checked" not in str(ei.value)
+
+
+@_posix_only
+async def test_a_root_server_still_gets_the_explicit_naive_backend(monkeypatch):
+    """F-D1: the dev-only naive backend claims no isolation, so a root server breaks no
+    promise there; the root check comes after it."""
+    monkeypatch.setattr(select_mod.os, "geteuid", lambda: 0)
+    sel = await BackendSelector().get(_limits(backend="naive"))
+    assert (type(sel.warden), sel.verdict) == (NaiveBackend, "none")
 
 
 async def test_auto_prefers_docker(docker_ok, monkeypatch):
@@ -407,6 +451,29 @@ async def test_server_renders_degraded_isolation(monkeypatch):
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert "isolation: container-degraded (limits not applied: cpu, memory, pids, " \
            "tmpfs-size)" in out[0].text
+
+
+@pytest.mark.parametrize("error, first_line", [
+    # The outer deadline's own branch: asyncio.timeout re-raises a TimeoutError unchanged, so
+    # this needs no 31-second wait.
+    (TimeoutError(), "Execution failed: sandbox did not return in time."),
+    (OSError("read error on status pipe"), "Internal error: read error on status pipe"),
+])
+async def test_a_run_that_never_reports_back_claims_no_isolation(error, first_line, monkeypatch):
+    """M2 follow-ups F3: golden rule 5 holds when the warden never returns a result too."""
+    from vestibule import server
+
+    class FailingWarden:
+        async def run(self, *args, **kwargs):
+            raise error
+
+    async def fake_get_warden():
+        return FailingWarden()
+
+    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    out = await server._handle_run_code({"language": "python", "code": "print(1)"})
+    assert out[0].text == (f"{first_line}\nisolation: none (the sandbox did not report back; "
+                           "no isolation is claimed for this run)")
 
 
 # ------------------------------------------------- S7-D1: lifecycle across selections
