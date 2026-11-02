@@ -48,7 +48,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 6 | Selection on Linux: native reachable from the server, N5's order, provisional re-checks, actionable messages; the seccomp bypass deleted | 2026-10-27 | `3cf3024` | 539 Linux (0 skipped); 412 + 107 POSIX/Linux-only skips on Windows |
 | M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | `6ada758` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | `f318e0c` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
-| M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | pending | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
+| M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -100,7 +100,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M2 follow-ups — a root server refused, `isolation:` on every result, the nproc test (2026-11-01)
 
-- **Commit:** pending.
+- **Commit:** `c5fe2a2`.
 - **Plan:** [`docs/plans/M2/M2-followups.md`](plans/M2/M2-followups.md) (v2 after the `skeptic`
   review, signed 2026-11-01, F-D1 option 1). The build's two changes and the review are in its
   §7.

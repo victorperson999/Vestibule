@@ -871,7 +871,7 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     M1's signed-off D3 and the README's "non-root user". So the false claim would only have
     moved. The other option, running as root and labelling every result degraded, was
     declined.
-- **Follow-up done 2026-11-01** ([plan](plans/M2/M2-followups.md) §7; commit pending).
+- **Follow-up done 2026-11-01** ([plan](plans/M2/M2-followups.md) §7; commit `c5fe2a2`).
   - **A server started as root runs no code.** The first `run_code` call says why and how to
     fix it. Only the dev-only naive backend still runs.
   - **Every `run_code` result now states its isolation.** Before, two results had no
@@ -891,3 +891,29 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     failed when pytest itself ran as root. A small test fixture fixed that, and they now pass
     as root. The docs now say to run the checks as your own user.
   - **Totals:** 553 → 562 tests on Linux, none skipped; ruff and mypy clean.
+
+## M3 — Audit log + resource reporting (in progress)
+
+Goal: every `run_code` result carries real usage numbers, every call leaves a record in a
+local audit log, and `vestibule-mcp audit` shows what agents have been doing. Contract:
+[`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) (signed off 2026-11-01).
+
+### Decision sign-offs
+
+- **The M3 contract — signed off 2026-11-01 (v2).** `skeptic` reviewed v1 and `verifier`
+  confirmed all 13 findings; v2 takes every one (the contract's §7). Victor chose option 1 on
+  each open decision:
+  - **A1 — usage numbers only from outside the sandbox.** Native runs report cpu, peak
+    memory, peak processes and the limits they hit, read from the run's cgroup by the helper,
+    timed-out runs included. Container runs report wall time and say why the rest is missing:
+    the numbers could only come out through the guest's own output, which it can fake. This
+    amends PLAN.md's "in every result" for containers. Declined: numbers measured inside the
+    container, labelled unverified.
+  - **A2 — the record keeps the code up to 4 KiB, with its SHA-256 and size, and only the
+    sizes of the output.** Declined: the hash alone, and the full code up to 256 KiB.
+  - **A3 — a failed audit write doesn't stop the run.** The result says "audit: not recorded"
+    or "not confirmed". Declined: refusing to run without a confirmed record.
+  - **Out of M3:** workspace quotas (they need root), per-run workspace change reports,
+    automatic retention, tamper-proofing, and `%TEMP%` leftovers (moved to M4).
+
+### Build steps (5 planned)
