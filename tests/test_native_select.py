@@ -9,6 +9,7 @@ real one would, as contract N5 and criterion 13 say: this WSL kernel can't show 
 """
 import asyncio
 import os
+import platform
 import secrets
 import time
 
@@ -82,6 +83,12 @@ async def test_auto_selects_native_and_a_run_says_so(selector, lim, monkeypatch)
     monkeypatch.setattr(server, "CONFIG_ERROR", None)  # not the dev shell's VESTIBULE_*
     content = await server.call_tool("run_code", {"language": "python", "code": "print(1)"})
     assert content[0].text.endswith("isolation: native"), content[0].text
+    # M3 step 1: the numbers reach the model; mem_peak and pids_peak only where the kernel has them
+    usage = next(line for line in content[0].text.splitlines() if line.startswith("usage: wall="))
+    assert ", cpu=" in usage and "(the whole sandbox, including its setup and file cache)" in usage
+    kernel = native._kernel(platform.release()) or (0, 0)
+    assert ("mem_peak=" in usage) == (kernel >= (5, 19)), usage
+    assert ("pids_peak=" in usage) == (kernel >= (6, 1)), usage
 
 
 async def test_without_a_bus_forced_native_names_why(selector, lim, monkeypatch):

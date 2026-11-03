@@ -177,6 +177,22 @@ exact command.
     must list `cpu memory pids`; systemd 252 and later delegate all three by default.
   - Restart the server after fixing it. Under `VESTIBULE_BACKEND=auto`, a full container, if
     one works, is chosen over native-degraded anyway.
+- **`usage: … not measured: …`**: the result names the numbers it lacks, and why.
+  - *not readable from outside a container*: container runs report only `wall`. Anything
+    more could only come from the guest's own output, which it can fake.
+  - *the naive backend has no sandbox to measure*: the dev-only backend.
+  - *this run had no cgroup*: the native run wasn't placed in a cgroup of its own. Its
+    `native-degraded` detail names the limits that weren't applied, and why when no scope
+    could be made (above).
+  - *the sandbox's hard controls weren't confirmed*: the result also says `isolation: none`
+    and names those controls. They are what keeps the guest away from the channel the
+    numbers travel on, so none are shown.
+  - *the sandbox didn't report its counters*: usually a timed-out run whose sandbox took more
+    than 1 s to empty after the stop. A low `VESTIBULE_CPU_PCT` (5 or less) makes that
+    likely for a fork bomb, since throttled processes exit slowly.
+  - *Linux 5.19+ needed* / *Linux 6.1+ needed*: the kernel has no `memory.peak` or
+    `pids.peak`.
+  - *not readable*: that counter's controller isn't enabled, or its file couldn't be read.
 - **Leftover native sandboxes**: `systemctl --user list-units 'vestibule-*'` lists each run's
   scope. It should be empty when no run is in flight; systemd removes a scope when its run
   ends, and `systemctl --user stop <unit>` stops one at once.

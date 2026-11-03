@@ -11,6 +11,8 @@ async def test_python_hello():
     assert result.exit_code == 0
     assert "hi" in result.stdout
     assert result.isolation == "none"
+    assert result.not_measured == ("cpu, mem_peak and pids_peak not measured: the naive backend "
+                                   "has no sandbox to measure")
 
 
 @pytest.mark.asyncio

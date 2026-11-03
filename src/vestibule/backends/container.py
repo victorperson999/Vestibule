@@ -417,6 +417,9 @@ class ContainerBackend(Warden):
             timed_out=timed_out,
             isolation=isolation,
             isolation_detail=detail,
+            # M3 A1: only the guest's own output could carry them out, and it can fake that.
+            not_measured="cpu, mem_peak and pids_peak not measured: not readable from outside "
+                         "a container",
         )
 
     @staticmethod

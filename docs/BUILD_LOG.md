@@ -49,6 +49,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | `6ada758` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | `f318e0c` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
+| M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | pending | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -62,6 +63,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. | Upstream; look again with the `mcp<2` move |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
 | 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
+| 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 
 **Closed:**
@@ -97,6 +99,80 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M3 step 1 — usage numbers in every result (2026-11-02)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M3/M3-step1-usage.md`](plans/M3/M3-step1-usage.md) (v2 after the
+  `skeptic` review, signed 2026-11-02 with U1–U7). The build's changes and both review rounds
+  are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) A1,
+  A1.1, A4.
+- **What:**
+  - **`native_helper.py`:** `_report_counters(status_fd, guest)` replaces the inline OOM
+    block. It runs after `waitpid(init)` and sends the OOM line, then `{"usage": {…}}`, each in
+    its own `try`. `_read_usage` reads, from `guest/`: `cpu.stat`'s `usage_usec`, `nr_periods`
+    and `nr_throttled` (not `throttled_usec`, which is summed across CPUs); `memory.peak`;
+    `pids.peak`; and `pids.events` `max`. Each value is read on its own, and a missing or
+    garbled file is left out.
+  - **`native.py`:**
+    - `_COUNTERS_WAIT_S = 1`: after a timeout's stop, `_collect` waits up to that long, after
+      its `finally`, for the status task (`shield`ed).
+    - The pure `_usage(lines, *, isolation, cgroup, release)`, plus `_placed` (now shared with
+      `_verdict`) and `_kernel` (now behind `_nproc_backstop` too).
+    - `_collect` passes `**_usage(...)` into `RunResult`.
+  - **`base.py`:** `RunResult.pids_peak`, `limit_hits` and `not_measured`.
+  - **`server.py`:** `wall_ms` from `time.monotonic_ns()` around `warden.run` only, rounded up.
+    `_format_result(r, wall_ms)` writes `usage: wall=…[, cpu=…ms, mem_peak=…MiB, pids_peak=…
+    (the whole sandbox, including its setup and file cache)][; <not_measured>]` and
+    `limits hit: …`. `isolation:` stays last.
+  - **`container.py`, `naive.py`:** a fixed `not_measured` note on the result of a run that
+    started.
+  - **Tests:**
+    - `test_native_verdict.py`: `_usage` tables (rounding, no usable report, the hard tier,
+      missing counters by kernel, bad values, limit hits), `_kernel`, and the helper's report
+      through a real pipe (`linux_only`).
+    - `test_native.py`: a run's usage, a timed-out run's counters, the 1 s bound with the
+      timeout's stop skipped, a stand-in helper whose hard controls fail. The fork bomb, the
+      memory bomb, the cpu limit and the no-bus backstop tests now also assert counters.
+    - `test_native_select.py`: the server's `usage:` line on Linux, kernel-gated.
+    - `test_select.py`: exact rendering, and `wall` with a fake clock that selection advances.
+    - `test_lifecycle.py`, `test_smoke.py`: the container and naive notes.
+  - **Docs:** README (the 5.19/6.1 prerequisite), ARCHITECTURE (lifecycle step 18, the
+    report), GETTING_STARTED (the not-measured reasons), and the M2 step-4 S4-D8 amendment.
+- **Found:**
+  - **Review round 1, medium:** an `isolation: none` run (hard controls not confirmed) still
+    showed kernel numbers. Those controls are what keep the guest off the status channel, and
+    `next()` takes the first `usage` line. Fixed by handing `_usage` the verdict.
+  - **Review round 2:** that hand-off had no test through `_collect`. Added, with a mutant that
+    passes `"native"`.
+  - **The mutation harness's anchors must track the code.** One anchor moved after the fix,
+    and its one-occurrence assert stopped the run before anything was written.
+- **Review:**
+  - **Round 1:** `critic` found 1 medium and 6 low issues. `verifier` confirmed 6 and refuted
+    1: the exit-125 container note, which §2.5 and the contract keep.
+  - **Round 2,** on the fixed diff: no high or medium issues. `verifier` confirmed all 3 low
+    ones. Two were fixed, and one was kept by choice: the `isinstance` guard on `ready`, as
+    defensive parsing.
+- **Mutants:** 18 of 18 red, after a green control.
+- **Gate (after round 1's fixes):**
+  - check_env, ruff and mypy clean on both platforms.
+  - Linux 3.14 full suite: 615 passed, 0 skipped.
+  - Linux 3.11 Docker-free: 572.
+  - stdio: 5 of 5.
+  - Windows: 460 passed + 135 POSIX/Linux-only skips.
+
+  Round 2's wiring test came after the gate. It passes in WSL, skips on Windows, and ruff is
+  clean.
+- **Where to start if it breaks:**
+  - **A native result with no numbers, or the wrong note:** `_usage` checks in this order: no
+    report, `error` first, verdict `none`, `_placed`, no `usage` line. Then `_read_usage`
+    (each file on its own) and the kernel table `_SINCE`.
+  - **A timed-out run reports "didn't report its counters":** the 1 s wait in `_collect`, after
+    the `finally`. A low `cpu_pct` causes it (known issues). `test_the_counters_wait_is_bounded`
+    holds the bound.
+  - **`limits hit: pids` missing on a fork bomb:** `pids.events` counts in the forking task's
+    own cgroup, `guest/`, not `guest/sandbox`. A change that gives `guest/sandbox` its own
+    pids controller moves the event (plan §2.1).
 
 ## M2 follow-ups — a root server refused, `isolation:` on every result, the nproc test (2026-11-01)
 

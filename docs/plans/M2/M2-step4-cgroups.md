@@ -324,6 +324,14 @@ pure tests and in one Linux test with the seccomp check set aside (S4-D10).
 - **M1 parity:** M1 reports the 137 but no note. This note is native-only for now; adding it to
   M1 would be a change to M1, not part of this step.
 
+> **Amendment 2026-11-02 (M3 step 1, [`M3-step1-usage.md`](../M3/M3-step1-usage.md)):** on a
+> timeout, the server now waits up to 1 s for the helper's lines (M3 A1.1), so a timed-out run
+> gets its usage counters and its blocked syscalls. The OOM note still isn't added on a timeout
+> or an overflow, because `_outcome` returns before it. "Those return before the helper's line
+> exists" was never true for the overflow, whose 5 s status wait gets the line, and is no longer
+> true for the timeout. The helper now also reads `memory.peak`, with `cpu.stat`, `pids.peak`
+> and `pids.events`, for M3's usage line.
+
 ### S4-D9 (fixed; implements N3's backstop) — `RLIMIT_NPROC` when there's no `pids` limit
 
 - When `pids` isn't applied (no cgroup, or the controller missing) **and the kernel is

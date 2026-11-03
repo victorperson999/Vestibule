@@ -1,8 +1,8 @@
 # M3 step 1 — usage numbers in every result
 
-Status: **draft (v2), revised after the `skeptic` review.** `verifier` confirmed 12 of the 13
-findings and rated one plausible (§8). **Next: Victor's sign-off, including the seven departures
-from the contract's wording in §3.1.** Code comes after that.
+Status: **signed off 2026-11-02 (v2), built 2026-11-02 (§9).** The sign-off covers all seven
+departures from the contract's wording in §3.1 (U1–U7, as written). v2 was revised after the
+`skeptic` review; `verifier` confirmed 12 of the 13 findings and rated one plausible (§8).
 
 Inputs:
 - the M3 contract, [`M3-audit-usage.md`](M3-audit-usage.md) (signed off 2026-11-01): A1, A1.1
@@ -159,6 +159,11 @@ passes them into `RunResult(**…)`. `cgroup` is `run.cgroup`, and `release` is
 | `mem_peak` missing, and the kernel parses below 5.19 | the rest | `mem_peak not measured: Linux 5.19+ needed` |
 | `pids_peak` missing, and the kernel parses below 6.1 | the rest | `pids_peak not measured: Linux 6.1+ needed` |
 | a field missing otherwise (a controller not enabled, a read error, a release that doesn't parse) | the rest | `<field> not measured: not readable` |
+
+> **As built (§9):** `_usage` also takes the verdict's `isolation`. One more row sits after the
+> `error` row: a `ready` line whose verdict is `none` (hard controls not confirmed) gets no
+> numbers and `cpu, mem_peak and pids_peak not measured: the sandbox's hard controls weren't
+> confirmed`.
 
 - **One placement rule (finding 9).** The verdict's test, "init reported exactly the cgroup the
   server made" (`native.py:485`), moves into a small `_placed(ready, cgroup)`. Both `_verdict`
@@ -511,3 +516,41 @@ finding is taken.
 - `guest/sandbox` has no `pids.*` or `memory.peak` files.
 - init is reaped only after every process in its namespace is gone.
 - The timeout path's worst case fits inside timeout + 30.
+
+---
+
+## 9. As built (2026-11-02)
+
+Built as §2–§6 say, except for the changes below. All of them came from the review.
+
+**Review.** `critic` ran twice, each round checked by `verifier`:
+- **Round 1:** 1 medium and 6 low findings; 6 confirmed and 1 refuted.
+- **Round 2,** on the fixed diff: no high or medium findings, and all six fixes confirmed
+  closed. It found 3 low ones, all confirmed.
+
+| # | Sev. | Finding | Done |
+|---|---|---|---|
+| 1.1 | med | `_usage` showed kernel numbers on an `isolation: none` run, one whose hard controls weren't confirmed. Those controls (not dumpable, `_close_from(3)`) keep the guest off the status channel, and `next()` takes the first `usage` line. So a guest that got through could put its own line ahead of the helper's | `_usage` takes the verdict's `isolation`, and `none` gets the hard-controls note (§2.3's added row). That restores §2.3's "shown exactly when the verdict counts the limits" and A1's table |
+| 1.2 | low | The bound test read its bound from `native._COUNTERS_WAIT_S`, so a 5 s wait passed | `1 + 2 + 1` written out; a `_COUNTERS_WAIT_S = 5` mutant |
+| 1.3 | low | The `wall` test's clock moved only when read, so counting selection went unseen | The fake selection advances the clock by 10 s; a mutant that starts the clock before selection |
+| 1.4 | low | §5.2's helper tests sat under `test_native.py`'s module-wide `native_required` and skipped without a native setup | Moved to `tests/test_native_verdict.py` under `linux_only` |
+| 1.5 | low | GETTING_STARTED's "this run had no cgroup" bullet was wrong in two edge cases | Reworded, plus a bullet for the hard-controls note |
+| 1.6 | — | (refuted) The exit-125 container result gets the container note | Unchanged: §2.5 says "exit 125 included", and the contract keeps 125 `ran`. §3.2's "nothing ran" rule is native's |
+| 1.7 | low | `_format_result` checked again what `_usage` guarantees | Plain `in` checks |
+| 2.1 | low | No test covered `_collect` handing the verdict to `_usage` | `test_a_run_whose_hard_controls_fail_shows_no_numbers`: a stand-in helper sends a `ready` line that confirms nothing, plus a `usage` line; a mutant that passes `"native"` |
+| 2.2 | low | This plan didn't say any of the above | This section, and §2.3's added row |
+| 2.3 | nit | The `isinstance(first["ready"], dict)` guard in `_usage` is unreachable from `_collect` now | **Kept:** it parses status-pipe data defensively, line for line as `_verdict` does, so `_usage` doesn't rely on `_verdict`'s internals |
+
+**Mutants.** All 18 turned a test red, and an unmutated run was green first: §5.5's 14, plus
+hard-tier-ignored, isolation-not-passed, wait-constant-5 and wall-counts-selection. The
+harness lives in the session scratchpad only.
+
+**Gate:**
+- Windows: 460 passed, 135 POSIX/Linux-only skips.
+- Linux, Python 3.14: 615 passed, 0 skipped.
+- Linux, Python 3.11 Docker-free: 572.
+- stdio: 5 of 5.
+- ruff and mypy clean on both platforms.
+
+Round 2's wiring test was added after that gate. It passes on Linux, it skips on Windows like
+the rest of `test_native.py`, and ruff is clean.

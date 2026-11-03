@@ -1,7 +1,7 @@
 """The native backend's pure parts (M2 step 3, docs/plans/M2/M2-step3-warden-core.md §4.1, and
 step 4, M2-step4-cgroups.md §4.1): the per-run verdict, the mount-table rule, exit codes, the
-OOM note, the backstop's kernel check and the guest's environment. Offline, on every platform;
-the sandbox itself is tested in test_native.py (Linux).
+OOM note, the backstop's kernel check and the guest's environment, and M3 step 1's usage numbers.
+Offline, on every platform; the sandbox itself is tested in test_native.py (Linux).
 """
 import asyncio
 import os
@@ -268,6 +268,122 @@ def test_the_nproc_backstop_needs_linux_5_14(release, backstop):
     assert native._nproc_backstop(release) is backstop
 
 
+# --- the usage numbers (M3 step 1, docs/plans/M3/M3-step1-usage.md §2.3) --------------------
+
+WSL = "6.6.87.2-microsoft-standard-WSL2"
+MIB = 1 << 20
+# The helper's raw counters for a placed run, as `_read_usage` sends them.
+FULL = {"cpu_usec": 1, "nr_periods": 20, "nr_throttled": 0, "mem_peak": 1, "pids_peak": 2,
+        "tasks_refused": 0}
+NOT_REPORTED = "cpu, mem_peak and pids_peak not measured: the sandbox didn't report its counters"
+NO_CGROUP = "cpu, mem_peak and pids_peak not measured: this run had no cgroup"
+
+
+def _usage(lines, cgroup=SANDBOX, release=WSL):
+    """`_usage` with the verdict `_collect` would pass it for these lines."""
+    isolation, _ = _verdict(lines, cgroup=cgroup, applied=ALL)
+    return native._usage(lines, isolation=isolation, cgroup=cgroup, release=release)
+
+
+def _counters(**changes):
+    """A run's status lines with the helper's usage line; a None value drops that counter."""
+    raw = {k: v for k, v in {**FULL, **changes}.items() if v is not None}
+    return [_ready(), EXIT_0, {"oom": 0, "oom_kill": 0}, {"usage": raw}]
+
+
+def test_a_full_usage_line_becomes_numbers():
+    assert _usage(_counters()) == {"cpu_ms": 1, "mem_peak_mb": 1, "pids_peak": 2,
+                                   "limit_hits": {}, "not_measured": None}
+
+
+@pytest.mark.parametrize("changes, field, value", [
+    ({"cpu_usec": 1}, "cpu_ms", 1),  # 1 µs is never 0 ms
+    ({"cpu_usec": 1000}, "cpu_ms", 1),
+    ({"cpu_usec": 1001}, "cpu_ms", 2),
+    ({"cpu_usec": 0}, "cpu_ms", 0),
+    ({"mem_peak": 1}, "mem_peak_mb", 1),  # 1 byte is never 0 MiB
+    ({"mem_peak": 256 * MIB}, "mem_peak_mb", 256),  # a memory bomb's peak, exactly (§8)
+    ({"mem_peak": 256 * MIB + 1}, "mem_peak_mb", 257),
+    ({"pids_peak": 128}, "pids_peak", 128),
+])
+def test_every_number_is_rounded_up(changes, field, value):
+    assert _usage(_counters(**changes))[field] == value
+
+
+@pytest.mark.parametrize("lines, cgroup, usage", [
+    # nothing was executed: no numbers and no note (§3.2)
+    ([{"error": "mounts", "message": "x"}, {"usage": FULL}], SANDBOX, {}),
+    ([{"error": "helper", "message": "x"}], SANDBOX, {}),
+    # no ready or error line: the sandbox sent no report
+    ([], SANDBOX, {"not_measured": NOT_REPORTED}),
+    ([EXIT_0, {"usage": FULL}], SANDBOX, {"not_measured": NOT_REPORTED}),
+    # the hard tier failed: the guest may have reached the status channel, even ahead of the
+    # helper's line, so no number counts (critic finding 1)
+    ([_ready(checks={**{n: True for n in native._HARD_CHECKS}, "not_dumpable": False}), EXIT_0,
+      {"usage": {**FULL, "cpu_usec": 7}}, {"usage": FULL}], SANDBOX,
+     {"not_measured": "cpu, mem_peak and pids_peak not measured: the sandbox's hard controls "
+                      "weren't confirmed"}),
+    # init isn't in the server's cgroup: a usage line doesn't count (finding 9)
+    (_counters(), None, {"not_measured": NO_CGROUP}),
+    ([_ready(cgroup="0::/user.slice/elsewhere\n"), EXIT_0, {"usage": FULL}], SANDBOX,
+     {"not_measured": NO_CGROUP}),
+    # placed, but the helper's line never came (a timeout past the wait, a helper that died)
+    ([_ready(), EXIT_0], SANDBOX, {"not_measured": NOT_REPORTED}),
+    ([_ready(), EXIT_0, {"usage": [1, 2]}], SANDBOX, {"not_measured": NOT_REPORTED}),
+])
+def test_no_usable_report_shows_no_numbers(lines, cgroup, usage):
+    assert _usage(lines, cgroup=cgroup) == usage
+
+
+@pytest.mark.parametrize("changes, release, note", [
+    ({"mem_peak": None}, "5.15.0", "mem_peak not measured: Linux 5.19+ needed"),
+    ({"mem_peak": None}, "5.19.0", "mem_peak not measured: not readable"),
+    ({"mem_peak": None}, WSL, "mem_peak not measured: not readable"),
+    ({"mem_peak": None}, "not a release", "mem_peak not measured: not readable"),
+    ({"pids_peak": None}, "6.0.9", "pids_peak not measured: Linux 6.1+ needed"),
+    ({"pids_peak": None}, "6.1.0", "pids_peak not measured: not readable"),
+    ({"mem_peak": None, "pids_peak": None}, "5.15.0",
+     "mem_peak not measured: Linux 5.19+ needed; pids_peak not measured: Linux 6.1+ needed"),
+    ({"cpu_usec": None}, "5.15.0", "cpu not measured: not readable"),
+])
+def test_a_missing_counter_is_named_with_its_reason(changes, release, note):
+    usage = _usage(_counters(**changes), release=release)
+    assert usage["not_measured"] == note
+    shown = {"cpu_ms": 1, "mem_peak_mb": 1, "pids_peak": 2}
+    for field, key in (("cpu_ms", "cpu_usec"), ("mem_peak_mb", "mem_peak"),
+                       ("pids_peak", "pids_peak")):
+        assert usage[field] == (None if key in changes else shown[field])
+
+
+@pytest.mark.parametrize("bad", [True, -1, "5", 1.5])
+def test_a_bad_value_counts_as_missing(bad):
+    usage = _usage(_counters(mem_peak=bad))
+    assert usage["mem_peak_mb"] is None
+    assert usage["not_measured"] == "mem_peak not measured: not readable"
+
+
+@pytest.mark.parametrize("changes, hits", [
+    ({"tasks_refused": 37}, {"tasks_refused": 37}),
+    ({"nr_throttled": 9, "nr_periods": 20}, {"cpu_throttled_periods": 9, "cpu_periods": 20}),
+    ({"tasks_refused": 0, "nr_throttled": 0, "nr_periods": 20}, {}),
+    ({"nr_throttled": 9, "nr_periods": None}, {}),  # no denominator, no cpu entry
+    ({"tasks_refused": True}, {}),
+])
+def test_limit_hits_hold_only_nonzero_counts(changes, hits):
+    assert _usage(_counters(**changes))["limit_hits"] == hits
+
+
+@pytest.mark.parametrize("release, kernel", [
+    (WSL, (6, 6)),
+    ("5.19.0", (5, 19)),
+    ("6.0.9", (6, 0)),
+    ("not a release", None),
+    ("6", None),
+])
+def test_the_kernel_release_parses(release, kernel):
+    assert native._kernel(release) == kernel
+
+
 # --- finding the user bus (S4-D4) ---------------------------------------------------------
 
 linux_only = pytest.mark.skipif(sys.platform != "linux", reason="the user bus is Linux-only")
@@ -309,6 +425,63 @@ def test_the_runtime_dir_is_derived_only_for_our_own_socket(monkeypatch, mode, o
     monkeypatch.setattr(os, "lstat", lstat)
     expected = {"XDG_RUNTIME_DIR": runtime, "PATH": "/usr/bin"} if found else None
     assert native_cgroup.bus_env() == expected
+
+
+# --- the helper's counter report (M3 step 1 §5.2): Linux, no sandbox needed ----------------
+
+# guest/'s counter files as this kernel writes them, with values the test can recognize.
+COUNTER_FILES = {
+    "memory.events": "low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\noom_group_kill 0\n",
+    "cpu.stat": "usage_usec 31000\nuser_usec 20000\nsystem_usec 11000\nnr_periods 20\n"
+                "nr_throttled 9\nthrottled_usec 8719000\nnr_bursts 0\nburst_usec 0\n",
+    "memory.peak": "11534336\n",
+    "pids.peak": "2\n",
+    "pids.events": "max 37\n",
+}
+ALL_COUNTERS = {"cpu_usec": 31000, "nr_periods": 20, "nr_throttled": 9, "mem_peak": 11534336,
+                "pids_peak": 2, "tasks_refused": 37}
+
+
+def _report(guest, files):
+    """The helper's lines for a guest/ holding `files`, read back from a real pipe."""
+    from vestibule.backends import native_helper  # Linux-only: imported only where it runs
+
+    for name, text in files.items():
+        (guest / name).write_text(text)
+    r, w = os.pipe()
+    try:
+        native_helper._report_counters(w, str(guest))
+    finally:
+        os.close(w)
+    with os.fdopen(r, "rb") as f:
+        return native._parse_status(f.read())
+
+
+@linux_only
+def test_the_helper_reports_every_counter(tmp_path):
+    assert _report(tmp_path, COUNTER_FILES) == [{"oom": 1, "oom_kill": 1},
+                                                {"usage": ALL_COUNTERS}]
+
+
+@linux_only
+def test_without_a_memory_controller_the_usage_line_still_comes(tmp_path):
+    """Finding 5: no memory.events must never cost the usage line."""
+    files = {k: v for k, v in COUNTER_FILES.items() if not k.startswith("memory.")}
+    assert _report(tmp_path, files) == [
+        {"usage": {k: v for k, v in ALL_COUNTERS.items() if k != "mem_peak"}}]
+
+
+@linux_only
+def test_a_garbled_counter_file_costs_only_its_own_fields(tmp_path):
+    files = {**COUNTER_FILES, "cpu.stat": "usage_usec many\nnr_periods\n"}
+    assert _report(tmp_path, files) == [
+        {"oom": 1, "oom_kill": 1},
+        {"usage": {"mem_peak": 11534336, "pids_peak": 2, "tasks_refused": 37}}]
+
+
+@linux_only
+def test_the_usage_line_is_sent_even_when_empty(tmp_path):
+    assert _report(tmp_path, {}) == [{"usage": {}}]
 
 
 def test_the_guest_environment_is_the_images_plus_the_profile(monkeypatch):

@@ -24,6 +24,11 @@ class RunResult:
     timed_out: bool
     cpu_ms: int | None = None
     mem_peak_mb: int | None = None
+    pids_peak: int | None = None
+    # nonzero only: "tasks_refused"; "cpu_throttled_periods" with "cpu_periods"
+    limit_hits: dict[str, int] = field(default_factory=dict)
+    # what this result's usage line lacks, and why; None when nothing is missing
+    not_measured: str | None = None
     denied_syscalls: list[str] = field(default_factory=list)
     # "none" | "container" | "container-degraded" | "native" | "native-degraded"
     isolation: str = "none"

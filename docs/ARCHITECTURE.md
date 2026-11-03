@@ -124,7 +124,7 @@ server (async, clean)      helper (one per run)           init (PID 1)          
     timeout: SIGTERM ────▶ 17. SIGKILL init via
                                its pidfd: the PID ns dies
                            18. after init: OOM counts,
-                               denied list; exit
+                               usage, denied list; exit
 19. verdict from the report;
     systemd drops the scope
 ```
@@ -216,7 +216,7 @@ Ordering: the filter is compiled in the helper before the fork, so every ctypes 
 - **The guest** is forked by init: fds above 2 closed, default signals, its own `PATH` search, then `execve` of the interpreter. init stays as a minimal reaper, like M1's `--init`, and reports the guest's exit.
 - **Output** flows over pipes to the server, capped as in M1; a run printing more than twice the cap is stopped.
 - **The stop** (timeout or output overflow): the server sends `SIGTERM` to the helper, which `SIGKILL`s init through a pidfd, so a reaped PID can't be reused under it. When PID 1 dies, the kernel kills everything in its PID namespace, stopped processes included, so no guest can block the stop. The helper exits only after init has, so its exit means the sandbox is empty; `SIGKILL` to the helper 5 s later is the fallback. Two deadlines outside the server back this up: the helper's own self-deadline and systemd's `RuntimeMaxSec` on the scope.
-- **The report.** Before it exits, the helper sends the guest cgroup's OOM counters (so a memory bomb's result says the kernel killed a process at its limit) and the denied syscalls' names. Peak usage (`memory.peak`, `cpu.stat`) waits for M3. Once the helper has exited, the scope is empty and systemd removes it.
+- **The report.** Before it exits, the helper sends the guest cgroup's OOM counters (so a memory bomb's result says the kernel killed a process at its limit) and the denied syscalls' names. It also sends the usage counters (M3): `cpu.stat`, `memory.peak`, `pids.peak` and `pids.events`, read from the guest cgroup after init has exited. So they are final, and they come from outside the sandbox, where the guest can't fake them. A timed-out run waits up to 1 s more for them. They count the whole sandbox, init's own setup and the page cache included, so the same code can read differently twice (`print(1)` in python: 14 MiB after the page cache is cleared, 6 MiB right after another run). A result without them names what it didn't measure, and why. Once the helper has exited, the scope is empty and systemd removes it.
 
 ---
 

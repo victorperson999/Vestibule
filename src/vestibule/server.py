@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from io import TextIOWrapper
 from typing import Any, cast
 
@@ -197,7 +198,11 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
         # task, which can outlive this handler when the SDK cancels it through its
         # anyio scope — an untracked run that shutdown cleanup can't see (S7-D1).
         async with asyncio.timeout(timeout_s + 30):
+            # M3 A1: wall time as the agent waits for it (the slot, a preflight, placement),
+            # never the selection. Integer ns, rounded up to ms.
+            started = time.monotonic_ns()
             result = await warden.run(language, code, timeout_s, LIMITS)
+            wall_ms = -(-(time.monotonic_ns() - started) // 1_000_000)
     except RunRefusedError as e:
         # Refused before anything executed (concurrency limit S4-D1, missing image
         # or runtime, hard-tier probe failure) — a legible Blocked message the
@@ -219,7 +224,7 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     SELECTOR.note_result(warden, result)
     log.info("run_code done exit=%s timed_out=%s isolation=%s",
              result.exit_code, result.timed_out, result.isolation)
-    return [TextContent(type="text", text=_format_result(result))]
+    return [TextContent(type="text", text=_format_result(result, wall_ms))]
 
 
 async def _handle_read_workspace(args: dict) -> list[TextContent]:
@@ -243,7 +248,12 @@ async def _handle_read_workspace(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text=text)]
 
 
-def _format_result(r: RunResult) -> str:
+# After the kernel's numbers (M3 U5): they count init and the page cache too, so the same code can
+# read differently twice. The model never reads the README.
+_WHOLE_SANDBOX = " (the whole sandbox, including its setup and file cache)"
+
+
+def _format_result(r: RunResult, wall_ms: int) -> str:
     parts: list[str] = []
     if r.timed_out:
         parts.append("[timed out and was terminated]")
@@ -252,13 +262,28 @@ def _format_result(r: RunResult) -> str:
         parts.append(f"stdout:\n{_truncate(r.stdout)}")
     if r.stderr:
         parts.append(f"stderr:\n{_truncate(r.stderr)}")
-    usage = []
+    usage = f"usage: wall={wall_ms}ms"
+    counted = []  # the kernel's numbers (M3 A1, U1, U5)
     if r.cpu_ms is not None:
-        usage.append(f"cpu={r.cpu_ms}ms")
+        counted.append(f"cpu={r.cpu_ms}ms")
     if r.mem_peak_mb is not None:
-        usage.append(f"mem_peak={r.mem_peak_mb}MB")
-    if usage:
-        parts.append("usage: " + ", ".join(usage))
+        counted.append(f"mem_peak={r.mem_peak_mb}MiB")
+    if r.pids_peak is not None:
+        counted.append(f"pids_peak={r.pids_peak}")
+    if counted:
+        usage += ", " + ", ".join(counted) + _WHOLE_SANDBOX
+    if r.not_measured:
+        usage += f"; {r.not_measured}"
+    parts.append(usage)
+    hits = r.limit_hits
+    shown = []  # U4 and U3; native's cpu.max period is 100 ms (native_cgroup)
+    if "tasks_refused" in hits:
+        shown.append(f"pids ({hits['tasks_refused']} new processes or threads refused)")
+    if "cpu_throttled_periods" in hits:
+        shown.append(f"cpu (throttled in {hits['cpu_throttled_periods']} of "
+                     f"{hits['cpu_periods']} periods of 100 ms)")
+    if shown:
+        parts.append("limits hit: " + ", ".join(shown))
     if r.denied_syscalls:
         parts.append("blocked syscalls: " + ", ".join(r.denied_syscalls))
     isolation = f"isolation: {r.isolation}"

@@ -13,16 +13,17 @@ Process shape (S3-D7):
   (S4-D3), imports native_seccomp and compiles the filter (S5-D3), unshares user + PID
   namespaces, writes the identity maps, forks init and moves it into the guest's cgroup, relays
   init's status lines, answers the guest's seccomp notifications with EPERM (S5-D5), SIGKILLs
-  init on SIGTERM, reports the guest cgroup's OOM counters and the denied syscalls, exits after
-  init. Its exit therefore means the sandbox is empty.
+  init on SIGTERM, reports the guest cgroup's OOM and usage counters (M3 A1) and the denied
+  syscalls, exits after init. Its exit therefore means the sandbox is empty.
 - init (PID 1): its own session, the other namespaces, the jail, every privilege dropped, the
   seccomp filter loaded (its listener fd handed to the helper), its checks (S3-D8), then
   `ready`, the guest, a reap loop, and the guest's exit.
 - guest: no extra fds, default signals, our own PATH search, execve; it inherits init's filter.
 
 Input: the JSON run config on stdin, then the release on cfg["sync_fd"]. Output: JSON lines on
-cfg["status_fd"] (`ready`, `error`, `exit`, the OOM counters, the denied syscalls). Nothing of
-the helper's own reaches the guest's pipes: its stdout is /dev/null and its stderr is the log.
+cfg["status_fd"] (`ready`, `error`, `exit`, the OOM counters, `usage`, the denied syscalls).
+Nothing of the helper's own reaches the guest's pipes: its stdout is /dev/null and its stderr is
+the log.
 """
 from __future__ import annotations
 
@@ -136,16 +137,46 @@ def _helper(cfg: dict[str, Any]) -> None:
     denied, notify_stopped = _supervise(cfg["status_fd"], ours, pidfd, stop,
                                         cfg["self_deadline_s"])
     os.waitpid(pid, 0)
-    if cfg["cgroup"]:  # S4-D8: before our exit, after which systemd removes the scope
-        try:
-            events = dict(line.split() for line in
-                          _read(os.path.dirname(cfg["cgroup"]) + "/memory.events").splitlines())
-            _send(cfg["status_fd"], {"oom": int(events["oom"]),
-                                     "oom_kill": int(events["oom_kill"])})
-        except (OSError, KeyError, ValueError):  # no memory controller, or the server is gone
-            pass
+    if cfg["cgroup"]:  # S4-D8, M3 A1: before our exit, after which systemd removes the scope
+        _report_counters(cfg["status_fd"], os.path.dirname(cfg["cgroup"]))
     _send(cfg["status_fd"], {"denied": denied, "notify_stopped": notify_stopped})  # S5-D5
     os._exit(0)
+
+
+def _report_counters(status_fd: int, guest: str) -> None:
+    """guest/'s counters, final now: init is waitable only once its namespace is empty. The OOM
+    line (S4-D8), then the usage line (M3 A1), each in its own try so one never costs the other."""
+    try:
+        events = dict(line.split() for line in _read(f"{guest}/memory.events").splitlines())
+        _send(status_fd, {"oom": int(events["oom"]), "oom_kill": int(events["oom_kill"])})
+    except (OSError, KeyError, ValueError):  # no memory controller, or the server is gone
+        pass
+    try:
+        _send(status_fd, {"usage": _read_usage(guest)})  # sent even when empty
+    except OSError:  # the server is gone
+        pass
+
+
+# The usage line's keys: (file in guest/, its key, or None for a single number). pids.events
+# counts in the forking task's own cgroup, which is guest/: guest/sandbox has no pids
+# controller. cpu.stat's throttled_usec is summed across CPUs, so it isn't read (M3 step 1 U3).
+_USAGE = {"cpu_usec": ("cpu.stat", "usage_usec"), "nr_periods": ("cpu.stat", "nr_periods"),
+          "nr_throttled": ("cpu.stat", "nr_throttled"), "mem_peak": ("memory.peak", None),
+          "pids_peak": ("pids.peak", None), "tasks_refused": ("pids.events", "max")}
+
+
+def _read_usage(guest: str) -> dict[str, int]:
+    """Raw values, each read on its own; a file that's missing or doesn't parse is left out. The
+    server converts and judges them."""
+    usage: dict[str, int] = {}
+    for name, (file, key) in _USAGE.items():
+        try:
+            text = _read(f"{guest}/{file}")
+            usage[name] = int(text) if key is None else int(
+                dict(line.split() for line in text.splitlines())[key])
+        except (OSError, KeyError, ValueError):
+            pass
+    return usage
 
 
 def _build_seccomp(cfg: dict[str, Any]) -> int:

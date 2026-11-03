@@ -520,6 +520,31 @@ async def test_a_helper_that_reports_nothing_claims_nothing(backend, limits, tmp
     assert "spoofed" not in out and "to the log" in err
 
 
+_UNCONFIRMED_HELPER = textwrap.dedent("""
+    import json, os
+    data = b""
+    while chunk := os.read(0, 1 << 20):
+        data += chunk
+    cfg = json.loads(data)
+    os.write(cfg["status_fd"], b'{"ready": {"checks": {}}}\\n{"usage": {"cpu_usec": 5000}}\\n')
+""")
+
+
+async def test_a_run_whose_hard_controls_fail_shows_no_numbers(backend, limits, tmp_path,
+                                                               monkeypatch):
+    """M3 step 1, the critic's re-review: `_collect` hands `_usage` the verdict, so a `ready`
+    line that confirms no hard control gets no kernel numbers, even with a usage line on the
+    channel. (Without the hand-off this run would read "this run had no cgroup".)"""
+    fake = tmp_path / "fake_helper.py"
+    fake.write_text(_UNCONFIRMED_HELPER)
+    monkeypatch.setattr(native, "_HELPER", fake)
+    r = await backend.run("python", "print(1)", 10, limits)
+    assert r.isolation == "none" and r.isolation_detail.startswith("hard controls not confirmed")
+    assert (r.cpu_ms, r.mem_peak_mb, r.pids_peak, r.limit_hits) == (None, None, None, {})
+    assert r.not_measured == ("cpu, mem_peak and pids_peak not measured: the sandbox's hard "
+                              "controls weren't confirmed")
+
+
 async def test_the_helpers_self_deadline_stops_a_run_the_server_forgot(backend, limits,
                                                                        monkeypatch, caplog):
     """N8's last backstop: the server stops nothing here before 12 s, and the helper's own
@@ -612,6 +637,22 @@ async def test_busy_refusal_after_a_bounded_wait(limits, monkeypatch):
 
 OOM_AT_LIMIT = "\n[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]"
 ALL_LIMITS = "limits not applied: cpu, memory, pids"
+# M3 A4: memory.peak came in Linux 5.19 and pids.peak in 6.1 (native supports 5.9 and later).
+_KERNEL = native._kernel(platform.release()) or (0, 0)  # (0, 0): off Linux, where all skip
+HAS_MEM_PEAK, HAS_PIDS_PEAK = _KERNEL >= (5, 19), _KERNEL >= (6, 1)
+
+
+def _kernel_note():
+    """What a placed run's note says on this kernel: None on 6.1 and later (finding 7)."""
+    missing = []
+    if not HAS_MEM_PEAK:
+        missing.append("mem_peak not measured: Linux 5.19+ needed")
+    if not HAS_PIDS_PEAK:
+        missing.append("pids_peak not measured: Linux 6.1+ needed")
+    return "; ".join(missing) or None
+
+
+KERNEL_NOTE = _kernel_note()
 
 
 def _fork_bomb(cap):
@@ -715,8 +756,10 @@ async def test_a_memory_bomb_is_killed_at_the_limit(backend, limits):
              "print('child', p.returncode)\n")
     r = await backend.run("python", child, 30, limits)
     assert (r.exit_code, r.stdout, r.stderr) == (0, "child -9\n", OOM_AT_LIMIT)
+    assert r.mem_peak_mb == (limits.mem_mb if HAS_MEM_PEAK else None)  # memory.peak stops there
     r = await backend.run("python", "b = b'x' * (1 << 30)", 30, limits)
     assert (r.exit_code, r.stderr) == (137, OOM_AT_LIMIT)
+    assert r.mem_peak_mb == (limits.mem_mb if HAS_MEM_PEAK else None)
     r = await backend.run("python", "print('fine')", 10, limits)
     assert (r.exit_code, r.stdout, r.stderr) == (0, "fine\n", "")
 
@@ -724,9 +767,13 @@ async def test_a_memory_bomb_is_killed_at_the_limit(backend, limits):
 @cgroups_required
 async def test_a_fork_bomb_stops_at_pids_max(backend, limits):
     t0 = time.monotonic()
-    f = _facts(await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits))
+    r = await backend.run("python", _fork_bomb(4 * limits.pids_max), 30, limits)
+    f = _facts(r)
     assert f == {"forks": limits.pids_max - 2, "error": "EAGAIN"}  # init and the guest count
     assert time.monotonic() - t0 < 10
+    # pids.events counts in guest/, the forking task's own cgroup (M3 step 1 §2.1)
+    assert r.limit_hits["tasks_refused"] >= 1
+    assert r.pids_peak == (limits.pids_max if HAS_PIDS_PEAK else None)
     assert (await backend.run("bash", "echo fine", 10, limits)).stdout == "fine\n"
 
 
@@ -736,6 +783,7 @@ async def test_the_cpu_limit_holds(backend, limits):
             "print(time.process_time() / (time.time() - t0))\n")
     r = await backend.run("python", code, 10, limits)
     assert r.exit_code == 0 and float(r.stdout) <= 0.85  # cpu_pct 75; no lower bound
+    assert 0 < r.limit_hits["cpu_throttled_periods"] <= r.limit_hits["cpu_periods"]  # U3
 
 
 @cgroups_required
@@ -752,6 +800,54 @@ async def test_a_full_run_claims_native(backend, limits):
     assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (0, "1\n", "native", None)
 
 
+# --- usage from outside the sandbox (M3 step 1, docs/plans/M3/M3-step1-usage.md §5.3) -------
+# The helper's report itself needs no sandbox: test_native_verdict.py (§5.2).
+
+@cgroups_required
+async def test_a_run_reports_its_usage_from_outside(backend, limits):
+    r = await backend.run("python", "print(1)", 10, limits)
+    assert (r.exit_code, r.isolation) == (0, "native")
+    assert r.cpu_ms > 0
+    assert (r.mem_peak_mb > 0) if HAS_MEM_PEAK else r.mem_peak_mb is None
+    assert (r.pids_peak >= 2) if HAS_PIDS_PEAK else r.pids_peak is None  # init and the guest
+    assert "tasks_refused" not in r.limit_hits  # not limit_hits == {}: a cold run can be throttled
+    assert r.not_measured == KERNEL_NOTE
+
+
+@cgroups_required
+async def test_a_timed_out_run_still_reports_its_counters(backend, limits):
+    """A1.1: after the stop, the server waits up to 1 s for the helper's last lines."""
+    r = await backend.run("bash", "while :; do :; done", 1, limits)
+    assert r.timed_out and r.cpu_ms > 0
+    assert r.limit_hits["cpu_throttled_periods"] > 0  # a busy loop at cpu_pct 75
+    assert r.not_measured == KERNEL_NOTE
+
+
+@cgroups_required
+async def test_the_counters_wait_is_bounded(backend, limits, monkeypatch):
+    """Finding 3, contract criterion 4: a helper that doesn't report after the timeout's stop
+    costs at most _COUNTERS_WAIT_S more, then the honest note. The timeout's stop is skipped, so
+    the busy guest keeps running; the finisher's stop is the real one."""
+    real_stop, calls = native._stop, []
+
+    def stop(run):
+        calls.append(run)
+        if len(calls) > 1:
+            real_stop(run)
+
+    monkeypatch.setattr(native, "_stop", stop)
+    token = _token()
+    t0 = time.monotonic()
+    r = await backend.run("bash", f"exec -a {token} bash -c 'while :; do :; done'", 1, limits)
+    elapsed = time.monotonic() - t0
+    assert r.timed_out and r.not_measured == ("cpu, mem_peak and pids_peak not measured: the "
+                                              "sandbox didn't report its counters")
+    # timeout 1 + the 2 s grace + the contract's 1 s (A1.1), fixed here, not read from the code
+    assert 1 + 2 + 1 - 0.2 <= elapsed <= 1 + 2 + 1 + 1, elapsed
+    assert await backend.drain(10)
+    assert len(calls) == 2 and holders(token) == []
+
+
 @pytest.mark.skipif(not native._nproc_backstop(platform.release()),
                     reason="before Linux 5.14 RLIMIT_NPROC counts per uid, so no backstop (S4-D9)")
 async def test_without_a_bus_the_run_degrades_and_the_backstop_holds(backend, limits, caplog,
@@ -763,6 +859,9 @@ async def test_without_a_bus_the_run_degrades_and_the_backstop_holds(backend, li
     f = _facts(r)
     assert f["error"] == "EAGAIN" and f["forks"] < limits.pids_max  # RLIMIT_NPROC, not the cap
     assert any("no user bus" in m for m in caplog.messages), caplog.messages
+    # No cgroup, no numbers: the backstop's refusals go uncounted (M3 step 1 §4)
+    assert (r.cpu_ms, r.mem_peak_mb, r.pids_peak, r.limit_hits) == (None, None, None, {})
+    assert r.not_measured == "cpu, mem_peak and pids_peak not measured: this run had no cgroup"
 
 
 _LOW_NPROC_RUNNER = textwrap.dedent("""

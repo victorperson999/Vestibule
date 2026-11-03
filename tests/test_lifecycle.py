@@ -492,6 +492,10 @@ async def test_degraded_backend_reports_detail(monkeypatch, tmp_path):
     r = await b.run("python", "print('hi')", 5, limits)
     assert r.isolation == "container-degraded"
     assert r.isolation_detail == "limits not applied: cpu, memory, pids, tmpfs-size"
+    # M3 A1: nothing the guest can't fake comes out of a container
+    assert r.not_measured == ("cpu, mem_peak and pids_peak not measured: not readable from "
+                              "outside a container")
+    assert (r.cpu_ms, r.mem_peak_mb, r.pids_peak, r.limit_hits) == (None, None, None, {})
 
     await asyncio.gather(*list(b._finishers), return_exceptions=True)
 

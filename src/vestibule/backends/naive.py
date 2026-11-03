@@ -105,4 +105,6 @@ class NaiveBackend(Warden):
             exit_code=proc.returncode if proc.returncode is not None else -1,
             timed_out=timed_out,
             isolation="none",   # M0 is explicitly unsafe; be honest
+            not_measured="cpu, mem_peak and pids_peak not measured: the naive backend has no "
+                         "sandbox to measure",
         )

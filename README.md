@@ -155,6 +155,7 @@ The prerequisites, which the first `run_code` call checks for you:
 - `busctl`, part of systemd.
 - `libseccomp.so.2`, a systemd dependency on these distros (`apt install libseccomp2` otherwise).
 - Unprivileged user namespaces, not restricted.
+- For two of the usage numbers in each result: Linux 5.19 for `mem_peak` and 6.1 for `pids_peak`. On an older kernel the run is the same, and the result names what it didn't measure, for example `mem_peak not measured: Linux 5.19+ needed`.
 
 "Expected" rows follow from those prerequisites, not from a run. M4's fresh-machine test runs on a stock Ubuntu 24.04 VM.
 

@@ -10,9 +10,9 @@ The selector (`select.py`, M2 step 6) builds it on Linux, with the shared concur
 Every run loads the seccomp allowlist (step 5, `native_seccomp.py`); there is no way to skip it
 (step 6 deleted the test-only bypass, S6-D10).
 
-The verdict, the mount-table rule, the exit codes and the guest's environment are pure
-functions that run on every platform; the rest is Linux-only behind `sys.platform` checks
-that mypy reads (S3-D13).
+The verdict, the mount-table rule, the exit codes, the usage numbers (M3) and the guest's
+environment are pure functions that run on every platform; the rest is Linux-only behind
+`sys.platform` checks that mypy reads (S3-D13).
 """
 from __future__ import annotations
 
@@ -55,6 +55,7 @@ _SHM_KB = 64 * 1024
 # with a cold page cache); M1 needed 5 s for container start.
 _STARTUP_GRACE_S = 2
 _STOP_WAIT_S = 5  # after SIGTERM, the helper gets this long before SIGKILL (S3-D7)
+_COUNTERS_WAIT_S = 1  # a timed-out run's wait for the helper's last lines (M3 A1.1)
 _SEM_WAIT_S = 5  # max wait for a concurrency slot before a legible refusal (S4-D1)
 _STATUS_CAP = 64 * 1024
 _SELF_DEADLINE_SLACK_S = 30  # the helper's own backstop sits at the server's outer deadline
@@ -260,6 +261,9 @@ class NativeBackend(Warden):
             done.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await done
+        if timed_out and run.status_task is not None:  # A1.1: the helper's last lines, init gone
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(run.status_task), _COUNTERS_WAIT_S)
 
         lines = _parse_status(bytes(run.status))
         isolation, detail = _verdict(lines, uid=os.getuid(), gid=os.getgid(),
@@ -270,12 +274,14 @@ class NativeBackend(Warden):
                                    truncated=len(out_buf) >= cap or len(err_buf) >= cap,
                                    oom_limit_mb=limits.mem_mb if "memory" in run.applied else None)
         denied, note = _denied(lines, note)  # the helper's `denied` line (S5-D5)
+        usage = _usage(lines, isolation=isolation, cgroup=run.cgroup,  # M3 A1
+                       release=os.uname().release)
         log.info("run %s: done exit=%s timed_out=%s isolation=%s",
                  run.run_id, exit_code, timed_out, isolation)
         return RunResult(stdout=out_buf.decode(errors="replace"),
                          stderr=err_buf.decode(errors="replace") + note,
                          exit_code=exit_code, timed_out=timed_out, denied_syscalls=denied,
-                         isolation=isolation, isolation_detail=detail)
+                         isolation=isolation, isolation_detail=detail, **usage)
 
     @staticmethod
     async def _stop_on(overflow: asyncio.Event, run: _Run) -> None:
@@ -429,8 +435,8 @@ def _denied(lines: list[dict[str, Any]], note: str) -> tuple[list[str], str]:
     user notification, in first-seen order. If reporting hit its cap, a stderr note says so and
     the rest were denied unnamed. Any other denied syscall fails with EPERM, unreported (N4)."""
     line = next((ln for ln in lines if isinstance(ln.get("denied"), list)), None)
-    if line is None:
-        return [], note  # no line (timed out, overflowed, or the helper died before sending it)
+    if line is None:  # the helper died, or a timed-out run's helper didn't report within the wait
+        return [], note
     names = [str(n) for n in line["denied"]]
     if line.get("notify_stopped"):
         note += "\n[seccomp reporting stopped at the cap; further denied syscalls were not named]"
@@ -441,11 +447,72 @@ def _nproc_backstop(release: str) -> bool:
     """Whether RLIMIT_NPROC may stand in for a missing pids limit on this kernel (S4-D9). From
     5.14 it counts per user namespace; before, per uid across the host, which could fail every
     guest fork of a user who already runs many processes."""
+    return (k := _kernel(release)) is not None and k >= (5, 14)
+
+
+def _kernel(release: str) -> tuple[int, int] | None:
+    """The kernel's (major, minor) from its release string, or None if it doesn't parse."""
     try:
         major, minor = (int(part) for part in release.split(".")[:2])
     except ValueError:
-        return False
-    return (major, minor) >= (5, 14)
+        return None
+    return major, minor
+
+
+def _placed(ready: dict[str, Any], cgroup: str | None) -> bool:
+    """Whether init reported exactly the cgroup the server made (S4-D7)."""
+    return cgroup is not None and ready.get("cgroup") == f"0::{cgroup}\n"
+
+
+_UNMEASURED = "cpu, mem_peak and pids_peak not measured: "
+_NOT_REPORTED = _UNMEASURED + "the sandbox didn't report its counters"
+# Each number's name in the result, with the helper's key for it; and the Linux release that
+# added each counter a kernel may lack (M3 A4).
+_FIELDS = {"cpu": "cpu_usec", "mem_peak": "mem_peak", "pids_peak": "pids_peak"}
+_SINCE = {"mem_peak": (5, 19), "pids_peak": (6, 1)}
+
+
+def _usage(lines: list[dict[str, Any]], *, isolation: str, cgroup: str | None,
+           release: str) -> dict[str, Any]:
+    """M3 A1/A4: RunResult's usage fields from the helper's `usage` line, read from guest/ after
+    the whole sandbox exited. Numbers only where the verdict counts the limits: past its hard
+    tier (`isolation`, the verdict's) and `_placed`. Nothing at all when nothing was executed
+    (an `error` first line)."""
+    first = next((line for line in lines if "ready" in line or "error" in line), None)
+    if first is None:
+        return {"not_measured": _NOT_REPORTED}
+    if "error" in first:
+        return {}
+    if isolation == "none":  # what keeps the guest off the status channel wasn't confirmed
+        return {"not_measured": _UNMEASURED + "the sandbox's hard controls weren't confirmed"}
+    if not _placed(first["ready"] if isinstance(first["ready"], dict) else {}, cgroup):
+        return {"not_measured": _UNMEASURED + "this run had no cgroup"}
+    raw = next((ln["usage"] for ln in lines if isinstance(ln.get("usage"), dict)), None)
+    if raw is None:  # a timed-out run past the wait, or a helper that died
+        return {"not_measured": _NOT_REPORTED}
+    got = {key: v for key, v in raw.items() if type(v) is int and v >= 0}  # else missing
+    hits: dict[str, int] = {}
+    if got.get("tasks_refused"):
+        hits["tasks_refused"] = got["tasks_refused"]
+    if got.get("nr_throttled") and "nr_periods" in got:
+        hits["cpu_throttled_periods"], hits["cpu_periods"] = got["nr_throttled"], got["nr_periods"]
+    usage: dict[str, Any] = {  # rounded up: a counter that moved never reads 0
+        "cpu_ms": -(-got["cpu_usec"] // 1000) if "cpu_usec" in got else None,
+        "mem_peak_mb": -(-got["mem_peak"] // (1 << 20)) if "mem_peak" in got else None,
+        "pids_peak": got.get("pids_peak"),
+        "limit_hits": hits,
+    }
+    kernel = _kernel(release)
+    missing: list[str] = []
+    for name, key in _FIELDS.items():
+        if key not in got:
+            since = _SINCE.get(name)
+            if since is not None and kernel is not None and kernel < since:
+                missing.append(f"{name} not measured: Linux {since[0]}.{since[1]}+ needed")
+            else:
+                missing.append(f"{name} not measured: not readable")
+    usage["not_measured"] = "; ".join(missing) or None
+    return usage
 
 
 def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[str, int],
@@ -482,7 +549,7 @@ def _verdict(lines: list[dict[str, Any]], *, uid: int, gid: int, host_ns: dict[s
         unconfirmed.append(f"mount table ({problem})")
     if unconfirmed:
         return "none", "hard controls not confirmed: " + ", ".join(unconfirmed)
-    placed = cgroup is not None and ready.get("cgroup") == f"0::{cgroup}\n"
+    placed = _placed(ready, cgroup)
     not_applied = [name for name in _CGROUP_LIMITS if not (placed and name in applied)]
     if mounts is not None and not _tmpfs_sizes_ok(mounts, limits):
         not_applied.append("tmpfs-size")

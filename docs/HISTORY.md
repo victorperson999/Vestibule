@@ -917,3 +917,43 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
     automatic retention, tamper-proofing, and `%TEMP%` leftovers (moved to M4).
 
 ### Build steps (5 planned)
+
+- **Step 1 plan signed off, 2026-11-02 ([plan](plans/M3/M3-step1-usage.md), v2).** Step 1
+  puts real numbers in every result: wall time from the server, and for native runs the cpu,
+  peak memory, peak processes and the limits they hit, read by the helper from the run's
+  cgroup after the whole sandbox has exited. A timed-out run waits at most 1 s more for them.
+  `skeptic` found 13 issues and `verifier` confirmed 12 and rated 1 plausible; every one changed
+  the plan. The main ones:
+  - the kernel adds throttled time up across CPUs (8.7 s in a 2 s run), so throttling is shown
+    as periods, which can't exceed the run;
+  - the pids limit counts threads too, so refusals say "new processes or threads";
+  - the numbers include the sandbox's own setup and the file cache, so the result says so.
+
+  Victor approved all seven places where the plan changes the contract's wording (U1–U7):
+  MiB instead of MB, field names in the "not measured" note, the two labels above, one note
+  covering all three numbers, three of the six new result fields now and three in step 2, and
+  no usage line on the two results that have no run result.
+- **Step 1 — usage numbers in every result, done 2026-11-02
+  ([plan](plans/M3/M3-step1-usage.md) §9; commit pending).**
+  - **Now:** every `run_code` result that has a run behind it carries a `usage:` line.
+    - **Native runs** read, for example, `usage: wall=84ms, cpu=31ms, mem_peak=11MiB,
+      pids_peak=2 (the whole sandbox, including its setup and file cache)`. When a limit was
+      hit, a second line follows, such as `limits hit: pids (4113 new processes or threads
+      refused), cpu (throttled in 18 of 20 periods of 100 ms)`.
+    - **Where the numbers come from:** the helper reads them from the run's cgroup after the
+      whole sandbox has exited, so the guest can't write them.
+    - **Timed-out runs** get them too: the server waits at most 1 s more, and they now name
+      their blocked syscalls as well.
+  - **What a result says when numbers are missing:**
+    - container runs report `wall` and say the rest can't be read from outside a container;
+    - native runs without a cgroup, or on a kernel without a counter, say which number is
+      missing and why;
+    - a native run whose hard controls weren't confirmed shows no numbers at all.
+  - **How we know:**
+    - the gate's Linux suite grew to 615 tests (0 skipped), plus one test added after it, and
+      Windows stays green;
+    - 18 deliberately broken versions each turned a test red, among them a 5 s wait and a
+      wall time that counts selection.
+  - **Review:** `critic` ran twice, each round checked by `verifier`. The medium finding was
+    that a run whose hard controls weren't confirmed still showed numbers, when those controls
+    are what keep the guest from forging them. Fixed, with a test through the real run path.
