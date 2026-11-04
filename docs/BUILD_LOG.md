@@ -50,7 +50,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | `f318e0c` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
 | M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | `40f63be` | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
-| M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | pending | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
+| M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | `fb26ba1` | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
+| M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | pending | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -67,6 +68,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 | 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
+| 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching |
 
 **Closed:**
 - The 2026-10-31 root-server issue is closed in the M2 follow-ups (F-D1). A server started as
@@ -102,9 +104,74 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M3 step 2 — the audit log (2026-11-03)
+## M3 step 3 — `vestibule-mcp audit` (2026-11-04)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M3/M3-step3-audit-command.md`](plans/M3/M3-step3-audit-command.md) (v2
+  after the `skeptic` review, signed 2026-11-04 with R1–R5). The build's changes and both
+  review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)
+  A10, with the R1–R5 amendment blockquote.
+- **What:**
+  - **`audit_cli.py` (new):** `main(args)`, imported only by `server.run()`'s `audit` branch.
+    - **Setup:** `_ascii_unless_utf8` on stdout and stderr. `VESTIBULE_AUDIT_DIR`,
+      `VESTIBULE_WORKSPACE` and `VESTIBULE_ROOTFS_DIR` are read from the env (defaults when
+      unset), never from `server.LIMITS`. `config.audit_dir` turns the first into a path, with
+      the server's own messages; `config._audit_problem` gives the overlap warning.
+    - **Reading:** `_show` lists the files that match the writer's name, without following
+      symlinks. `_read` pairs `start` and `end` per file. `_record` keeps a usable record
+      (`type(v) is int`, a known `kind`, `str` `id` and `ts`) and counts every other line.
+    - **The row's fields:** `_cut_down` reduces a record to them as it's read. `_value` prints
+      only strings and numbers, else `?`, cut to 40. `_snippet` takes the first line that isn't
+      blank, cut to 60 or 100, with `...` (R2). `_denied` gives R5's list.
+    - **Printing:** `_row` builds one line per call (R3: a call with a `start` ends with its
+      code). `_clean` escapes `Cc`, `Cf`, `Cs`, `Zl` and `Zp` (R1).
+    - **Exit status:** 0, 1 (the setting, the dir or a file couldn't be used) or 2 (arguments).
+      A `BrokenPipeError` is answered with the Python docs' recipe.
+  - **`config.py`:** `audit_dir(limits)` is `_audit_problem`'s first half, made public and
+    shared; the server's messages are unchanged.
+  - **`server.py`:** the `audit` dispatch and the unexpected-arguments warning's text.
+  - **Tests:** `tests/test_audit_cli.py` (new), plus the dispatch test and the new warning text
+    in `tests/test_rootfs.py`.
+  - **Docs:** README (the command, and the `VESTIBULE_AUDIT_DIR` row), GETTING_STARTED (`no
+    records`, unreadable lines, the overlap warning, escapes), ARCHITECTURE (the reader), and the
+    contract's A10 amendment.
+- **Found:**
+  - **Gate, first run:** a teardown error in
+    `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` (a scope left behind).
+    It didn't come back: 20 of 20 alone, and the later runs were clean (known issues).
+  - **Build:** the editing tool turned two `\u` escapes written into the plan and one into
+    GETTING_STARTED into the characters themselves. The plan's raw U+200D and U+2028 were caught
+    by `skeptic`, and GETTING_STARTED's `日` by `critic`. Text that must hold an escape is now
+    written from `chr()`.
+- **Review:**
+  - **Round 1:** `critic` found 2 medium and 4 low issues on the code, and `verifier` confirmed
+    all six (one medium lowered to low).
+  - **Round 2,** on the fixes: 1 medium and 9 low, all confirmed (the medium lowered to low).
+  - The plan's §9 has both tables. Two changes to what Victor approved await his OK: R4
+    tightened (ASCII unless UTF-8), and the overlap warning.
+- **Mutants:** 39 of 39 red after a green control, 38 on Windows and the broken-pipe handler in
+  WSL.
+- **Gate (after round 2's fixes):**
+  - check_env, ruff and mypy clean on both platforms.
+  - Linux 3.14 full suite: 781 passed, 0 skipped.
+  - Linux 3.11 Docker-free: 738.
+  - stdio: 5 of 5.
+  - Windows: 620 passed + 141 POSIX/Linux-only skips.
+- **Where to start if it breaks:**
+  - **A row that looks wrong:** `_cut_down` (what a record keeps) and `_row` (how a call is
+    printed). Test: `test_every_row_kind_exactly`.
+  - **Raw control characters in a terminal:** every value must go through `_clean`, and a
+    stream that isn't UTF-8 must be ASCII (`_ascii_unless_utf8`). Tests: the hostile-record and
+    legacy-8-bit tests.
+  - **A record the writer wrote that `audit` doesn't show:** `_NAME` must match
+    `audit.AuditLog`'s file name, and `_record` its fields. Test:
+    `test_reads_the_real_writers_file_while_it_is_open`.
+  - **`audit` and the server disagree about the folder:** both go through `config.audit_dir`;
+    the command reads only its own shell's env.
+
+## M3 step 2 — the audit log (2026-11-03)
+
+- **Commit:** `fb26ba1`.
 - **Plan:** [`docs/plans/M3/M3-step2-audit-writer.md`](plans/M3/M3-step2-audit-writer.md) (v2
   after the `skeptic` review, signed 2026-11-03 with W1–W4). The build's changes and both
   review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)

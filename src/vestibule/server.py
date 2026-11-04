@@ -521,14 +521,20 @@ def _other_live_tasks() -> list[asyncio.Task]:
 
 def run() -> None:
     """Console entry point: `vestibule-mcp` serves MCP on stdio; `vestibule-mcp setup`
-    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1)."""
+    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1); `vestibule-mcp audit
+    [N]` prints the last N calls (docs/plans/M3/M3-step3-audit-command.md)."""
     args = sys.argv[1:]
     if args == ["setup"]:
         sys.exit(rootfs.setup_main())
+    if args[:1] == ["audit"]:
+        from vestibule import audit_cli  # a terminal command: its stdout is the user's
+
+        sys.exit(audit_cli.main(args[1:]))
     if args:
         # Not an error: refusing to start would leave the client saying only "failed to
         # connect" (the M1 follow-up's rule). A human at a terminal sees this line.
-        log.warning('ignoring unexpected arguments %s; the only subcommand is "setup"', args)
+        log.warning('ignoring unexpected arguments %s; the subcommands are "setup" and '
+                    '"audit"', args)
     asyncio.run(_main())
 
 

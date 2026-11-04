@@ -338,6 +338,26 @@ that way.
 - **No flags in M3.** For more, read the JSONL files themselves.
 - **Naming.** PLAN.md's `vestibule --audit` becomes `vestibule-mcp audit`, to match `setup`.
 
+> **Amendment 2026-11-04 (step 3, [`M3-step3-audit-command.md`](M3-step3-audit-command.md) R1–R5,
+> approved by Victor; R4 tightened by the review, §9 there):**
+> - **R1:** the sanitizer escapes every character in the categories `Cc`, `Cf`, `Cs`, `Zl` and
+>   `Zp`, a superset of the list above, with an 8-digit `\U` escape above U+FFFF. It also catches
+>   LRM, RLM, ALM, the zero-width characters and the tag characters. The costs: ZWNJ (U+200C)
+>   shows as an escape inside Persian words, and so does ZWJ inside joined emoji; the set
+>   follows the interpreter's Unicode version; invisible letters such as U+3164 and U+2800 are
+>   kept; and a real U+202E prints like its typed escape, since backslashes aren't doubled.
+> - **R2:** the code's first line that isn't blank, cut to 60 characters, or `(blank)`; `...`
+>   marks a cut, more lines, or `code_truncated`. Reasons get the same rule at 100.
+> - **R3:** a call with a reason (`refused` or `failed`) shows it, and a call with a `start` also
+>   shows its `wall` and its code.
+> - **R4:** UTF-8 output stays UTF-8. Any other encoding (a Windows pipe's cp1252, a legacy POSIX
+>   charset) becomes ASCII, with escapes for everything else, on stdout and stderr alike. The
+>   approved wording kept the stream's own encoding; the review showed that KOI8-R and cp1252
+>   put printable characters on 0x80–0x9F, which a terminal can act on as C1 controls.
+> - **R5:** an `end`'s denied syscalls are shown, as `denied=…`.
+> - **Also:** a warning on stderr when the dir read overlaps the shell's workspace or rootfs
+>   setting: the server refuses that setting, so the records there may not be its own.
+
 **A11 — Non-blocking stderr.**
 - **The handler.** The server's handler becomes a `QueueHandler` (queue bounded at 1000)
   whose `enqueue` is overridden to drop and count on a full queue. The stock `emit` would

@@ -20,7 +20,7 @@ from homeutil import NoHome, RelativeHome
 from stdioutil import SERVER_EXE
 
 import vestibule.server as server
-from vestibule import registry, rootfs
+from vestibule import audit_cli, registry, rootfs
 from vestibule.config import DEFAULT_IMAGE_NODE, DEFAULT_IMAGE_PYTHON, Limits
 
 linux_only = pytest.mark.skipif(sys.platform != "linux", reason="native setup is Linux-only")
@@ -83,6 +83,15 @@ def test_setup_runs_the_setup_command(monkeypatch):
     assert e.value.code == 7
 
 
+def test_audit_runs_the_audit_command(monkeypatch):
+    seen = []
+    monkeypatch.setattr(audit_cli, "main", lambda args: seen.append(args) or 3)
+    monkeypatch.setattr(sys, "argv", ["vestibule-mcp", "audit", "7"])
+    with pytest.raises(SystemExit) as e:
+        server.run()
+    assert (e.value.code, seen) == (3, [["7"]])
+
+
 def test_other_arguments_warn_and_still_serve(monkeypatch, capsys, caplog):
     served = []
 
@@ -93,7 +102,8 @@ def test_other_arguments_warn_and_still_serve(monkeypatch, capsys, caplog):
     monkeypatch.setattr(sys, "argv", ["vestibule-mcp", "setp"])
     server.run()
     assert served == [True]
-    assert 'ignoring unexpected arguments [\'setp\']; the only subcommand is "setup"' in caplog.text
+    assert ('ignoring unexpected arguments [\'setp\']; the subcommands are "setup" and "audit"'
+            in caplog.text)
     assert capsys.readouterr().out == ""  # golden rule 1
 
 

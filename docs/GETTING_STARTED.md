@@ -192,6 +192,16 @@ exact command.
   directory: sandboxed code could reach the records. Point one of the two settings somewhere
   else, then restart the server. `VESTIBULE_WORKSPACE=~/.vestibule` does this with the default
   audit folder.
+- **`vestibule-mcp audit` says `no records`**: the command reads `VESTIBULE_AUDIT_DIR` from your
+  shell (default `~/.vestibule/audit`), and the first line names the folder it read. If your MCP
+  config sets the setting, set the same value for the command.
+  - *`… unreadable lines skipped`*: a record torn by a full disk or a crash, or a hand edit.
+    Every other record is still shown.
+  - *`warning: the audit directory (…) and the workspace (…) overlap`*: sandboxed code can write
+    to the folder it read, so those records may be forged. The server refuses that setting.
+  - *Escapes such as `\u65e5` in place of characters*: the output isn't UTF-8 (a Windows pipe,
+    or a terminal in a legacy charset), so everything outside ASCII is printed escaped. Control
+    and invisible formatting characters are printed escaped everywhere.
 - **`usage: … not measured: …`**: the result names the numbers it lacks, and why.
   - *not readable from outside a container*: container runs report only `wall`. Anything
     more could only come from the guest's own output, which it can fake.
