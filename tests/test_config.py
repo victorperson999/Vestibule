@@ -6,10 +6,12 @@ crash startup. The server starts, and every tool call returns a `Blocked:` messa
 names the setting, so the agent can tell the user what to fix.
 """
 import os
+import sys
 import tomllib
 from pathlib import Path
 
 import pytest
+from homeutil import NoHome, RelativeHome
 from stdioutil import SERVER_EXE, STDIN, StdioServer
 
 import vestibule
@@ -202,5 +204,132 @@ async def test_stdio_bad_config_starts_and_blocks(tmp_path):
             f"exit={code} phase={phase} after {elapsed:.2f}s\n{srv.stderr_tail()}"
         )
         assert srv.bad_stdout == []  # golden rule 1
+    finally:
+        await srv.kill()
+
+
+# --- VESTIBULE_AUDIT_DIR (M3 A8; docs/plans/M3/M3-step2-audit-writer.md §5.2) -----------
+
+def _ws_and_rootfs(monkeypatch, tmp_path):
+    monkeypatch.setenv("VESTIBULE_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", str(tmp_path / "rootfs"))
+
+
+@pytest.mark.parametrize("value, expected", [
+    (None, "~/.vestibule/audit"),
+    ("~/x", "~/x"),
+    ("{t}/audit", "{t}/audit"),
+])
+def test_audit_dir_accepted(monkeypatch, tmp_path, value, expected):
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    if value is not None:
+        monkeypatch.setenv("VESTIBULE_AUDIT_DIR", value.format(t=tmp_path))
+    lim = Limits.from_env()
+    assert lim.audit_path == Path(expected.format(t=tmp_path)).expanduser()
+
+
+@pytest.mark.parametrize("value", [
+    "audit", "{t}/ws", "{t}/ws/audit", "{t}", "{t}/rootfs", "{t}/rootfs/audit",
+    "{t}/WS/audit",  # a case variant: folded on every platform (macOS ignores case)
+])
+def test_audit_dir_refused(monkeypatch, tmp_path, value):
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", value.format(t=tmp_path))
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    [problem] = e.value.problems
+    assert "VESTIBULE_AUDIT_DIR" in problem
+    if value == "audit":
+        assert problem == "VESTIBULE_AUDIT_DIR='audit' must be an absolute path or start with ~"
+    else:
+        assert "overlap; point one of them somewhere else" in problem
+        assert ("VESTIBULE_WORKSPACE" in problem) != ("VESTIBULE_ROOTFS_DIR" in problem)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="~user is POSIX")
+def test_audit_dir_with_an_unknown_user_is_refused(monkeypatch, tmp_path):
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", "~nosuchuser-vestibule/x")
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    assert e.value.problems[0].startswith(
+        "VESTIBULE_AUDIT_DIR='~nosuchuser-vestibule/x' must be an absolute path or start with ~ (")
+
+
+@pytest.mark.parametrize("value", ["\\audit", "C:audit"])  # drive-relative; relative on POSIX
+def test_audit_dir_drive_relative_is_refused(monkeypatch, tmp_path, value):
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", value)
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    assert e.value.problems == [
+        f"VESTIBULE_AUDIT_DIR={value!r} must be an absolute path or start with ~"]
+
+
+def test_no_home_directory_default_audit_dir_is_not_a_config_error(monkeypatch, tmp_path):
+    """W4: such a host works today with absolute settings; its records say why they're lost."""
+    import vestibule.config as config
+
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "Path", NoHome)
+    assert Limits.from_env().audit_dir == "~/.vestibule/audit"
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", "~/x")  # an explicit one still is
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    assert e.value.problems == [
+        "VESTIBULE_AUDIT_DIR='~/x' must be an absolute path or start with ~ "
+        "(Could not determine home directory.)"]
+
+
+def test_a_default_that_expands_to_a_relative_path_is_not_a_config_error(monkeypatch, tmp_path):
+    """critic, M3 step 2: W4 again. The writer reports it on every record instead."""
+    import vestibule.config as config
+
+    _ws_and_rootfs(monkeypatch, tmp_path)
+    monkeypatch.setattr(config, "Path", RelativeHome)
+    assert Limits.from_env().audit_dir == "~/.vestibule/audit"
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", "~/x")  # an explicit one still is, named as such
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    assert e.value.problems == [
+        f"VESTIBULE_AUDIT_DIR='~/x' expands to {Path('relative-home', 'x')}, which isn't "
+        "absolute: the home directory is relative"]
+
+
+def test_a_path_that_cant_be_resolved_is_compared_as_written(monkeypatch, tmp_path):
+    """critic, M3 step 2: from_env runs at the server's import, and Windows' realpath raises for
+    an offline network drive (WinError 1231). That must not stop the server; an overlap is still
+    caught."""
+    def offline(real):
+        def stand_in(path, *args, **kwargs):
+            if "offline-drive" in str(path):
+                raise OSError(1231, "The network location cannot be reached")
+            return real(path, *args, **kwargs)
+        return stand_in
+
+    ws = tmp_path / "offline-drive" / "ws"
+    monkeypatch.setenv("VESTIBULE_WORKSPACE", str(ws))
+    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", str(tmp_path / "rootfs"))
+    # abspath too: on POSIX it calls getcwd, which raises once the cwd is deleted (round 2)
+    monkeypatch.setattr(os.path, "realpath", offline(os.path.realpath))
+    monkeypatch.setattr(os.path, "abspath", offline(os.path.abspath))
+    Limits.from_env()
+    monkeypatch.setenv("VESTIBULE_AUDIT_DIR", str(ws / "audit"))
+    with pytest.raises(ConfigError) as e:
+        Limits.from_env()
+    assert "overlap" in e.value.problems[0]
+
+
+@pytest.mark.skipif(not SERVER_EXE.exists(), reason=f"console script not found: {SERVER_EXE}")
+async def test_stdio_relative_audit_dir_blocks_every_call(tmp_path):
+    srv = await StdioServer.start(tmp_path / "ws", {"VESTIBULE_AUDIT_DIR": "audit"})
+    try:
+        await srv.initialize()
+        text = await srv.call("run_code", {"language": "python", "code": "print(1)"}, timeout=30)
+        assert text == (
+            "Blocked: Vestibule's configuration is invalid: VESTIBULE_AUDIT_DIR='audit' must be "
+            "an absolute path or start with ~. Fix the setting in the MCP client's config for "
+            "this server, then restart it. Nothing was run.")
+        assert srv.run_ids == []
     finally:
         await srv.kill()

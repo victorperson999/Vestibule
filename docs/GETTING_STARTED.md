@@ -177,6 +177,37 @@ exact command.
     must list `cpu memory pids`; systemd 252 and later delegate all three by default.
   - Restart the server after fixing it. Under `VESTIBULE_BACKEND=auto`, a full container, if
     one works, is chosen over native-degraded anyway.
+- **`audit: not recorded (…)`** or **`audit: not confirmed (…)`**, just above `isolation:`:
+  the run still happened; only its record in the audit log is missing or late. The server's
+  log has a warning too.
+  - *not recorded*: the record was lost, and the reason says why: the folder couldn't be
+    created, the disk is full, or the file was deleted while it was written. Check that
+    `VESTIBULE_AUDIT_DIR` (default `~/.vestibule/audit`) is writable and has space. The next
+    call tries again.
+  - *not confirmed (the disk didn't answer within 2 s)*: a slow or network drive. The record
+    may still land.
+  - *could not find the home directory; set VESTIBULE_AUDIT_DIR*: the default folder lives
+    under your home directory, and this machine has none. Set an absolute path.
+- **`Blocked: … the audit directory (…) and the workspace (…) overlap`**, or the rootfs
+  directory: sandboxed code could reach the records. Point one of the two settings somewhere
+  else, then restart the server. `VESTIBULE_WORKSPACE=~/.vestibule` does this with the default
+  audit folder.
+- **`usage: … not measured: …`**: the result names the numbers it lacks, and why.
+  - *not readable from outside a container*: container runs report only `wall`. Anything
+    more could only come from the guest's own output, which it can fake.
+  - *the naive backend has no sandbox to measure*: the dev-only backend.
+  - *this run had no cgroup*: the native run wasn't placed in a cgroup of its own. Its
+    `native-degraded` detail names the limits that weren't applied, and why when no scope
+    could be made (above).
+  - *the sandbox's hard controls weren't confirmed*: the result also says `isolation: none`
+    and names those controls. They are what keeps the guest away from the channel the
+    numbers travel on, so none are shown.
+  - *the sandbox didn't report its counters*: usually a timed-out run whose sandbox took more
+    than 1 s to empty after the stop. A low `VESTIBULE_CPU_PCT` (5 or less) makes that
+    likely for a fork bomb, since throttled processes exit slowly.
+  - *Linux 5.19+ needed* / *Linux 6.1+ needed*: the kernel has no `memory.peak` or
+    `pids.peak`.
+  - *not readable*: that counter's controller isn't enabled, or its file couldn't be read.
 - **Leftover native sandboxes**: `systemctl --user list-units 'vestibule-*'` lists each run's
   scope. It should be empty when no run is in flight; systemd removes a scope when its run
   ends, and `systemctl --user stop <unit>` stops one at once.

@@ -127,7 +127,8 @@ class ContainerBackend(Warden):
         self._runs: dict[str, _RunRecord] = {}
         # POSIX: this backend's private parent for the per-run dirs (see _run_dir_parent).
         self._run_parent: str | None = None
-        self._images_ok: set[str] = set()  # images that passed preflight (S5-D3)
+        # images that passed preflight (S5-D3), with the id it saw, for the audit (M3 A6)
+        self._image_ids: dict[str, str | None] = {}
         # S7-D1: the selector passes ONE semaphore to every backend it builds, so
         # `max_concurrent` keeps bounding existing containers across re-selection.
         # A standalone backend (tests) lazily makes its own.
@@ -326,6 +327,7 @@ class ContainerBackend(Warden):
                 stdout="", stderr=f"container runtime unavailable: {e}",
                 exit_code=127, timed_out=False, isolation="none",
                 isolation_detail="runtime unavailable; nothing was executed",
+                ran=False, run_id=run_id,
             )
 
         # Streaming collection (finding 19): cap what we buffer per stream; on
@@ -417,6 +419,14 @@ class ContainerBackend(Warden):
             timed_out=timed_out,
             isolation=isolation,
             isolation_detail=detail,
+            # M3 A1: only the guest's own output could carry them out, and it can fake that.
+            not_measured="cpu, mem_peak and pids_peak not measured: not readable from outside "
+                         "a container",
+            run_id=run_id,
+            image=self._image_ids.get(self.image_for(language, limits)),
+            stdout_bytes=len(out_buf),
+            stderr_bytes=len(err_buf),
+            output_capped=truncated,
         )
 
     @staticmethod
@@ -692,14 +702,14 @@ class ContainerBackend(Warden):
         One successful check per image per process; `--pull never` in the run
         profile backstops the race (image deleted after this check passed).
         """
-        if image in self._images_ok:
+        if image in self._image_ids:
             return
         res = await self._cli_status("image", "inspect", "--format", "{{.Id}}", image)
         if res is None:
             raise RunRefusedError(
                 f"container runtime did not respond while checking image {image}; retry shortly"
             )
-        code, _out, err = res
+        code, out, err = res
         if code != 0:
             # `image inspect` also fails when the daemon is down — the runtime's own
             # first error line tells the user which case they are in.
@@ -713,7 +723,7 @@ class ContainerBackend(Warden):
                 f"pulls images itself. If {self._runtime} itself is not responding, "
                 f"start it{START_HINTS.get(self._runtime, '')}, then retry."
             )
-        self._images_ok.add(image)
+        self._image_ids[image] = out.strip() or None
 
     async def _cli_status(
         self, *args: str, timeout: float = _CLEANUP_STEP_S

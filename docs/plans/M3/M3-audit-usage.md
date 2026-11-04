@@ -148,6 +148,12 @@ The code is already in the agent's own transcript.
 
   The README says so.
 
+> **Amendment 2026-11-03 (step 2, [`M3-step2-audit-writer.md`](M3-step2-audit-writer.md) W3):**
+> the output sizes are the bytes each backend collected from the guest before decoding, without
+> the notes a backend appends, plus `output_capped`, set when collection hit its cap and stopped
+> the sandbox. Sizes taken from the decoded text would count each invalid byte as 3, and a
+> capped flood would otherwise look like an out-of-memory kill (exit 137).
+
 ### A3 (PROVISIONAL) — A failed audit write doesn't stop the run, and the result says so
 
 - **(1) Recommended.** The run goes ahead, and the result says what happened to its record:
@@ -191,6 +197,9 @@ The code is already in the agent's own transcript.
 
   `cpu_ms` and `mem_peak_mb` exist already and are unused today. `wall` is measured by the
   server and isn't a `RunResult` field.
+
+> **Amendment 2026-11-03 (step 2, [`M3-step2-audit-writer.md`](M3-step2-audit-writer.md) W3):**
+> `RunResult` also gains `stdout_bytes`, `stderr_bytes` and `output_capped` (A2's amendment).
 
 **A5 — One audit file per server process, written by one thread.**
 - **Where.** `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`, a new setting), created with mode
@@ -248,6 +257,12 @@ The code is already in the agent's own transcript.
 A `start` with no `end` then means the server process ended mid-run, and `audit` shows it
 that way.
 
+> **Amendment 2026-11-03 (step 2, [`M3-step2-audit-writer.md`](M3-step2-audit-writer.md) W1):**
+> `blocked` covers every call that ends before a backend was chosen, and carries an `outcome`:
+> `refused` (the cases above, with the reason), `cancelled` (the client cancelled during
+> selection; no reason), or `failed` (an unexpected error in selection, with the reason). These
+> calls have no `start`, so without it a cancel or a crash there would leave no record.
+
 **Not recorded:**
 - **An invalid config** (`CONFIG_ERROR`, checked in `call_tool`). The server can't trust any
   setting then, the audit dir included. The `Blocked:` message already names the fix.
@@ -268,12 +283,25 @@ that way.
 - **Budget.** The `start` wait comes before the outer deadline, and the `end` wait comes after
   it. So at most 4 s is added to a call, and only when the disk is failing.
 
+> **Amendment 2026-11-03 (step 2, [`M3-step2-audit-writer.md`](M3-step2-audit-writer.md) W2):**
+> the `start` is queued before `warden.run` and not waited for. After the run, one wait of at
+> most 2 s covers both records, so at most 2 s is added to a call. Waiting before the run never
+> lands the record sooner; it would only delay the run on a stuck disk. A cancelled call queues
+> its record and never waits.
+
 **A8 — The sandbox can never reach the audit.**
 - **Validation.** `VESTIBULE_AUDIT_DIR` must be absolute or start with `~`, as for the rootfs
   in `setup` (`rootfs.py:111–114`). If it overlaps the workspace or the rootfs, that's a
   **config error**, so every call is `Blocked:` (the M1 follow-up's mechanism). This differs
   from the rootfs's own overlap check, which is a selection-time refusal (`select.py:481`).
   The audit's check is static, so it can run at startup.
+
+> **Amendment 2026-11-03 (step 2, [`M3-step2-audit-writer.md`](M3-step2-audit-writer.md) W4):**
+> an unset `VESTIBULE_AUDIT_DIR` whose default can't expand (no home directory) is not a config
+> error. The runs go ahead and their records are `not recorded (could not find the home
+> directory; set VESTIBULE_AUDIT_DIR)`, since such a host works today with absolute workspace and
+> rootfs settings. An explicit value that isn't absolute, or can't expand, is still a config
+> error. The overlap check compares paths after `realpath`, `normcase` and `casefold`.
 - **No mounts.** No backend mounts the audit dir:
   - **native:** the per-run mount-table verdict already refuses any unexpected mount
     (`native.py:547–568`);

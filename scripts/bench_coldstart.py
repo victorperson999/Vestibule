@@ -59,13 +59,13 @@ async def _measure(backend: str) -> dict:
             raise SystemExit(f"not a clean {backend} run; stopping:\n{text}")
 
     await call()  # the warm-up: selection and its probe run aren't timed
-    warden = await server.get_warden()
+    warden = (await server.get_selection()).warden
     times = []
     for _ in range(RUNS):
         t0 = time.perf_counter()
         await call()
         times.append(time.perf_counter() - t0)
-        if await server.get_warden() is not warden:
+        if (await server.get_selection()).warden is not warden:
             raise SystemExit("the selection changed during the benchmark; stopping")
         if not await warden.drain(30):
             raise SystemExit("the warden's detached work outlasted 30 s; stopping")
@@ -110,7 +110,8 @@ def main() -> int:
         for backend in BACKENDS:
             print(f"{backend}: {RUNS} timed calls ...", file=sys.stderr)
             env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")}
-            env.update(VESTIBULE_BACKEND=backend, VESTIBULE_WORKSPACE=f"{tmp}/ws-{backend}")
+            env.update(VESTIBULE_BACKEND=backend, VESTIBULE_WORKSPACE=f"{tmp}/ws-{backend}",
+                       VESTIBULE_AUDIT_DIR=f"{tmp}/audit-{backend}")  # never the user's own
             p = subprocess.run([str(BENCH_VENV / "bin" / "python"), "-I", __file__, "--measure",
                                 backend], env=env, cwd=tmp, capture_output=True, text=True)
             if p.returncode != 0:

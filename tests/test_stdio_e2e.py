@@ -17,6 +17,7 @@ label, so a live Vestibule server elsewhere on this machine is never confused wi
 one; cleanup removes only those exact names.
 """
 import asyncio
+import json
 import re
 import sys
 import time
@@ -98,7 +99,7 @@ async def _start_stubborn_run(server: StdioServer) -> str:
 
 
 @docker_required
-async def test_stdio_happy_path_and_clean_exit(server):
+async def test_stdio_happy_path_and_clean_exit(server, tmp_path):
     await server.initialize()
     tools = await server.request("tools/list", {})
     assert sorted(t["name"] for t in tools["tools"]) == ["read_workspace", "run_code"]
@@ -125,7 +126,19 @@ async def test_stdio_happy_path_and_clean_exit(server):
     )
     if POSIX:  # the stdin wrapper, not the SDK, saw the EOF first
         assert any("vestibule shutdown (stdin closed):" in ln for ln in server.stderr_lines)
-    assert server.bad_stdout == []  # golden rule 1
+    assert server.bad_stdout == []  # golden rule 1, with the audit on (M3 criterion 8)
+
+    # M3 step 2 §5.5: the four calls' records, in the dir stdioutil gives the server
+    [path] = (tmp_path / "audit").glob("*.jsonl")
+    records = [json.loads(line) for line in path.read_text(encoding="ascii").splitlines()]
+    starts = {r["id"]: r for r in records if r["kind"] == "start"}
+    ends = {r["id"]: r for r in records if r["kind"] == "end"}
+    assert len(records) == 8 and starts.keys() == ends.keys() and len(starts) == 4
+    for audit_id, start in starts.items():
+        assert (start["backend"], start["runtime"]) == ("container", "docker")
+        assert start["client"] == {"name": "vestibule-e2e", "version": "0"}
+        assert ends[audit_id]["outcome"] == "ran"
+        assert ends[audit_id]["backend_run"] in server.run_ids
 
 
 @docker_required
@@ -212,6 +225,7 @@ async def test_stdio_real_sdk_client_hands_off_a_run_in_flight(tmp_path, trace_f
     errlog_path = tmp_path / "server-stderr.log"
     params = StdioServerParameters(command=str(SERVER_EXE), env={
         "VESTIBULE_WORKSPACE": str(tmp_path / "ws"),
+        "VESTIBULE_AUDIT_DIR": str(tmp_path / "audit"),
         "VESTIBULE_CLEANUP_TRACE": str(trace_file),
         "VESTIBULE_BACKEND": "container",  # this test drives a container run (S6-D8)
     })

@@ -917,3 +917,95 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
     automatic retention, tamper-proofing, and `%TEMP%` leftovers (moved to M4).
 
 ### Build steps (5 planned)
+
+- **Step 1 plan signed off, 2026-11-02 ([plan](plans/M3/M3-step1-usage.md), v2).** Step 1
+  puts real numbers in every result: wall time from the server, and for native runs the cpu,
+  peak memory, peak processes and the limits they hit, read by the helper from the run's
+  cgroup after the whole sandbox has exited. A timed-out run waits at most 1 s more for them.
+  `skeptic` found 13 issues and `verifier` confirmed 12 and rated 1 plausible; every one changed
+  the plan. The main ones:
+  - the kernel adds throttled time up across CPUs (8.7 s in a 2 s run), so throttling is shown
+    as periods, which can't exceed the run;
+  - the pids limit counts threads too, so refusals say "new processes or threads";
+  - the numbers include the sandbox's own setup and the file cache, so the result says so.
+
+  Victor approved all seven places where the plan changes the contract's wording (U1–U7):
+  MiB instead of MB, field names in the "not measured" note, the two labels above, one note
+  covering all three numbers, three of the six new result fields now and three in step 2, and
+  no usage line on the two results that have no run result.
+- **Step 1 — usage numbers in every result, done 2026-11-02
+  ([plan](plans/M3/M3-step1-usage.md) §9; commit `40f63be`).**
+  - **Now:** every `run_code` result that has a run behind it carries a `usage:` line.
+    - **Native runs** read, for example, `usage: wall=84ms, cpu=31ms, mem_peak=11MiB,
+      pids_peak=2 (the whole sandbox, including its setup and file cache)`. When a limit was
+      hit, a second line follows, such as `limits hit: pids (4113 new processes or threads
+      refused), cpu (throttled in 18 of 20 periods of 100 ms)`.
+    - **Where the numbers come from:** the helper reads them from the run's cgroup after the
+      whole sandbox has exited, so the guest can't write them.
+    - **Timed-out runs** get them too: the server waits at most 1 s more, and they now name
+      their blocked syscalls as well.
+  - **What a result says when numbers are missing:**
+    - container runs report `wall` and say the rest can't be read from outside a container;
+    - native runs without a cgroup, or on a kernel without a counter, say which number is
+      missing and why;
+    - a native run whose hard controls weren't confirmed shows no numbers at all.
+  - **How we know:**
+    - the gate's Linux suite grew to 615 tests (0 skipped), plus one test added after it, and
+      Windows stays green;
+    - 18 deliberately broken versions each turned a test red, among them a 5 s wait and a
+      wall time that counts selection.
+  - **Review:** `critic` ran twice, each round checked by `verifier`. The medium finding was
+    that a run whose hard controls weren't confirmed still showed numbers, when those controls
+    are what keep the guest from forging them. Fixed, with a test through the real run path.
+- **Step 2 plan signed off, 2026-11-03 ([plan](plans/M3/M3-step2-audit-writer.md), v2).**
+  Step 2 writes the audit log: every `run_code` call that reaches the handler leaves a record
+  in `~/.vestibule/audit/`, written by one background thread so a stuck disk never stalls the
+  server. A record that fails to land doesn't stop the run; the result gets an `audit:` line
+  saying so. `skeptic` found 18 issues, none high; `verifier` confirmed 14 and rated 3
+  plausible, and every one changed the plan. The main ones:
+  - tests use an in-memory stand-in for the log, so no test writes to the real folder or waits
+    on a disk;
+  - a record that is never waited for (a cancelled call's) still logs a warning if it fails;
+  - output sizes are the raw bytes collected, so a run stopped for flooding its output can't be
+    mistaken for an out-of-memory kill.
+
+  Victor approved all four places where the plan changes the contract's wording (W1–W4):
+  - a call that ends during backend selection (refused, cancelled or failed) gets a `blocked`
+    record with that outcome;
+  - one wait of at most 2 s per call, after the run, instead of up to 4 s;
+  - raw byte sizes plus an `output_capped` flag;
+  - a machine with no home directory runs as today, its records reported `not recorded`.
+
+  Also stated and accepted: `VESTIBULE_WORKSPACE=~/.vestibule` becomes a config error, because
+  that workspace would contain the audit folder.
+- **Step 2 — the audit log, done 2026-11-03
+  ([plan](plans/M3/M3-step2-audit-writer.md) §9; commit pending).**
+  - **Now:** every `run_code` call that reaches the handler leaves records in
+    `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), one JSONL file per server process.
+    - A call that ends before a backend is chosen gets a `blocked` record. Every other call
+      gets a `start`, with the code up to 4 KiB, its hash, the backend, the verdict, the image
+      and the MCP client. It also gets an `end`, with the outcome, the exit code, the usage
+      numbers, the backend's own run id and the image that ran.
+    - The outcome is one of `ran`, `timed_out`, `not_run`, `refused`, `failed` or
+      `cancelled`. A call cancelled with Ctrl+C still leaves its `end`.
+    - One background thread writes the file, so a stuck disk never stalls the server. Each
+      call waits at most 2 s for its records, after its run.
+    - A record that doesn't land never stops the run: the result gets an
+      `audit: not recorded (…)` or `audit: not confirmed (…)` line above `isolation:`.
+    - The audit folder must be outside the workspace and the rootfs folder, or every call is
+      `Blocked:` with the fix.
+  - **How we know:**
+    - Linux: 693 tests on Python 3.14, 0 skipped. Windows: 533, plus 140 Linux-only skips.
+    - The real stdio test now reads the four calls' records back from its own audit folder.
+    - 28 deliberately broken versions each turned a test red.
+  - **Review:** `critic` ran twice, each round checked by `verifier`.
+    - **The medium finding:** the folder check ran at startup and could crash the server on
+      an offline network drive. Now a path that can't be resolved is compared as written.
+    - **The low ones:** the setup command the server prints now names the audit folder. A
+      file handle gone bad is reopened on the next record. The writer's newline repair now
+      reads the end of the file after any failure.
+    - **Not fixed, recorded:** the check can still block startup on a dead hard-mounted NFS
+      share.
+  - **Found by the gate:** the in-memory audit stand-in for tests first used pytest's
+    `monkeypatch`, which reordered teardowns and broke six native tests on Linux. It now
+    restores the real log by hand.

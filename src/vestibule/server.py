@@ -10,10 +10,12 @@ import contextlib
 import json
 import logging
 import os
+import secrets
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 from io import TextIOWrapper
 from typing import Any, cast
 
@@ -22,10 +24,11 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from vestibule import __version__, cleanup, rootfs, workspace
-from vestibule.backends.base import RunRefusedError, RunResult, Warden
+from vestibule import __version__, audit, cleanup, rootfs, workspace
+from vestibule.backends.base import RunRefusedError, RunResult
+from vestibule.backends.container import ContainerBackend
 from vestibule.backends.naive import kill_guest
-from vestibule.backends.select import BackendSelector
+from vestibule.backends.select import BackendSelector, Selection
 from vestibule.config import ALLOWED_LANGUAGES, ConfigError, Limits
 
 logging.basicConfig(
@@ -59,14 +62,17 @@ LIMITS, CONFIG_ERROR = _load_limits()
 # Without version= the SDK reports its own package version as the server's.
 server = Server("vestibule", version=__version__)
 SELECTOR = BackendSelector()
+# M3: no I/O here; the file appears on the first record (docs/plans/M3/M3-step2-audit-writer.md).
+AUDIT = audit.AuditLog(LIMITS.audit_dir)
 
 
-async def get_warden() -> Warden:
+async def get_selection() -> Selection:
     # M1 (contract §5): lazily probe & cache the real backend on the first tool
     # call. Naive is never auto-selected — it needs explicit VESTIBULE_BACKEND=naive.
     # Raises RunRefusedError with an actionable message when no honest isolation
-    # is possible; the handler renders it as `Blocked:` content.
-    return (await SELECTOR.get(LIMITS)).warden
+    # is possible; the handler renders it as `Blocked:` content. The whole Selection,
+    # because the audit's start record keeps its verdict (M3 A6).
+    return await SELECTOR.get(LIMITS)
 
 
 @server.list_tools()
@@ -174,22 +180,48 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
     timeout_raw = args.get("timeout_seconds", LIMITS.default_timeout_s)
 
     if not isinstance(language, str) or language not in ALLOWED_LANGUAGES:
-        return _blocked(f"language must be one of {ALLOWED_LANGUAGES}.")
+        return await _refuse(f"language must be one of {ALLOWED_LANGUAGES}.", language)
     if not isinstance(code, str) or not code.strip():
-        return _blocked("'code' must be a non-empty string.")
+        return await _refuse("'code' must be a non-empty string.", language)
     if len(code.encode()) > LIMITS.max_code_bytes:
-        return _blocked(f"code exceeds {LIMITS.max_code_bytes} bytes.")
+        return await _refuse(f"code exceeds {LIMITS.max_code_bytes} bytes.", language)
     if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, int):
-        return _blocked(f"timeout_seconds must be an integer from 1 to {LIMITS.max_timeout_s}.")
+        return await _refuse(
+            f"timeout_seconds must be an integer from 1 to {LIMITS.max_timeout_s}.", language)
     timeout_s = max(1, min(timeout_raw, LIMITS.max_timeout_s))
 
     log.info("run_code lang=%s bytes=%d timeout=%ds",
              language, len(code.encode()), timeout_s)
 
+    # Each way a call ends leaves its audit records (M3 A6): `blocked` before a backend is
+    # chosen (W1), else `start` and `end`. A cancel queues its record and re-raises at once;
+    # every other path waits once, after the run, at most 2 s (A7, W2).
     try:
         # Selection runs before the outer deadline starts: a slow first probe
         # (cold Docker Desktop VM) must not eat this run's time budget.
-        warden = await get_warden()
+        selection = await get_selection()
+    except asyncio.CancelledError:
+        AUDIT.submit(audit.blocked_record(language, "cancelled", None))
+        raise
+    except RunRefusedError as e:  # no honest isolation possible: the message names the fix
+        log.info("run_code refused: %s", e)
+        return await _refuse(str(e), language)
+    except Exception as e:  # golden rule 5 here too; call_tool's catch-all has no isolation line
+        first = _failure(e)
+        note = await AUDIT.confirm(AUDIT.submit(audit.blocked_record(language, "failed", first)))
+        return [TextContent(type="text", text=first + _audit_line(note) + "\n" + _NO_REPORT)]
+
+    audit_id = secrets.token_hex(8)
+    backend, runtime = _backend(selection)
+    image = None if backend == "naive" else (
+        LIMITS.image_node if language == "node" else LIMITS.image_python)
+    start = AUDIT.submit(audit.start_record(
+        audit_id, language=language, code=code, timeout_s=timeout_s, backend=backend,
+        runtime=runtime, verdict=selection.verdict, image=image, client=_client()))
+    # M3 A1: wall time as the agent waits for it (the slot, a preflight, placement), never
+    # the selection or the audit's wait.
+    started = time.monotonic_ns()
+    try:
         # Outer deadline in case the warden itself hangs; +30 covers the backend's
         # bounded worst case (slot wait 5 + image preflight 5 + collect timeout+5
         # + CLI wait 5 = timeout + 20) with real margin (M1 §4, step-5 budget).
@@ -197,29 +229,77 @@ async def _handle_run_code(args: dict) -> list[TextContent]:
         # task, which can outlive this handler when the SDK cancels it through its
         # anyio scope — an untracked run that shutdown cleanup can't see (S7-D1).
         async with asyncio.timeout(timeout_s + 30):
-            result = await warden.run(language, code, timeout_s, LIMITS)
+            result = await selection.warden.run(language, code, timeout_s, LIMITS)
+        wall_ms = _ms_since(started)
+    except asyncio.CancelledError:  # the SDK's cancel: queue the end, never wait (A6, A7)
+        AUDIT.submit(audit.end_record(audit_id, "cancelled", _ms_since(started)))
+        raise
     except RunRefusedError as e:
         # Refused before anything executed (concurrency limit S4-D1, missing image
         # or runtime, hard-tier probe failure) — a legible Blocked message the
-        # model can adapt to, never an exception.
+        # model can adapt to, never an exception. After the start, so an end (A6).
         log.info("run_code refused: %s", e)
-        return _blocked(str(e))
-    except TimeoutError:
-        log.error("warden exceeded outer deadline")
-        return [TextContent(type="text",
-                            text="Execution failed: sandbox did not return in time.\n"
-                                 + _NO_REPORT)]
-    except Exception as e:  # golden rule 5 here too; call_tool's catch-all has no isolation line
-        log.exception("run_code crashed")
-        return [TextContent(type="text", text=f"Internal error: {e}\n{_NO_REPORT}")]
+        note = await AUDIT.confirm(start, AUDIT.submit(
+            audit.end_record(audit_id, "refused", _ms_since(started), str(e))))
+        return _blocked(str(e) + _audit_line(note))
+    except Exception as e:  # the outer deadline (TimeoutError), or an unexpected error
+        first = _failure(e)
+        note = await AUDIT.confirm(start, AUDIT.submit(
+            audit.end_record(audit_id, "failed", _ms_since(started), first)))
+        return [TextContent(type="text", text=first + _audit_line(note) + "\n" + _NO_REPORT)]
 
     # Honesty hook: a container-tier run that reports no isolation means the
     # runtime died mid-session — drop the cached selection so the next call
     # re-probes and gets an actionable message.
-    SELECTOR.note_result(warden, result)
+    SELECTOR.note_result(selection.warden, result)
     log.info("run_code done exit=%s timed_out=%s isolation=%s",
              result.exit_code, result.timed_out, result.isolation)
-    return [TextContent(type="text", text=_format_result(result))]
+    note = await AUDIT.confirm(start, AUDIT.submit(audit.end_from_result(audit_id, result,
+                                                                         wall_ms)))
+    return [TextContent(type="text", text=_format_result(result, wall_ms, note))]
+
+
+async def _refuse(msg: str, language: object) -> list[TextContent]:
+    """`Blocked:` before a backend was chosen, with its `blocked` record (M3 A6)."""
+    note = await AUDIT.confirm(AUDIT.submit(audit.blocked_record(language, "refused", msg)))
+    return _blocked(msg + _audit_line(note))
+
+
+def _failure(e: Exception) -> str:
+    """The first line of a call that ended with no RunResult (M2 follow-ups F3), logged."""
+    if isinstance(e, TimeoutError):
+        log.error("warden exceeded outer deadline")
+        return "Execution failed: sandbox did not return in time."
+    log.exception("run_code crashed")
+    return f"Internal error: {e}"
+
+
+def _audit_line(note: str | None) -> str:
+    """The `audit:` line, only when a record wasn't written or confirmed (A3)."""
+    return "" if note is None else f"\naudit: {note}"
+
+
+def _ms_since(started: int) -> int:
+    return -(-(time.monotonic_ns() - started) // 1_000_000)  # integer ns, rounded up to ms
+
+
+def _backend(selection: Selection) -> tuple[str, str | None]:
+    """The start record's backend in VESTIBULE_BACKEND's words, and a container's runtime.
+    Selection gives the verdict `none` only to an explicit naive backend."""
+    if isinstance(selection.warden, ContainerBackend):
+        return "container", selection.warden.runtime
+    return ("naive" if selection.verdict == "none" else "native"), None
+
+
+def _client() -> dict[str, str] | None:
+    """The MCP client's name and version, when the SDK has them (A6)."""
+    try:
+        params = server.request_context.session.client_params
+    except LookupError:  # no request: the handler was called directly (tests)
+        return None
+    if params is None:  # before initialization
+        return None
+    return {"name": params.clientInfo.name[:200], "version": params.clientInfo.version[:200]}
 
 
 async def _handle_read_workspace(args: dict) -> list[TextContent]:
@@ -243,7 +323,12 @@ async def _handle_read_workspace(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text=text)]
 
 
-def _format_result(r: RunResult) -> str:
+# After the kernel's numbers (M3 U5): they count init and the page cache too, so the same code can
+# read differently twice. The model never reads the README.
+_WHOLE_SANDBOX = " (the whole sandbox, including its setup and file cache)"
+
+
+def _format_result(r: RunResult, wall_ms: int, audit_note: str | None = None) -> str:
     parts: list[str] = []
     if r.timed_out:
         parts.append("[timed out and was terminated]")
@@ -252,15 +337,32 @@ def _format_result(r: RunResult) -> str:
         parts.append(f"stdout:\n{_truncate(r.stdout)}")
     if r.stderr:
         parts.append(f"stderr:\n{_truncate(r.stderr)}")
-    usage = []
+    usage = f"usage: wall={wall_ms}ms"
+    counted = []  # the kernel's numbers (M3 A1, U1, U5)
     if r.cpu_ms is not None:
-        usage.append(f"cpu={r.cpu_ms}ms")
+        counted.append(f"cpu={r.cpu_ms}ms")
     if r.mem_peak_mb is not None:
-        usage.append(f"mem_peak={r.mem_peak_mb}MB")
-    if usage:
-        parts.append("usage: " + ", ".join(usage))
+        counted.append(f"mem_peak={r.mem_peak_mb}MiB")
+    if r.pids_peak is not None:
+        counted.append(f"pids_peak={r.pids_peak}")
+    if counted:
+        usage += ", " + ", ".join(counted) + _WHOLE_SANDBOX
+    if r.not_measured:
+        usage += f"; {r.not_measured}"
+    parts.append(usage)
+    hits = r.limit_hits
+    shown = []  # U4 and U3; native's cpu.max period is 100 ms (native_cgroup)
+    if "tasks_refused" in hits:
+        shown.append(f"pids ({hits['tasks_refused']} new processes or threads refused)")
+    if "cpu_throttled_periods" in hits:
+        shown.append(f"cpu (throttled in {hits['cpu_throttled_periods']} of "
+                     f"{hits['cpu_periods']} periods of 100 ms)")
+    if shown:
+        parts.append("limits hit: " + ", ".join(shown))
     if r.denied_syscalls:
         parts.append("blocked syscalls: " + ", ".join(r.denied_syscalls))
+    if audit_note is not None:  # above isolation, which stays the last line (M3 A3)
+        parts.append(f"audit: {audit_note}")
     isolation = f"isolation: {r.isolation}"
     if r.isolation_detail:
         isolation += f" ({r.isolation_detail})"

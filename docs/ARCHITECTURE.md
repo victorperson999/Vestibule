@@ -89,6 +89,10 @@ The MCP SDK is `async`, and the native warden is all blocking syscalls (`unshare
 
 Forking the server instead (from an executor thread, as this document first said) was rejected: the server is multi-threaded (the event loop, the SDK's machinery), and `fork()` copies only the calling thread, so a lock another thread held stays locked forever in the child. The one blocking step left in the server, moving the helper between cgroups (the kernel takes a global lock for it), runs in a thread (`asyncio.to_thread`).
 
+### The audit writer: one thread, one wait per call
+
+Every `run_code` call that reaches the handler leaves records in `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`): a `blocked` record when it ends before a backend is chosen, otherwise a `start` and an `end` sharing one id. The event loop never touches that disk. `audit.AuditLog.submit` serializes the record and puts it on a bounded queue (1000) with an acknowledgement future, and one daemon thread per process, holding the process's one file descriptor, writes it and settles the future through `call_soon_threadsafe`. It is not `asyncio.to_thread`: stuck writes would hold workers of the default pool, which also runs native placement, `read_workspace` and the container finisher, so a hung audit disk would degrade runs. One descriptor also matters on Windows, whose C runtime emulates `O_APPEND` as a seek and a write and loses records when each write opens its own. The `start` is queued before the run and not waited for; after the run, one wait of at most 2 s covers both records. A record that doesn't land never stops the run: the result gets an `audit: not recorded (…)` or `audit: not confirmed (…)` line above `isolation:`, and a cancelled call queues its record and re-raises at once. Contract: [`M3-audit-usage.md`](plans/M3/M3-audit-usage.md) A5–A8; build: [`M3-step2-audit-writer.md`](plans/M3/M3-step2-audit-writer.md).
+
 ---
 
 ## Part 2 — The warden
@@ -124,7 +128,7 @@ server (async, clean)      helper (one per run)           init (PID 1)          
     timeout: SIGTERM ────▶ 17. SIGKILL init via
                                its pidfd: the PID ns dies
                            18. after init: OOM counts,
-                               denied list; exit
+                               usage, denied list; exit
 19. verdict from the report;
     systemd drops the scope
 ```
@@ -216,7 +220,7 @@ Ordering: the filter is compiled in the helper before the fork, so every ctypes 
 - **The guest** is forked by init: fds above 2 closed, default signals, its own `PATH` search, then `execve` of the interpreter. init stays as a minimal reaper, like M1's `--init`, and reports the guest's exit.
 - **Output** flows over pipes to the server, capped as in M1; a run printing more than twice the cap is stopped.
 - **The stop** (timeout or output overflow): the server sends `SIGTERM` to the helper, which `SIGKILL`s init through a pidfd, so a reaped PID can't be reused under it. When PID 1 dies, the kernel kills everything in its PID namespace, stopped processes included, so no guest can block the stop. The helper exits only after init has, so its exit means the sandbox is empty; `SIGKILL` to the helper 5 s later is the fallback. Two deadlines outside the server back this up: the helper's own self-deadline and systemd's `RuntimeMaxSec` on the scope.
-- **The report.** Before it exits, the helper sends the guest cgroup's OOM counters (so a memory bomb's result says the kernel killed a process at its limit) and the denied syscalls' names. Peak usage (`memory.peak`, `cpu.stat`) waits for M3. Once the helper has exited, the scope is empty and systemd removes it.
+- **The report.** Before it exits, the helper sends the guest cgroup's OOM counters (so a memory bomb's result says the kernel killed a process at its limit) and the denied syscalls' names. It also sends the usage counters (M3): `cpu.stat`, `memory.peak`, `pids.peak` and `pids.events`, read from the guest cgroup after init has exited. So they are final, and they come from outside the sandbox, where the guest can't fake them. A timed-out run waits up to 1 s more for them. They count the whole sandbox, init's own setup and the page cache included, so the same code can read differently twice (`print(1)` in python: 14 MiB after the page cache is cleared, 6 MiB right after another run). A result without them names what it didn't measure, and why. Once the helper has exited, the scope is empty and systemd removes it.
 
 ---
 

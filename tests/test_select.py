@@ -21,7 +21,7 @@ import vestibule.backends.select as select_mod
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
-from vestibule.backends.select import BackendSelector
+from vestibule.backends.select import BackendSelector, Selection
 
 
 @pytest.fixture(autouse=True)
@@ -420,13 +420,13 @@ async def test_server_renders_selection_refusal_as_blocked(monkeypatch):
     naive fallback, never an exception."""
     from vestibule import server
 
-    async def refusing_get_warden():
+    async def refusing_get_selection():
         raise RunRefusedError(
             "no usable container runtime (docker: not installed). "
             "Start Docker Desktop (or install Docker/Podman), then retry."
         )
 
-    monkeypatch.setattr(server, "get_warden", refusing_get_warden)
+    monkeypatch.setattr(server, "get_selection", refusing_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text.startswith("Blocked: no usable container runtime")
     assert "Docker" in out[0].text
@@ -444,13 +444,69 @@ async def test_server_renders_degraded_isolation(monkeypatch):
                 isolation_detail="limits not applied: cpu, memory, pids, tmpfs-size",
             )
 
-    async def fake_get_warden():
-        return DegradedWarden()
+    async def fake_get_selection():
+        return Selection(DegradedWarden(), "container-degraded")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert "isolation: container-degraded (limits not applied: cpu, memory, pids, " \
            "tmpfs-size)" in out[0].text
+
+
+_WHOLE = " (the whole sandbox, including its setup and file cache)"
+
+
+@pytest.mark.parametrize("fields, lines", [
+    ({"cpu_ms": 31, "mem_peak_mb": 11, "pids_peak": 2},
+     [f"usage: wall=412ms, cpu=31ms, mem_peak=11MiB, pids_peak=2{_WHOLE}"]),
+    ({"cpu_ms": 33, "not_measured": "mem_peak not measured: Linux 5.19+ needed; pids_peak not "
+                                    "measured: Linux 6.1+ needed"},
+     [f"usage: wall=412ms, cpu=33ms{_WHOLE}; mem_peak not measured: Linux 5.19+ needed; "
+      "pids_peak not measured: Linux 6.1+ needed"]),
+    ({"cpu_ms": 2250, "mem_peak_mb": 70, "pids_peak": 128,
+      "limit_hits": {"tasks_refused": 4113, "cpu_throttled_periods": 18, "cpu_periods": 20}},
+     [f"usage: wall=412ms, cpu=2250ms, mem_peak=70MiB, pids_peak=128{_WHOLE}",
+      "limits hit: pids (4113 new processes or threads refused), cpu (throttled in 18 of 20 "
+      "periods of 100 ms)"]),
+    ({"limit_hits": {"cpu_throttled_periods": 3, "cpu_periods": 4}},
+     ["usage: wall=412ms", "limits hit: cpu (throttled in 3 of 4 periods of 100 ms)"]),
+    # the container's shape: no kernel numbers, so no parenthetical
+    ({"not_measured": "cpu, mem_peak and pids_peak not measured: not readable from outside a "
+                      "container"},
+     ["usage: wall=412ms; cpu, mem_peak and pids_peak not measured: not readable from outside "
+      "a container"]),
+])
+def test_the_usage_lines(fields, lines):
+    """M3 step 1 §2.6: the exact lines, with `isolation:` still last."""
+    from vestibule import server
+
+    r = RunResult(stdout="1", stderr="", exit_code=0, timed_out=False, isolation="native",
+                  **fields)
+    assert server._format_result(r, 412) == "\n".join(
+        ["exit_code: 0", "stdout:\n1", *lines, "isolation: native"])
+
+
+async def test_wall_is_measured_around_the_run(monkeypatch):
+    """A fake clock, not Windows' 15.6 ms monotonic one (finding 6), that only selection and the
+    run move: selection's 10 s must not count (plan §2.6); the run's 411.000001 ms rounds up."""
+    from vestibule import server
+
+    now = [5_000_000_000]
+    monkeypatch.setattr(server, "time", types.SimpleNamespace(monotonic_ns=lambda: now[0]))
+
+    class TimedWarden:
+        async def run(self, *args, **kwargs):
+            now[0] += 411_000_001
+            return RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
+                             isolation="native")
+
+    async def fake_get_selection():
+        now[0] += 10_000_000_000
+        return Selection(TimedWarden(), "native")
+
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
+    out = await server._handle_run_code({"language": "python", "code": "print(1)"})
+    assert out[0].text == "exit_code: 0\nusage: wall=412ms\nisolation: native"
 
 
 @pytest.mark.parametrize("error, first_line", [
@@ -467,10 +523,10 @@ async def test_a_run_that_never_reports_back_claims_no_isolation(error, first_li
         async def run(self, *args, **kwargs):
             raise error
 
-    async def fake_get_warden():
-        return FailingWarden()
+    async def fake_get_selection():
+        return Selection(FailingWarden(), "native")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text == (f"{first_line}\nisolation: none (the sandbox did not report back; "
                            "no isolation is claimed for this run)")
@@ -833,10 +889,10 @@ async def test_cancelled_handler_leaves_no_run_behind(monkeypatch):
 
     monkeypatch.setattr(b, "_preflight_image", slow_to_unwind_preflight)
 
-    async def fake_get_warden():
-        return b
+    async def fake_get_selection():
+        return Selection(b, "container")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     async with anyio.create_task_group() as tg:
         tg.start_soon(server._handle_run_code, {"language": "python", "code": "1"})
         await asyncio.sleep(0.05)

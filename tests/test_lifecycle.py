@@ -15,6 +15,7 @@ import pytest
 import vestibule.backends.container as container_mod
 from vestibule.backends.base import RunRefusedError, RunResult
 from vestibule.backends.container import ContainerBackend
+from vestibule.backends.select import Selection
 from vestibule.config import Limits
 
 
@@ -94,10 +95,10 @@ async def test_server_renders_refusal_as_blocked(monkeypatch):
         async def run(self, *args, **kwargs):
             raise RunRefusedError("too many concurrent runs (max 4); retry shortly")
 
-    async def fake_get_warden():  # step 5: get_warden is async (cached selection)
-        return RefusingWarden()
+    async def fake_get_selection():  # step 5: async (cached selection); M3: the Selection
+        return Selection(RefusingWarden(), "container")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text.startswith("Blocked: too many concurrent runs")
 
@@ -492,6 +493,10 @@ async def test_degraded_backend_reports_detail(monkeypatch, tmp_path):
     r = await b.run("python", "print('hi')", 5, limits)
     assert r.isolation == "container-degraded"
     assert r.isolation_detail == "limits not applied: cpu, memory, pids, tmpfs-size"
+    # M3 A1: nothing the guest can't fake comes out of a container
+    assert r.not_measured == ("cpu, mem_peak and pids_peak not measured: not readable from "
+                              "outside a container")
+    assert (r.cpu_ms, r.mem_peak_mb, r.pids_peak, r.limit_hits) == (None, None, None, {})
 
     await asyncio.gather(*list(b._finishers), return_exceptions=True)
 
@@ -690,3 +695,44 @@ async def test_cancelled_cli_call_kills_its_process(monkeypatch):
     with pytest.raises(asyncio.CancelledError):
         await task
     assert proc.killed
+
+
+# --- what the audit's end record keeps (M3 step 2, docs/plans/M3/M3-step2-audit-writer.md) ---
+
+async def test_a_runtime_that_cant_spawn_ran_nothing(quiet_backend, monkeypatch, tmp_path):
+    async def missing(*cmd, **kw):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", missing)
+    r = await quiet_backend.run("python", "print(1)", 5, Limits(workspace_dir=str(tmp_path)))
+    assert (r.ran, r.isolation, r.stdout_bytes, r.output_capped) == (False, "none", None, False)
+    assert r.run_id is not None and len(r.run_id) == 16  # the name its log lines carry
+
+
+async def test_a_result_carries_the_image_id_the_preflight_saw(quiet_backend, monkeypatch,
+                                                              tmp_path):
+    b = quiet_backend
+
+    async def present(*args):
+        return (0, "sha256:abc\n", "")
+
+    proc = FakeCliProc(stdout=b"hi\n")
+    proc.exit(0)
+
+    async def fake_spawn(*cmd, **kw):
+        return proc
+
+    monkeypatch.setattr(b, "_preflight_image", ContainerBackend._preflight_image.__get__(b))
+    monkeypatch.setattr(b, "_cli_status", present)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
+    r = await b.run("python", "print(1)", 5, Limits(workspace_dir=str(tmp_path)))
+    assert (r.ran, r.image, r.stdout, r.stdout_bytes, r.stderr_bytes) == (
+        True, "sha256:abc", "hi\n", 3, 0)
+    assert r.run_id is not None and len(r.run_id) == 16
+
+
+def test_the_container_command_never_names_the_audit_dir(tmp_path):
+    """M3 A8: no backend mounts the audit dir; the command shape is fixed."""
+    lim = Limits(audit_dir=str(tmp_path / "audit-a8-probe"))
+    cmd = ContainerBackend()._build_command("c5", "python", lim, "/h/sbx", "/h/ws", 1, 30)
+    assert not [arg for arg in cmd if "audit" in arg]
