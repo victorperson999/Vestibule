@@ -177,6 +177,21 @@ exact command.
     must list `cpu memory pids`; systemd 252 and later delegate all three by default.
   - Restart the server after fixing it. Under `VESTIBULE_BACKEND=auto`, a full container, if
     one works, is chosen over native-degraded anyway.
+- **`audit: not recorded (…)`** or **`audit: not confirmed (…)`**, just above `isolation:`:
+  the run still happened; only its record in the audit log is missing or late. The server's
+  log has a warning too.
+  - *not recorded*: the record was lost, and the reason says why: the folder couldn't be
+    created, the disk is full, or the file was deleted while it was written. Check that
+    `VESTIBULE_AUDIT_DIR` (default `~/.vestibule/audit`) is writable and has space. The next
+    call tries again.
+  - *not confirmed (the disk didn't answer within 2 s)*: a slow or network drive. The record
+    may still land.
+  - *could not find the home directory; set VESTIBULE_AUDIT_DIR*: the default folder lives
+    under your home directory, and this machine has none. Set an absolute path.
+- **`Blocked: … the audit directory (…) and the workspace (…) overlap`**, or the rootfs
+  directory: sandboxed code could reach the records. Point one of the two settings somewhere
+  else, then restart the server. `VESTIBULE_WORKSPACE=~/.vestibule` does this with the default
+  audit folder.
 - **`usage: … not measured: …`**: the result names the numbers it lacks, and why.
   - *not readable from outside a container*: container runs report only `wall`. Anything
     more could only come from the guest's own output, which it can fake.

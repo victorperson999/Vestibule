@@ -67,6 +67,7 @@ class StdioServer:
         source = os.environ if base_env is None else base_env
         env = {k: v for k, v in source.items() if not k.startswith("VESTIBULE_")}
         env["VESTIBULE_WORKSPACE"] = str(workspace)
+        env["VESTIBULE_AUDIT_DIR"] = str(workspace.parent / "audit")  # never the user's own
         env.update(settings or {})
         proc = await asyncio.create_subprocess_exec(
             str(SERVER_EXE),

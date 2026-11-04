@@ -63,7 +63,7 @@ class NaiveBackend(Warden):
         if cmd is None:
             return RunResult(
                 stdout="", stderr=f"Interpreter for '{language}' not found on PATH.",
-                exit_code=127, timed_out=False, isolation="none",
+                exit_code=127, timed_out=False, isolation="none", ran=False,
             )
 
         try:
@@ -81,7 +81,7 @@ class NaiveBackend(Warden):
             )
         except FileNotFoundError as e:
             return RunResult(stdout="", stderr=str(e), exit_code=127,
-                             timed_out=False, isolation="none")
+                             timed_out=False, isolation="none", ran=False)
 
         timed_out = False
         self._procs.add(proc)
@@ -107,4 +107,6 @@ class NaiveBackend(Warden):
             isolation="none",   # M0 is explicitly unsafe; be honest
             not_measured="cpu, mem_peak and pids_peak not measured: the naive backend has no "
                          "sandbox to measure",
+            stdout_bytes=len(out),  # M3 W3; naive has no collection cap
+            stderr_bytes=len(err),
         )

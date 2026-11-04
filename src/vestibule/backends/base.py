@@ -34,6 +34,20 @@ class RunResult:
     isolation: str = "none"
     # per-control status when degraded, e.g. "limits not applied: memory, pids"
     isolation_detail: str | None = None
+    # M3 A6, for the audit: False only when the backend knows nothing executed; the backend's own
+    # id for the run (the container `vestibule-<id>`, the scope `vestibule-<id>.scope`, the
+    # `run <id>:` log lines); the image the run used (a runtime image id, or a native manifest
+    # digest); the bytes collected from the run's output streams before decoding, without any
+    # notes the backend appends (for a container these are the runtime CLI's streams, so its own
+    # errors count too, as on exit 125; native and container stop at twice max_output_bytes;
+    # naive has no cap; None when nothing was collected); whether collection hit that cap and
+    # stopped the sandbox (W3)
+    ran: bool = True
+    run_id: str | None = None
+    image: str | None = None
+    stdout_bytes: int | None = None
+    stderr_bytes: int | None = None
+    output_capped: bool = False
 
 
 class Warden(ABC):

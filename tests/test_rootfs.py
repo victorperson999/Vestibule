@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 from dockerutil import docker_required
+from homeutil import NoHome, RelativeHome
 from stdioutil import SERVER_EXE
 
 import vestibule.server as server
@@ -316,6 +317,22 @@ def test_a_valid_but_mismatched_marker_means_refetch(env, field, value):
     assert rootfs.find(d, f"python@sha256:{PY}") is not None
 
 
+@pytest.mark.parametrize("digest, expected", [
+    ("sha256:" + "e" * 64, "sha256:" + "e" * 64), (7, None), (None, None),
+])
+def test_find_returns_the_markers_manifest_digest(tmp_path, digest, expected):
+    """M3 A6: a native run's image_ran is the manifest setup unpacked, as its marker states it."""
+    key = f"{PY}-{_arch()}"
+    (tmp_path / key).mkdir()
+    marker = {"format": rootfs.FORMAT, "index_digest": f"sha256:{PY}",
+              "platform": f"linux/{_arch()}", "env": []}
+    if digest is not None:
+        marker["manifest_digest"] = digest
+    (tmp_path / f"{key}.json").write_text(json.dumps(marker))
+    found = rootfs.find(tmp_path, f"python@sha256:{PY}")
+    assert found is not None and found.manifest_digest == expected
+
+
 @linux_only
 @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0,
                     reason="root deletes through the chmod that stands in for a root-owned dir")
@@ -501,8 +518,39 @@ def test_setup_command_names_every_setting_setup_reads():
     assert rootfs.setup_command(lim) == (
         f"VESTIBULE_ROOTFS_DIR={q(str(lim.rootfs_path))} "
         f"VESTIBULE_WORKSPACE={q(str(lim.workspace_path))} "
+        f"VESTIBULE_AUDIT_DIR={q(str(lim.audit_path))} "
         f"VESTIBULE_IMAGE_PYTHON={lim.image_python} VESTIBULE_IMAGE_NODE={lim.image_node} "
         "vestibule-mcp setup")
+
+
+def test_the_printed_setup_command_passes_setups_own_checks(monkeypatch, tmp_path):
+    """critic, M3 step 2: setup validates the audit dir too (Limits.from_env), so a server whose
+    config is valid must not print a command that setup refuses."""
+    from vestibule.config import _audit_problem
+
+    lim = Limits(workspace_dir="~/.vestibule", rootfs_dir=str(tmp_path / "rf"),
+                 audit_dir=str(tmp_path / "audit"))  # the default audit dir is in this workspace
+    assert _audit_problem(lim, explicit=True) is None  # the server's config is valid
+    for name in list(os.environ):
+        if name.startswith("VESTIBULE_"):
+            monkeypatch.delenv(name)
+    for pair in shlex.split(rootfs.setup_command(lim))[:-2]:  # without `vestibule-mcp setup`
+        name, _, value = pair.partition("=")
+        monkeypatch.setenv(name, value)
+    assert Limits.from_env().audit_path == tmp_path / "audit"
+
+
+@pytest.mark.parametrize("stand_in", [NoHome, RelativeHome])
+def test_setup_command_leaves_out_a_default_audit_dir_it_cant_use(monkeypatch, tmp_path,
+                                                                 stand_in):
+    """W4: setup's own check skips that default too; naming it would make setup refuse a
+    relative path, or crash the hint while it's built."""
+    import vestibule.config as config
+
+    monkeypatch.setattr(config, "Path", stand_in)
+    lim = Limits(workspace_dir=str(tmp_path / "ws"), rootfs_dir=str(tmp_path / "rf"))
+    line = rootfs.setup_command(lim)
+    assert "VESTIBULE_AUDIT_DIR" not in line and line.endswith(" vestibule-mcp setup")
 
 
 def test_setup_command_quotes_and_expands():

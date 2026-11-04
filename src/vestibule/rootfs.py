@@ -46,6 +46,9 @@ class SetupError(Exception):
 class Rootfs:
     tree: Path
     env: list[str]  # the image config's Env (N9)
+    # the per-platform manifest setup unpacked, as its marker states it (M3 A6); `find` checks
+    # only the index digest against the key
+    manifest_digest: str | None = None
 
 
 def find(rootfs_dir: Path, image_ref: str) -> Rootfs | None:
@@ -61,7 +64,9 @@ def find(rootfs_dir: Path, image_ref: str) -> Rootfs | None:
             or not isinstance(marker.get("env"), list)
             or tree.is_symlink() or not tree.is_dir()):
         return None
-    return Rootfs(tree, [str(e) for e in marker["env"]])
+    digest = marker.get("manifest_digest")
+    return Rootfs(tree, [str(e) for e in marker["env"]],
+                  digest if isinstance(digest, str) else None)
 
 
 def overlap_problem(limits: Limits) -> str | None:
@@ -80,10 +85,16 @@ def setup_command(limits: Limits) -> str:
     """The exact `setup` line for this server: every setting setup reads, as the server has it,
     so neither a default nor a value exported in the user's shell sends it elsewhere (step 2
     §6, M2 step 6)."""
-    pairs = (("VESTIBULE_ROOTFS_DIR", str(limits.rootfs_path)),
+    pairs = [("VESTIBULE_ROOTFS_DIR", str(limits.rootfs_path)),
              ("VESTIBULE_WORKSPACE", str(limits.workspace_path)),  # setup's overlap check
              ("VESTIBULE_IMAGE_PYTHON", limits.image_python),
-             ("VESTIBULE_IMAGE_NODE", limits.image_node))
+             ("VESTIBULE_IMAGE_NODE", limits.image_node)]
+    try:  # setup checks the audit dir too (M3 A8), but not a default with no usable home (W4)
+        audit = limits.audit_path
+        if audit.is_absolute():
+            pairs.insert(2, ("VESTIBULE_AUDIT_DIR", str(audit)))
+    except RuntimeError:
+        pass
     return " ".join([*(f"{var}={shlex.quote(value)}" for var, value in pairs),
                      "vestibule-mcp setup"])
 

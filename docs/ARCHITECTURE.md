@@ -89,6 +89,10 @@ The MCP SDK is `async`, and the native warden is all blocking syscalls (`unshare
 
 Forking the server instead (from an executor thread, as this document first said) was rejected: the server is multi-threaded (the event loop, the SDK's machinery), and `fork()` copies only the calling thread, so a lock another thread held stays locked forever in the child. The one blocking step left in the server, moving the helper between cgroups (the kernel takes a global lock for it), runs in a thread (`asyncio.to_thread`).
 
+### The audit writer: one thread, one wait per call
+
+Every `run_code` call that reaches the handler leaves records in `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`): a `blocked` record when it ends before a backend is chosen, otherwise a `start` and an `end` sharing one id. The event loop never touches that disk. `audit.AuditLog.submit` serializes the record and puts it on a bounded queue (1000) with an acknowledgement future, and one daemon thread per process, holding the process's one file descriptor, writes it and settles the future through `call_soon_threadsafe`. It is not `asyncio.to_thread`: stuck writes would hold workers of the default pool, which also runs native placement, `read_workspace` and the container finisher, so a hung audit disk would degrade runs. One descriptor also matters on Windows, whose C runtime emulates `O_APPEND` as a seek and a write and loses records when each write opens its own. The `start` is queued before the run and not waited for; after the run, one wait of at most 2 s covers both records. A record that doesn't land never stops the run: the result gets an `audit: not recorded (…)` or `audit: not confirmed (…)` line above `isolation:`, and a cancelled call queues its record and re-raises at once. Contract: [`M3-audit-usage.md`](plans/M3/M3-audit-usage.md) A5–A8; build: [`M3-step2-audit-writer.md`](plans/M3/M3-step2-audit-writer.md).
+
 ---
 
 ## Part 2 — The warden

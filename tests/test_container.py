@@ -71,6 +71,12 @@ async def test_python_hello(backend, limits):
     assert r.exit_code == 0
     assert "hi from container" in r.stdout
     assert r.isolation == "container"
+    # M3 A6, for the audit: the image id the preflight saw, and the run's own id
+    image_id = subprocess.run(["docker", "image", "inspect", "--format", "{{.Id}}",
+                               limits.image_python], capture_output=True, text=True,
+                              check=True).stdout.strip()
+    assert r.ran and r.image == image_id and re.fullmatch(r"[0-9a-f]{16}", r.run_id)
+    assert (r.stdout_bytes, r.output_capped) == (len("hi from container\n"), False)
 
 
 @docker_required
@@ -177,6 +183,7 @@ async def test_output_flood_is_capped_and_killed(backend, limits):
     )
     # Collection cap is 2x max_output_bytes
     assert len(r.stdout) <= 2 * limits.max_output_bytes
+    assert r.output_capped and r.stdout_bytes == 2 * limits.max_output_bytes  # M3 W3
 
 
 # ------------------------------------------------------------- step 4: lifecycle (§4)

@@ -49,7 +49,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 step 7a | Acceptance suite (criteria 1–13 through the handler) + cold-start benchmark (no `src/` change) | 2026-10-31 | `6ada758` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 step 7b | Live checks (Linux and Windows Claude Code) + docs pass; **M2 accepted** (no `src/` change) | 2026-10-31 | `f318e0c` | 553 Linux (0 skipped); 412 + 121 POSIX/Linux-only skips on Windows |
 | M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
-| M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | pending | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
+| M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | `40f63be` | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
+| M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | pending | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -65,6 +66,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
 | 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
+| 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
 
 **Closed:**
 - The 2026-10-31 root-server issue is closed in the M2 follow-ups (F-D1). A server started as
@@ -100,9 +102,107 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M3 step 1 — usage numbers in every result (2026-11-02)
+## M3 step 2 — the audit log (2026-11-03)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M3/M3-step2-audit-writer.md`](plans/M3/M3-step2-audit-writer.md) (v2
+  after the `skeptic` review, signed 2026-11-03 with W1–W4). The build's changes and both
+  review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)
+  A2, A3, A5–A8, with W1–W4's amendment blockquotes.
+- **What:**
+  - **`audit.py` (new):**
+    - `AuditLog(directory)`, built at import with no I/O. `submit(record)` serializes on the
+      loop (ASCII JSON) and queues `(line, settle)` with `put_nowait` (1000), returning a
+      future bound to the running loop. A done callback logs any note.
+    - `confirm(*futs)` is one `asyncio.wait(..., timeout=2)` that never cancels. It returns
+      the worse note: `not recorded` beats `not confirmed`, which beats `None`.
+    - One daemon thread (`_serve`) runs `_write` per record and settles through
+      `call_soon_threadsafe`. It never logs.
+    - `_write`: an `st_nlink == 0` check before (reopen) and after (`_DELETED`). Any failure
+      drops the fd (`_drop`), and the next record reopens.
+    - `_open`: `expanduser` (no home, or a relative one: `_NO_HOME`), `mkdir(0o700)`, and
+      `os.open(O_RDWR|O_APPEND|O_CREAT|O_BINARY, 0o600)`. It reads the last byte to set
+      `_dirty`, which is the newline repair.
+    - Builders `blocked_record`, `start_record`, `end_record` and `end_from_result`, and
+      `cut` (UTF-8 encode with `replace`, decode with `ignore`).
+  - **`server.py`:**
+    - `get_selection()` replaces `get_warden()`. `AUDIT` is module-level.
+    - `_handle_run_code`'s records: `_refuse` for `blocked(refused)`, a cancel during
+      selection for `blocked(cancelled)`, and an error in selection for `blocked(failed)`.
+      Otherwise the `start` is queued before the run, and after it `end` comes from the result
+      or `end_record(refused|failed|cancelled)`.
+    - Helpers `_failure`, `_audit_line`, `_ms_since`, `_backend` and `_client`.
+    - `_format_result(..., audit_note)` puts `audit:` above `isolation:`.
+  - **`config.py`:** `audit_dir`/`audit_path`, and `_audit_problem`: absolute or `~`, with
+    W4's exemptions for the default, and no overlap with the workspace or rootfs dir.
+    `_overlap` uses `_resolved` (realpath, or `normpath` on `OSError`) plus `normcase` and
+    `casefold`.
+  - **`rootfs.py`:** `Rootfs.manifest_digest` from the marker. `setup_command` names
+    `VESTIBULE_AUDIT_DIR` when the server's is usable.
+  - **Backends:**
+    - `base.py`: `RunResult.ran`, `run_id`, `image`, `stdout_bytes`, `stderr_bytes` and
+      `output_capped`.
+    - `native.py`: `_ran`, `_Run.image`, `_not_run(why, run_id)` and the result's new fields.
+    - `container.py`: `_images_ok` becomes `_image_ids` (the preflight's `{{.Id}}`).
+    - `naive.py`: `ran=False` on its two exit-127 results, plus the byte counts.
+  - **Scripts and test plumbing:** `bench_coldstart.py` uses `get_selection` and its own
+    audit dir. `tests/stdioutil.py` gives every spawned server `<workspace>/../audit`, and the
+    e2e SDK-client test sets its own.
+  - **Tests:**
+    - `tests/conftest.py` (new): the autouse in-memory `RecordingAudit`.
+    - `tests/homeutil.py` (new): the `NoHome`/`RelativeHome` stand-ins.
+    - `tests/test_audit.py` (new): the writer and the handler's records.
+    - Additions in `test_config.py`, `test_rootfs.py`, `test_native_verdict.py`,
+      `test_native.py`, `test_lifecycle.py`, `test_container.py`, `test_smoke.py` and
+      `test_stdio_e2e.py`.
+    - Six fakes in `test_select.py` and `test_lifecycle.py` moved to `get_selection`.
+  - **Docs:** README (the `VESTIBULE_AUDIT_DIR` row), GETTING_STARTED (`audit:` lines and the
+    overlap error), ARCHITECTURE (the writer), and the contract's W1–W4 amendments.
+- **Found:**
+  - **Gate, first run:** conftest's autouse fixture requested `monkeypatch`, so its undo ran
+    after `test_native.py`'s `no_scope_left` teardown. Tests that strip `busctl`/`systemctl`
+    from `PATH` then failed that check, giving 6 teardown errors on Linux. It now restores
+    `server.AUDIT` by hand.
+  - **Gate, first run:** a Windows-only test skipped on Linux, and the Linux gate fails on any
+    skip. It now runs everywhere.
+  - **Build:** a torn-write stand-in that wrote half a line and then raised was unrealistic,
+    since `os.write` returns a short count or raises having written nothing. It now does a
+    short write, then a failing one.
+  - **Review:** see the plan's §9 table (round 1: 1 medium, 5 low; round 2: 8 low).
+- **Review:**
+  - **Round 1:** `critic` found 1 medium and 5 low issues, and `verifier` confirmed all six
+    (#6 in part).
+  - **Round 2,** on the fixes: 8 low findings. `verifier` confirmed 7 and rated 1 plausible.
+    Seven were fixed, and the NFS hang was recorded (known issues).
+- **Mutants:** 28 of 28 red after a green control, 27 in WSL and `O_BINARY` on Windows.
+- **Gate (after round 2's fixes):**
+  - check_env, ruff and mypy clean on both platforms.
+  - Linux 3.14 full suite: 693 passed, 0 skipped.
+  - Linux 3.11 Docker-free: 650.
+  - stdio: 5 of 5.
+  - Windows: 533 passed + 140 POSIX/Linux-only skips.
+- **Where to start if it breaks:**
+  - **A call with no records, or the wrong kind:** `_handle_run_code`'s branches, in order:
+    validation (`_refuse`), selection (cancel, refusal, error), the `start`, then the run
+    (cancel, refusal, `_failure`, `end_from_result`). Tests:
+    `test_each_run_outcome_leaves_a_start_and_its_end` and the cancel tests in
+    `tests/test_audit.py`.
+  - **`audit: not confirmed` on a healthy disk:** the writer thread is stuck or dead. `_serve`
+    must never let an exception out, and `settle` on a closed loop is suppressed.
+  - **Glued or empty lines in an audit file:** `_open`'s last-byte read, and `_drop` on every
+    failure in `_write`.
+  - **Records in the user's real audit folder from tests:** `tests/conftest.py`'s
+    `RecordingAudit`, `stdioutil.StdioServer.start`'s `VESTIBULE_AUDIT_DIR`, and
+    `bench_coldstart.py`'s env.
+  - **A config error naming `VESTIBULE_AUDIT_DIR` that looks wrong:** `_audit_problem`.
+    `explicit` gates the absolute-path rules (W4), and `_resolved` falls back when
+    `realpath` raises.
+  - **`setup` refusing a command the server printed:** `rootfs.setup_command` must name every
+    setting `Limits.from_env` checks.
+
+## M3 step 1 — usage numbers in every result (2026-11-02)
+
+- **Commit:** `40f63be`.
 - **Plan:** [`docs/plans/M3/M3-step1-usage.md`](plans/M3/M3-step1-usage.md) (v2 after the
   `skeptic` review, signed 2026-11-02 with U1–U7). The build's changes and both review rounds
   are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) A1,

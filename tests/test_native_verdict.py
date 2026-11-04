@@ -502,3 +502,23 @@ async def test_without_a_rootfs_nothing_is_spawned(tmp_path, monkeypatch):
     assert r.isolation == "none" and r.exit_code == -1 and r.stdout == ""
     assert r.isolation_detail.endswith("; nothing was executed")
     assert "vestibule-mcp setup" in r.isolation_detail or "needs Linux" in r.isolation_detail
+    assert r.ran is False  # M3 A6: an end(not_run)
+
+
+# --- what the audit's end record keeps (M3 step 2, docs/plans/M3/M3-step2-audit-writer.md) ---
+
+@pytest.mark.parametrize("lines, ran", [
+    ([{"error": "mounts", "message": "x"}], False),  # sent only before the guest exists
+    ([{"ready": {}}, {"exit": {"code": 1}}], True),
+    ([{"ready": {}}, {"error": "late"}], True),  # only the first ready/error line counts
+    ([{"usage": {}}, {"error": "mounts"}], False),
+    ([], True),  # no report: nothing says the code didn't run
+])
+def test_ran_is_false_only_for_an_error_first(lines, ran):
+    assert native._ran(lines) is ran
+
+
+def test_not_run_says_nothing_ran():
+    assert (native._not_run("why").ran, native._not_run("why").run_id) == (False, None)
+    r = native._not_run("could not start", "0123456789abcdef")
+    assert (r.ran, r.run_id, r.isolation) == (False, "0123456789abcdef", "none")

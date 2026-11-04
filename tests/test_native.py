@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import platform
+import re
 import secrets
 import subprocess
 import sys
@@ -89,6 +90,12 @@ async def test_hello_in_all_three_languages(backend, limits, language, code, out
     assert r.exit_code == 0 and r.stdout.startswith(out) and r.stderr == ""
     # The filter is loaded, so a clean run is native-tier and reports no denied syscalls (S5-D8).
     assert r.isolation in ("native", "native-degraded") and r.denied_syscalls == []
+    # M3 A6, for the audit: the run's own id, and the manifest setup unpacked
+    image = limits.image_node if language == "node" else limits.image_python
+    found = rootfs.find(limits.rootfs_path, image)
+    assert found is not None and found.manifest_digest is not None
+    assert r.ran and re.fullmatch(r"[0-9a-f]{16}", r.run_id) and r.image == found.manifest_digest
+    assert (r.stdout_bytes, r.stderr_bytes, r.output_capped) == (len(r.stdout.encode()), 0, False)
 
 
 async def test_exit_codes(backend, limits):
@@ -447,6 +454,8 @@ async def test_an_output_flood_is_cut_and_the_sandbox_stopped(backend, limits, c
     assert not r.timed_out and r.exit_code == 137 and time.monotonic() - t0 < 10
     assert len(r.stdout) <= 2 * limits.max_output_bytes
     assert r.stderr.endswith("[output exceeded collection cap; the sandbox was terminated]")
+    # M3 W3: the audit can tell this from an out-of-memory kill, which is also 137
+    assert r.output_capped and r.stdout_bytes == 2 * limits.max_output_bytes
     assert await backend.drain(10)
     assert any("sandbox gone (helper exit 0)" in m for m in caplog.messages), caplog.messages
 
@@ -503,6 +512,7 @@ async def test_an_empty_tree_fails_setup_at_mounts(backend, tmp_path):
     assert r.isolation == "none" and r.stdout == ""
     assert r.isolation_detail.startswith("native sandbox setup failed at mounts: ")
     assert r.isolation_detail.endswith("; nothing was executed")
+    assert r.ran is False and r.image == "sha256:" + "f" * 64  # M3 A6: an end(not_run)
 
 
 async def test_a_helper_that_reports_nothing_claims_nothing(backend, limits, tmp_path,

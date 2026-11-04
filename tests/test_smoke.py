@@ -1,4 +1,6 @@
 """Smoke test for the M0 naive backend. Runs without an agent."""
+import sys
+
 import pytest
 
 from vestibule.backends.naive import NaiveBackend
@@ -26,6 +28,7 @@ async def test_timeout_is_enforced():
 async def test_unknown_language_is_clean():
     result = await NaiveBackend().run("ruby", "puts 1", 5, Limits())
     assert result.exit_code == 127
+    assert result.ran is False  # M3 A6: an end(not_run)
 
 
 @pytest.mark.asyncio
@@ -43,6 +46,7 @@ async def test_spawn_failure_reports_isolation_none(monkeypatch):
     assert result.exit_code == 127
     assert result.timed_out is False
     assert result.isolation == "none"
+    assert result.ran is False
 
 
 @pytest.mark.asyncio
@@ -54,3 +58,10 @@ async def test_guest_stdin_is_closed_not_inherited():
     assert result.timed_out is False
     assert result.exit_code == 0
     assert "read 0 bytes" in result.stdout
+
+
+async def test_output_sizes_are_the_bytes_collected():
+    """M3 W3: naive has no collection cap; print writes \\r\\n on Windows."""
+    result = await NaiveBackend().run("python", "print(1)", 10, Limits())
+    assert result.stdout_bytes == (3 if sys.platform == "win32" else 2)
+    assert (result.stderr_bytes, result.output_capped, result.ran) == (0, False, True)

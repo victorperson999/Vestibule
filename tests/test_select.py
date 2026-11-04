@@ -21,7 +21,7 @@ import vestibule.backends.select as select_mod
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.backends.container import SOFT_CONTROLS, ContainerBackend
 from vestibule.backends.naive import NaiveBackend
-from vestibule.backends.select import BackendSelector
+from vestibule.backends.select import BackendSelector, Selection
 
 
 @pytest.fixture(autouse=True)
@@ -420,13 +420,13 @@ async def test_server_renders_selection_refusal_as_blocked(monkeypatch):
     naive fallback, never an exception."""
     from vestibule import server
 
-    async def refusing_get_warden():
+    async def refusing_get_selection():
         raise RunRefusedError(
             "no usable container runtime (docker: not installed). "
             "Start Docker Desktop (or install Docker/Podman), then retry."
         )
 
-    monkeypatch.setattr(server, "get_warden", refusing_get_warden)
+    monkeypatch.setattr(server, "get_selection", refusing_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text.startswith("Blocked: no usable container runtime")
     assert "Docker" in out[0].text
@@ -444,10 +444,10 @@ async def test_server_renders_degraded_isolation(monkeypatch):
                 isolation_detail="limits not applied: cpu, memory, pids, tmpfs-size",
             )
 
-    async def fake_get_warden():
-        return DegradedWarden()
+    async def fake_get_selection():
+        return Selection(DegradedWarden(), "container-degraded")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert "isolation: container-degraded (limits not applied: cpu, memory, pids, " \
            "tmpfs-size)" in out[0].text
@@ -500,11 +500,11 @@ async def test_wall_is_measured_around_the_run(monkeypatch):
             return RunResult(stdout="", stderr="", exit_code=0, timed_out=False,
                              isolation="native")
 
-    async def fake_get_warden():
+    async def fake_get_selection():
         now[0] += 10_000_000_000
-        return TimedWarden()
+        return Selection(TimedWarden(), "native")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text == "exit_code: 0\nusage: wall=412ms\nisolation: native"
 
@@ -523,10 +523,10 @@ async def test_a_run_that_never_reports_back_claims_no_isolation(error, first_li
         async def run(self, *args, **kwargs):
             raise error
 
-    async def fake_get_warden():
-        return FailingWarden()
+    async def fake_get_selection():
+        return Selection(FailingWarden(), "native")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     out = await server._handle_run_code({"language": "python", "code": "print(1)"})
     assert out[0].text == (f"{first_line}\nisolation: none (the sandbox did not report back; "
                            "no isolation is claimed for this run)")
@@ -889,10 +889,10 @@ async def test_cancelled_handler_leaves_no_run_behind(monkeypatch):
 
     monkeypatch.setattr(b, "_preflight_image", slow_to_unwind_preflight)
 
-    async def fake_get_warden():
-        return b
+    async def fake_get_selection():
+        return Selection(b, "container")
 
-    monkeypatch.setattr(server, "get_warden", fake_get_warden)
+    monkeypatch.setattr(server, "get_selection", fake_get_selection)
     async with anyio.create_task_group() as tg:
         tg.start_soon(server._handle_run_code, {"language": "python", "code": "1"})
         await asyncio.sleep(0.05)

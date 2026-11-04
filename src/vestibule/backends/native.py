@@ -72,6 +72,7 @@ class _Run:
     """One run's moving parts. The finisher owns whatever is left once the result is out."""
 
     run_id: str
+    image: str | None = None  # the manifest digest setup unpacked (M3 A6)
     proc: asyncio.subprocess.Process | None = None
     stdout: asyncio.StreamReader | None = None
     stderr: asyncio.StreamReader | None = None
@@ -111,13 +112,13 @@ class NativeBackend(Warden):
             raise RunRefusedError(
                 f"too many concurrent runs (max {limits.max_concurrent}); retry shortly"
             ) from None
-        run = _Run(secrets.token_hex(8))
+        run = _Run(secrets.token_hex(8), image=found.manifest_digest)
         try:
             try:
                 await self._spawn(run, language, code, timeout_s, limits, found)
             except OSError as e:
                 log.error("run %s: could not start the native helper: %s", run.run_id, e)
-                return _not_run(f"could not start the native sandbox helper: {e}")
+                return _not_run(f"could not start the native sandbox helper: {e}", run.run_id)
             await self._release(run, timeout_s, limits)
             return await self._collect(run, timeout_s, limits)
         finally:
@@ -270,8 +271,8 @@ class NativeBackend(Warden):
                                      host_ns=_host_namespaces(), host_proc=_host_proc(),
                                      limits=limits, cgroup=run.cgroup, applied=run.applied,
                                      unplaced=run.unplaced)
-        exit_code, note = _outcome(lines, timed_out=timed_out,
-                                   truncated=len(out_buf) >= cap or len(err_buf) >= cap,
+        truncated = len(out_buf) >= cap or len(err_buf) >= cap
+        exit_code, note = _outcome(lines, timed_out=timed_out, truncated=truncated,
                                    oom_limit_mb=limits.mem_mb if "memory" in run.applied else None)
         denied, note = _denied(lines, note)  # the helper's `denied` line (S5-D5)
         usage = _usage(lines, isolation=isolation, cgroup=run.cgroup,  # M3 A1
@@ -281,7 +282,10 @@ class NativeBackend(Warden):
         return RunResult(stdout=out_buf.decode(errors="replace"),
                          stderr=err_buf.decode(errors="replace") + note,
                          exit_code=exit_code, timed_out=timed_out, denied_syscalls=denied,
-                         isolation=isolation, isolation_detail=detail, **usage)
+                         isolation=isolation, isolation_detail=detail, **usage,
+                         ran=_ran(lines), run_id=run.run_id, image=run.image,
+                         stdout_bytes=len(out_buf), stderr_bytes=len(err_buf),
+                         output_capped=truncated)
 
     @staticmethod
     async def _stop_on(overflow: asyncio.Event, run: _Run) -> None:
@@ -367,9 +371,9 @@ def _host_proc() -> dict[str, bool]:
             if os.path.exists(f"/proc/{name}")}
 
 
-def _not_run(why: str) -> RunResult:
+def _not_run(why: str, run_id: str | None = None) -> RunResult:
     return RunResult(stdout="", stderr="", exit_code=-1, timed_out=False, isolation="none",
-                     isolation_detail=f"{why}; nothing was executed")
+                     isolation_detail=f"{why}; nothing was executed", ran=False, run_id=run_id)
 
 
 # --- pure functions: every platform ------------------------------------------------------
@@ -379,6 +383,13 @@ def _guest_env(image_env: list[str]) -> dict[str, str]:
     env = {key: value for key, sep, value in (e.partition("=") for e in image_env) if sep}
     env.update(_PROFILE_ENV)
     return env
+
+
+def _ran(lines: list[dict[str, Any]]) -> bool:
+    """False only when the first `ready`/`error` line is an `error`, which init sends only before
+    the guest exists (M3 A6). No report at all stays True: nothing says the code didn't run."""
+    first = next((line for line in lines if "ready" in line or "error" in line), None)
+    return first is None or "error" not in first
 
 
 def _parse_status(data: bytes) -> list[dict[str, Any]]:

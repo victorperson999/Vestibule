@@ -80,6 +80,9 @@ class Limits:
     # M2: where `vestibule-mcp setup` unpacks the images (docs/plans/M2/M2-step2-rootfs.md)
     rootfs_dir: str = "~/.vestibule/rootfs"
 
+    # M3: the audit log (docs/plans/M3/M3-audit-usage.md A5, A8)
+    audit_dir: str = "~/.vestibule/audit"
+
     @property
     def workspace_path(self) -> Path:
         return Path(self.workspace_dir).expanduser()
@@ -87,6 +90,10 @@ class Limits:
     @property
     def rootfs_path(self) -> Path:
         return Path(self.rootfs_dir).expanduser()
+
+    @property
+    def audit_path(self) -> Path:
+        return Path(self.audit_dir).expanduser()
 
     @classmethod
     def from_env(cls) -> "Limits":
@@ -150,7 +157,68 @@ class Limits:
             max_concurrent=_i("VESTIBULE_MAX_CONCURRENT", 4),
             tmpfs_mb=_i("VESTIBULE_TMPFS_MB", 64),
             rootfs_dir=_s("VESTIBULE_ROOTFS_DIR", "~/.vestibule/rootfs"),
+            audit_dir=_s("VESTIBULE_AUDIT_DIR", "~/.vestibule/audit"),
         )
+        audit = _audit_problem(limits, explicit=bool(os.environ.get("VESTIBULE_AUDIT_DIR")))
+        if audit:
+            problems.append(audit)
         if problems:
             raise ConfigError(problems)
         return limits
+
+
+def _audit_problem(limits: Limits, *, explicit: bool) -> str | None:
+    """Why the audit dir can't be used (A8), or None. The sandbox must never reach the records,
+    so the dir must be absolute and outside the workspace and the rootfs dir. Static, so it runs
+    at startup. An unset default that can't expand (no home directory) is not a problem here:
+    the writer reports it on every record instead (W4)."""
+    shown = f"VESTIBULE_AUDIT_DIR={_shown(limits.audit_dir)}"
+    try:
+        audit = limits.audit_path
+    except RuntimeError as e:  # no home directory, or a ~user that doesn't exist
+        return f"{shown} must be an absolute path or start with ~ ({e})" if explicit else None
+    if not audit.is_absolute():  # relative, drive-relative (Windows), or a relative home
+        if not explicit:
+            return None
+        if limits.audit_dir.startswith("~"):
+            return (f"{shown} expands to {audit}, which isn't absolute: the home directory is "
+                    "relative")
+        return f"{shown} must be an absolute path or start with ~"
+    for what, setting, raw in (("the workspace", "VESTIBULE_WORKSPACE", limits.workspace_dir),
+                               ("the rootfs directory", "VESTIBULE_ROOTFS_DIR", limits.rootfs_dir)):
+        try:
+            other = Path(raw).expanduser()
+        except RuntimeError:  # its own first use fails and says so
+            continue
+        if _overlap(audit, other):
+            return (f"the audit directory ({audit}, VESTIBULE_AUDIT_DIR) and {what} ({other}, "
+                    f"{setting}) overlap; point one of them somewhere else")
+    return None
+
+
+def _overlap(a: Path, b: Path) -> bool:
+    """The same dir, or one inside the other. Case is folded on every platform: macOS's
+    normcase keeps it, though its default file system ignores it. Folding refuses only a Linux
+    pair that differs by case alone, the safe direction. As rootfs.overlap_problem, which this
+    module can't import (rootfs imports config)."""
+    x, y = (os.path.normcase(_resolved(p)).casefold() for p in (a, b))
+    return x == y or _inside(x, y) or _inside(y, x)
+
+
+def _resolved(path: Path) -> str:
+    """The real path, or the path as written when it can't be resolved now. This runs at the
+    server's import, where an error would stop the server: Windows' realpath raises for an
+    offline network drive (WinError 1231), and POSIX's for a relative path once the cwd is gone.
+    normpath touches nothing, not even the cwd. (realpath can still block on a dead hard NFS
+    mount; the plan's as-built section records that.)"""
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return os.path.normpath(path)
+
+
+def _inside(child: str, parent: str) -> bool:
+    try:
+        return os.path.commonpath([child, parent]) == parent
+    except ValueError:  # different drives on Windows
+        return False
