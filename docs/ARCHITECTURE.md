@@ -52,6 +52,8 @@ The technical design. Two halves: the **MCP server** (front desk — decides *wh
 
 MCP is JSON-RPC between an agent host and your server. For a local server the transport is **stdio**: the host launches the process and talks over stdin/stdout. Therefore **stdout is the protocol channel** — any stray `print()` corrupts the stream. All logging → stderr or a file. This is the #1 way people break an MCP server.
 
+**Log calls never wait for stderr** (M3 step 4). A client that stops reading the server's stderr fills the pipe, and a plain log handler would then block the event loop at its next line. The server's handler (`stderr_log.py`) only puts the line in a queue, bounded at 1,000 lines of at most 16,384 characters each; one daemon thread writes the queue to its own copy of fd 2. On a full queue lines are dropped and counted, and `stderr was not being read: dropped N log line(s)` marks the gap once lines go through again. Every exit waits at most 20 ms for the queue, and the POSIX shutdown line is skipped when the queue didn't drain in that time or stderr has no room. What still writes stderr directly, all on crash paths: Python's exception hooks (an uncaught exception in a thread, an unraisable one, and on Windows one that escapes `server.run`), and the native helper when it crashes.
+
 Flow: `initialize` handshake → host calls `tools/list` to discover tools → host calls `tools/call` to invoke one. The official `mcp` SDK handles the wire framing; you write handlers.
 
 ### Server responsibilities

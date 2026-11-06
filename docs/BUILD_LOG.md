@@ -51,7 +51,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M2 follow-ups | A root server refused; an `isolation:` line on every result after validation; the nproc test made host-independent; two doc lines | 2026-11-01 | `c5fe2a2` | 562 Linux (0 skipped); 414 + 128 POSIX/Linux-only skips on Windows |
 | M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | `40f63be` | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
 | M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | `fb26ba1` | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
-| M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | pending | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
+| M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | `a9dfc09` | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
+| M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | pending | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -64,13 +65,20 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. **Re-measured in M2 step 7b** (Claude Code 2.1.316, one sample each): Ctrl+C cancels the call before Claude Code exits, and the cancel path removed the container (seen up at one poll, gone at the next, 0.75 s later); closing the terminal window mid-run closed the server's stdin with the call in flight, and the container was gone within 1.43 s, more than two minutes before its self-deadline. The race wasn't hit, but nothing rules it out. | Later milestone (liveness lease) |
 | 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. | Upstream; look again with the `mcp<2` move |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
-| 2026-10-25 (M2 step 3 review) | server logging | The server logs to stderr synchronously, so a client that stops reading stderr fills the pipe and the server blocks at its next log call. This hits every backend, M1's included. The native helper's own self-deadline no longer depends on stderr (step 3's second `critic` round), but a server blocked this way stops nothing. | Open; a non-blocking log handler is a candidate alongside M3's audit log |
 | 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
 | 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
 | 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
 | 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching |
+| 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
 
 **Closed:**
+- The 2026-10-25 server-logging issue (a client that stops reading stderr blocks the server at
+  its next log call) is closed in M3 step 4. Log calls only queue the line, one thread writes
+  it to its own dup of fd 2, and a full queue drops and counts. The end-to-end test that
+  never reads stderr hung at call 6 before the change and passes after it. What still writes
+  stderr directly, all on crash paths: Python's exception hooks (a thread's, the unraisable
+  one, and on Windows one that escapes `server.run`, in the table above) and the native
+  helper when it crashes.
 - The 2026-10-31 root-server issue is closed in the M2 follow-ups (F-D1). A server started as
   root had its guest run as host uid 0 under native (the identity map copied uid 0) and under
   the container too (`--user 0:0`, against M1's D3, which the review found), while the results
@@ -104,9 +112,76 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M3 step 3 — `vestibule-mcp audit` (2026-11-04)
+## M3 step 4 — non-blocking stderr (2026-11-05)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M3/M3-step4-stderr.md`](plans/M3/M3-step4-stderr.md) (v2.1 after the
+  `skeptic` review, signed 2026-11-04 with Q1–Q4). The build's changes, the mutants and both
+  review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)
+  A11 and criterion 9, with the step-4 amendment blockquote.
+- **What:**
+  - **`stderr_log.py` (new):** `NonBlockingHandler`, `install(fmt)` and `drain()`.
+    - **`emit`** formats the line, cuts it to 16,384 characters (`_put`), and puts it in a
+      `SimpleQueue`. If `qsize()` is 1000 or more, it counts a drop instead. The first line
+      accepted after drops carries the `dropped N` notice.
+    - **`handleError`** queues one note instead of the stock traceback (Q4).
+    - **The writer thread** (`vestibule-stderr`, daemon) writes each line in full to its own
+      `os.dup(fd)` with `os.write`, in `sys.stderr`'s encoding with `backslashreplace` and
+      `os.linesep`. It drops a line whose write fails. With no fd to dup there's no writer.
+    - **`drain`** queues an `Event` and waits for it at most 20 ms. `flush` calls it, so
+      `logging.shutdown` drains too.
+  - **`server.py`:**
+    - `_LOG_FORMAT`;
+    - `stderr_log.install(_LOG_FORMAT)` as `_main()`'s first line;
+    - the hand-off writes its line only if `stderr_log.drain()` returned True and
+      `_stderr_has_room()` (a zero-timeout `select`) agrees, cut to 511 bytes plus `\n`;
+    - the Windows `os._exit` branch drains inside its own `suppress`.
+  - **Tests:**
+    - `tests/test_stderr_log.py` (new): 11 unit and subprocess tests, plus the e2e test
+      `test_a_client_that_never_reads_stderr`, which is native-marked and Linux-only.
+    - `tests/test_shutdown.py`: 5 tests (one parametrized twice), plus the `handoff` fixture's
+      drain stub and its Windows `select` stub.
+    - `tests/stdioutil.py`: `StdioServer.start(stderr=fd)`.
+  - **Docs:** ARCHITECTURE (log calls never wait for stderr; the residuals), GETTING_STARTED
+    (the two new log lines), and the contract's A11 amendment.
+- **Found:**
+  - **Red first:** before the change, the e2e test hung at call 6, with 3,997 bytes unread in
+    a 4,096-byte pipe.
+  - **Mutants, first run:** two were caught by the wrong test. Test 9's child exited before its
+    writer blocked (now it waits 0.5 s). Test 15's pipe still had room for the 50-byte shutdown
+    line (now it's filled to the last byte).
+  - **Harness:** the control looked like a hang twice. It was the harness: an empty
+    `MUT_TESTS` ran the whole suite.
+- **Review:**
+  - **Round 1:** `critic` found 6 low issues; `verifier` confirmed 5 and rated 1 plausible. The
+    fixes: the per-call timing, the Windows drain order, the hand-off's drain gate, the drain
+    retries, and `perf_counter`.
+  - **Round 2:** 5 low issues, all confirmed (one in part, one raised to low–medium). The
+    fixes: the drain gate's comment, the plan's §9 and the amendment's header, the fill's stated
+    purpose, and the Windows residual.
+  - **Left for Victor:** the drain gate and Q4's type-name note (plan §9.2).
+- **Mutants:** 23 of 23 red after a green control, in WSL on 3.14.
+- **Gate:**
+  - check_env, ruff and mypy clean on both platforms.
+  - Linux 3.14 full suite: 799 passed, 0 skipped.
+  - Linux 3.11 Docker-free: 756.
+  - stdio: 5 of 5.
+  - Windows: 637 passed, plus 142 POSIX/Linux-only skips.
+- **Where to start if it breaks:**
+  - **The server freezes while a client is connected:** check whether something writes stderr
+    synchronously on the server path. Only the residuals should, and `install` must still run
+    first in `_main`. Test: `test_a_client_that_never_reads_stderr`.
+  - **The server hangs at exit:** a handler lock held while blocked on a write. Tests:
+    `test_a_normal_exit_with_a_stuck_stderr` and `test_a_finalizer_that_logs_inside_a_log_call`.
+  - **Log lines missing or out of order:** `_put` (the bound and the notice) and
+    `_write_lines`. Tests: `test_the_gap_is_marked_where_it_is` and
+    `test_a_failed_write_drops_only_that_line`.
+  - **The shutdown line is missing:** the drain gate skips it whenever the queue didn't drain
+    within 20 ms (plan §9.2). Tests: the hand-off tests in `tests/test_shutdown.py`.
+
+## M3 step 3 — `vestibule-mcp audit` (2026-11-04)
+
+- **Commit:** `a9dfc09`.
 - **Plan:** [`docs/plans/M3/M3-step3-audit-command.md`](plans/M3/M3-step3-audit-command.md) (v2
   after the `skeptic` review, signed 2026-11-04 with R1–R5). The build's changes and both
   review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)

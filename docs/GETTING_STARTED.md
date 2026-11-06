@@ -225,6 +225,12 @@ exact command.
   again. The two stores are separate.
 - **Logs** go to the server's stderr, never stdout (stdout is the MCP channel). Your MCP
   client decides where stderr ends up.
+  - *`stderr was not being read: dropped N log line(s)`*: the client stopped reading the
+    server's log for a while, so N lines were thrown away instead of making the server wait.
+    Nothing else was affected: tool calls kept answering, and the audit log is separate.
+  - *`<logger>: a log call failed to format (…) at <file>:<line>`*: a log call, Vestibule's or
+    a library's, had arguments that didn't fit its message. That line is lost; the note says
+    where it came from.
 - **Leftover containers**: `docker ps -a --filter label=vestibule.run=1`. Each one carries
   its own deadline. A running container normally ends itself at that deadline, and any
   later Vestibule run removes containers more than a minute past it, in whatever state

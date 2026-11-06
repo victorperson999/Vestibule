@@ -1027,7 +1027,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
     UTF-8;
   - denied syscalls are shown when there are any.
 - **Step 3 — `vestibule-mcp audit`, done 2026-11-04
-  ([plan](plans/M3/M3-step3-audit-command.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step3-audit-command.md) §9; commit `a9dfc09`).**
   - **Now:** `vestibule-mcp audit [N]` prints the last N calls (default 20) from every audit
     file, merged by time, one line each.
     - Each line has the time, language, outcome, isolation, exit code, `wall`, `cpu` and
@@ -1054,3 +1054,56 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
       the plan said it wouldn't.
   - **Found by the gate:** one teardown error in a native test on the first Linux run. It didn't
     come back: 20 of 20 alone, and the later runs were clean.
+- **Step 4 plan signed off, 2026-11-04 ([plan](plans/M3/M3-step4-stderr.md), v2.1).** Step 4
+  makes the server's logging non-blocking: a log call never waits for stderr. Lines go into a
+  bounded queue that one background thread writes to its own copy of stderr. If the client
+  stops reading, lines are dropped and counted, and a `dropped N log line(s)` notice marks the
+  gap. `skeptic` found 14 issues (2 medium); `verifier` confirmed 9, rated 1 plausible, refuted
+  3 as stated and added 3 of its own, and every confirmed one changed the plan. The main ones:
+  - Python's own `QueueListener` writes through a handler whose lock `logging.shutdown` waits
+    for, so a stuck stderr would hang the server's exit;
+  - `queue.Queue` can deadlock a thread against itself when a finalizer logs on a full queue
+    (3 of 3 on Python 3.14);
+  - a log call that fails to format writes a traceback to `sys.stderr` under the handler's
+    lock, which froze every thread's logging on a stuck pipe.
+
+  Victor approved all four places where the plan changes the contract's wording (Q1–Q4):
+  - a plain handler with its own writer thread, a `SimpleQueue` and `os.write`, instead of
+    `QueueHandler` and `QueueListener`;
+  - every exit waits at most 20 ms for queued lines. This amends S1-D5's "~50 ms": the POSIX
+    hand-off's worst case is now about 70 ms, still inside Claude Code's 100 ms;
+  - a queued line is capped at 16,384 characters, keeping its first and last 8,192;
+  - a log call that fails to format queues a one-line note instead of the stock traceback.
+- **Step 4 — non-blocking stderr, done 2026-11-05
+  ([plan](plans/M3/M3-step4-stderr.md) §9; commit pending).**
+  - **Now:** a client that stops reading the server's stderr no longer freezes the server.
+    - Log calls only put the line in a queue (1,000 lines, each cut to 16,384 characters). One
+      background thread writes the queue to its own copy of stderr.
+    - When the queue is full, lines are dropped and counted. `stderr was not being read:
+      dropped N log line(s)` marks the gap once lines go through again.
+    - Every exit waits at most 20 ms for the queue. The POSIX shutdown line is skipped when the
+      queue didn't drain in time or stderr has no room, so the server still exits in Claude
+      Code's first 100 ms.
+    - Python warnings go through the same queue. `vestibule-mcp setup` and `audit` keep the
+      plain handler.
+  - **How we know:**
+    - **Red first:** the new end-to-end test ran on the old code first. Call 6 never answered,
+      with 3,997 bytes sitting unread in a 4 KiB stderr. Now every call answers, and the server
+      exits in the SIGINT phase.
+    - **Gate:** Linux has 799 tests on Python 3.14, 0 skipped. Windows has 637, plus 142
+      Linux-only skips.
+    - **Mutants:** 23 deliberately broken versions each turned a test red. Among them are a
+      `queue.Queue` that deadlocks when a finalizer logs (Python 3.14), and a writer that
+      hangs the exit.
+  - **Review:** `critic` ran twice, each round checked by `verifier`. Nothing high or medium.
+    - **The main changes:** test 1 now times each dropped call, and the Windows drain must come
+      after the warning it exists to save.
+    - **The hand-off's line** is now written only when the queue drained in time. A writer
+      still blocked on the pipe would otherwise take the room the line needed.
+  - **Left for Victor:**
+    - that drain gate, which can also drop the line on a very busy machine (never the exit);
+    - an exception whose own text can't be printed is named by its type, instead of counting
+      as a dropped line.
+  - **Not fixed, recorded:** on Windows, an exception that escapes `server.run` is printed
+    straight to stderr, so on a stuck pipe the exit waits for the client's kill. It is older
+    than step 4.

@@ -50,6 +50,10 @@ def handoff(monkeypatch):
     monkeypatch.setattr(server, "_handed_off", False)
     monkeypatch.setattr(server.subprocess, "Popen", lambda *a, **kw: rec["popen"].append((a, kw)))
     monkeypatch.setattr(server.os, "_exit", rec["exit"].append)
+    # The log drained in time; no handler is installed in tests, so the real one says no.
+    monkeypatch.setattr(server.stderr_log, "drain", lambda: True)
+    if sys.platform == "win32":  # select takes only sockets there; the hand-off is POSIX-only
+        monkeypatch.setattr(server, "_stderr_has_room", lambda: True)
     return rec
 
 
@@ -108,6 +112,79 @@ def test_a_failing_spawn_still_exits(handoff, monkeypatch, capfd):
     server._hand_off_and_exit("SIGHUP")
     assert handoff["exit"] == [0]
     assert "hand-off failed: OSError('no python')" in capfd.readouterr().err
+
+
+# M3 step 4 (plan §5.3): the hand-off and the log's queue. Stubs, because a real writer could
+# deliver a line during any syscall before the stubbed os._exit.
+
+
+@pytest.mark.parametrize(("drained", "room"), [(True, False), (False, True)])
+def test_hand_off_with_a_stuck_stderr_skips_its_line(handoff, monkeypatch, capfd, drained, room):
+    """A11: on a full pipe the line would block the exit. A drain that didn't finish means the
+    log's writer is blocked on the pipe and takes any room a read frees, so it's skipped too."""
+    calls: list[str] = []
+    monkeypatch.setattr(server, "SELECTOR", FakeSelector(CleanupJob()))
+    monkeypatch.setattr(server.stderr_log, "drain", lambda: calls.append("drain") or drained)
+    monkeypatch.setattr(server, "_stderr_has_room", lambda: room)
+    server._hand_off_and_exit("SIGINT")
+    assert calls == ["drain"] and handoff["exit"] == [0]
+    assert capfd.readouterr().err == ""
+
+
+def test_hand_off_drains_the_log_before_its_own_line(handoff, monkeypatch, capfd):
+    """Q2: the lines logged before the hand-off go out ahead of its line."""
+    on_fd2_at_drain: list[str] = []
+    monkeypatch.setattr(server, "SELECTOR", FakeSelector(CleanupJob()))
+    monkeypatch.setattr(server.stderr_log, "drain",
+                        lambda: on_fd2_at_drain.append(capfd.readouterr().err) or True)
+    server._hand_off_and_exit("SIGTERM")
+    assert on_fd2_at_drain == [""]
+    assert capfd.readouterr().err == "vestibule shutdown (SIGTERM): nothing to clean up\n"
+    assert handoff["exit"] == [0]
+
+
+def test_the_hand_off_line_fits_in_pipe_buf(handoff, monkeypatch, capfd):
+    """Its note can hold an exception's repr; a pipe that says it has room may hold only
+    PIPE_BUF (512 bytes on macOS), and a longer line could block the exit."""
+    monkeypatch.setattr(server, "SELECTOR", FakeSelector(RuntimeError("x" * 2000)))
+    server._hand_off_and_exit("SIGINT")
+    err = capfd.readouterr().err
+    assert err.startswith("vestibule shutdown (SIGINT): hand-off failed: RuntimeError('xxx")
+    assert len(err.encode()) <= 512 and err.endswith("\n") and err.count("\n") == 1
+    assert handoff["exit"] == [0]
+
+
+class _NotClean:
+    async def aclose(self) -> bool:
+        return False
+
+
+async def test_windows_shutdown_drains_the_log_before_it_exits(monkeypatch, caplog):
+    """Q2: `shutdown: exiting with cleanup still pending` is logged right before os._exit,
+    so the drain must come after it."""
+    calls: list[object] = []
+    monkeypatch.setattr(server, "SELECTOR", _NotClean())
+    monkeypatch.setattr(server.stderr_log, "drain",
+                        lambda: calls.append(("drain", list(caplog.messages))))
+    monkeypatch.setattr(server.os, "_exit", lambda code: calls.append(("exit", code)))
+    await server._shutdown()
+    [(drain, logged), exit_call] = calls
+    assert drain == "drain" and exit_call == ("exit", 0)
+    assert any("exiting with cleanup still pending" in m for m in logged), logged
+
+
+async def test_windows_shutdown_exits_when_the_drain_raises(monkeypatch):
+    """A raise would skip os._exit and send the server into asyncio.run's cancel-all."""
+    calls: list[object] = []
+
+    def broken() -> bool:
+        raise RuntimeError("drain failed")
+
+    monkeypatch.setattr(server, "SELECTOR", _NotClean())
+    monkeypatch.setattr(server.stderr_log, "drain", broken)
+    monkeypatch.setattr(server.os, "_exit", lambda code: calls.append(("exit", code)))
+    await server._shutdown()
+    assert calls == [("exit", 0)]
 
 
 def test_only_the_first_trigger_acts(handoff, monkeypatch):
