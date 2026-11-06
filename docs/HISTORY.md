@@ -979,7 +979,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   Also stated and accepted: `VESTIBULE_WORKSPACE=~/.vestibule` becomes a config error, because
   that workspace would contain the audit folder.
 - **Step 2 — the audit log, done 2026-11-03
-  ([plan](plans/M3/M3-step2-audit-writer.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step2-audit-writer.md) §9; commit `fb26ba1`).**
   - **Now:** every `run_code` call that reaches the handler leaves records in
     `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), one JSONL file per server process.
     - A call that ends before a backend is chosen gets a `blocked` record. Every other call
@@ -1009,3 +1009,101 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   - **Found by the gate:** the in-memory audit stand-in for tests first used pytest's
     `monkeypatch`, which reordered teardowns and broke six native tests on Linux. It now
     restores the real log by hand.
+- **Step 3 plan signed off, 2026-11-04 ([plan](plans/M3/M3-step3-audit-command.md), v2).**
+  Step 3 adds `vestibule-mcp audit [N]`, which prints the last N calls from the audit log, one
+  line each, with every value cleaned so code an agent ran can't drive the terminal. `skeptic`
+  found 12 issues (2 medium); `verifier` confirmed all 11 checkable claims, and every one
+  changed the plan. The main ones:
+  - a hand-edited record can't crash the command or flood a row: only strings and numbers are
+    printed, each with a length cap;
+  - the folder setting goes through the same helper as the server's check, so both give the
+    same messages.
+
+  Victor approved all five places where the plan changes the contract's wording (R1–R5):
+  - every control and invisible formatting character is escaped, not only the contract's list;
+  - the code's first non-blank line is shown, `(blank)` when there's none;
+  - a refused or failed call shows its wall time and code as well as its reason;
+  - stdout keeps its own encoding, with escapes for what it can't encode, instead of forced
+    UTF-8;
+  - denied syscalls are shown when there are any.
+- **Step 3 — `vestibule-mcp audit`, done 2026-11-04
+  ([plan](plans/M3/M3-step3-audit-command.md) §9; commit `a9dfc09`).**
+  - **Now:** `vestibule-mcp audit [N]` prints the last N calls (default 20) from every audit
+    file, merged by time, one line each.
+    - Each line has the time, language, outcome, isolation, exit code, `wall`, `cpu` and
+      `mem_peak`, any denied syscalls, and the code's first line. A refused or failed call also
+      shows its reason. A call with no end says it may still be running, or its record was lost.
+    - Every value from a record is printed escaped: controls, invisible formatting characters
+      and line separators. Only strings and numbers are printed, each cut to a cap. Output that
+      isn't UTF-8 is pure ASCII.
+    - Damaged lines are skipped and counted. A file that can't be read is named, and the rest
+      are still shown. A folder the server would refuse (inside the workspace or the rootfs
+      folder) gets a warning.
+  - **How we know:**
+    - Linux: 781 tests on Python 3.14, 0 skipped. Windows: 620, plus 141 Linux-only skips.
+    - One test reads a real audit file while the writer still holds it open. Two run the
+      installed command: over a cp1252 pipe, and with a reader that quits early.
+    - 39 deliberately broken versions each turned a test red.
+  - **Review:** `critic` ran twice, each round checked by `verifier`, which confirmed all 16
+    code findings.
+    - **The main ones:** the 60- and 100-character caps had no test through the command. A
+      legacy 8-bit terminal charset (KOI8-R, or cp1252 on a Windows pipe) puts printable
+      characters on bytes a terminal reads as control codes, so output that isn't UTF-8 is now
+      pure ASCII. One looping symlink stopped the whole listing.
+    - **Left for Victor:** R4 as tightened, and the overlap warning, which reads two settings
+      the plan said it wouldn't.
+  - **Found by the gate:** one teardown error in a native test on the first Linux run. It didn't
+    come back: 20 of 20 alone, and the later runs were clean.
+- **Step 4 plan signed off, 2026-11-04 ([plan](plans/M3/M3-step4-stderr.md), v2.1).** Step 4
+  makes the server's logging non-blocking: a log call never waits for stderr. Lines go into a
+  bounded queue that one background thread writes to its own copy of stderr. If the client
+  stops reading, lines are dropped and counted, and a `dropped N log line(s)` notice marks the
+  gap. `skeptic` found 14 issues (2 medium); `verifier` confirmed 9, rated 1 plausible, refuted
+  3 as stated and added 3 of its own, and every confirmed one changed the plan. The main ones:
+  - Python's own `QueueListener` writes through a handler whose lock `logging.shutdown` waits
+    for, so a stuck stderr would hang the server's exit;
+  - `queue.Queue` can deadlock a thread against itself when a finalizer logs on a full queue
+    (3 of 3 on Python 3.14);
+  - a log call that fails to format writes a traceback to `sys.stderr` under the handler's
+    lock, which froze every thread's logging on a stuck pipe.
+
+  Victor approved all four places where the plan changes the contract's wording (Q1–Q4):
+  - a plain handler with its own writer thread, a `SimpleQueue` and `os.write`, instead of
+    `QueueHandler` and `QueueListener`;
+  - every exit waits at most 20 ms for queued lines. This amends S1-D5's "~50 ms": the POSIX
+    hand-off's worst case is now about 70 ms, still inside Claude Code's 100 ms;
+  - a queued line is capped at 16,384 characters, keeping its first and last 8,192;
+  - a log call that fails to format queues a one-line note instead of the stock traceback.
+- **Step 4 — non-blocking stderr, done 2026-11-05
+  ([plan](plans/M3/M3-step4-stderr.md) §9; commit pending).**
+  - **Now:** a client that stops reading the server's stderr no longer freezes the server.
+    - Log calls only put the line in a queue (1,000 lines, each cut to 16,384 characters). One
+      background thread writes the queue to its own copy of stderr.
+    - When the queue is full, lines are dropped and counted. `stderr was not being read:
+      dropped N log line(s)` marks the gap once lines go through again.
+    - Every exit waits at most 20 ms for the queue. The POSIX shutdown line is skipped when the
+      queue didn't drain in time or stderr has no room, so the server still exits in Claude
+      Code's first 100 ms.
+    - Python warnings go through the same queue. `vestibule-mcp setup` and `audit` keep the
+      plain handler.
+  - **How we know:**
+    - **Red first:** the new end-to-end test ran on the old code first. Call 6 never answered,
+      with 3,997 bytes sitting unread in a 4 KiB stderr. Now every call answers, and the server
+      exits in the SIGINT phase.
+    - **Gate:** Linux has 799 tests on Python 3.14, 0 skipped. Windows has 637, plus 142
+      Linux-only skips.
+    - **Mutants:** 23 deliberately broken versions each turned a test red. Among them are a
+      `queue.Queue` that deadlocks when a finalizer logs (Python 3.14), and a writer that
+      hangs the exit.
+  - **Review:** `critic` ran twice, each round checked by `verifier`. Nothing high or medium.
+    - **The main changes:** test 1 now times each dropped call, and the Windows drain must come
+      after the warning it exists to save.
+    - **The hand-off's line** is now written only when the queue drained in time. A writer
+      still blocked on the pipe would otherwise take the room the line needed.
+  - **Left for Victor:**
+    - that drain gate, which can also drop the line on a very busy machine (never the exit);
+    - an exception whose own text can't be printed is named by its type, instead of counting
+      as a dropped line.
+  - **Not fixed, recorded:** on Windows, an exception that escapes `server.run` is printed
+    straight to stderr, so on a stuck pipe the exit waits for the client's kill. It is older
+    than step 4.

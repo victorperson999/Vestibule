@@ -338,6 +338,26 @@ that way.
 - **No flags in M3.** For more, read the JSONL files themselves.
 - **Naming.** PLAN.md's `vestibule --audit` becomes `vestibule-mcp audit`, to match `setup`.
 
+> **Amendment 2026-11-04 (step 3, [`M3-step3-audit-command.md`](M3-step3-audit-command.md) R1–R5,
+> approved by Victor; R4 tightened by the review, §9 there):**
+> - **R1:** the sanitizer escapes every character in the categories `Cc`, `Cf`, `Cs`, `Zl` and
+>   `Zp`, a superset of the list above, with an 8-digit `\U` escape above U+FFFF. It also catches
+>   LRM, RLM, ALM, the zero-width characters and the tag characters. The costs: ZWNJ (U+200C)
+>   shows as an escape inside Persian words, and so does ZWJ inside joined emoji; the set
+>   follows the interpreter's Unicode version; invisible letters such as U+3164 and U+2800 are
+>   kept; and a real U+202E prints like its typed escape, since backslashes aren't doubled.
+> - **R2:** the code's first line that isn't blank, cut to 60 characters, or `(blank)`; `...`
+>   marks a cut, more lines, or `code_truncated`. Reasons get the same rule at 100.
+> - **R3:** a call with a reason (`refused` or `failed`) shows it, and a call with a `start` also
+>   shows its `wall` and its code.
+> - **R4:** UTF-8 output stays UTF-8. Any other encoding (a Windows pipe's cp1252, a legacy POSIX
+>   charset) becomes ASCII, with escapes for everything else, on stdout and stderr alike. The
+>   approved wording kept the stream's own encoding; the review showed that KOI8-R and cp1252
+>   put printable characters on 0x80–0x9F, which a terminal can act on as C1 controls.
+> - **R5:** an `end`'s denied syscalls are shown, as `denied=…`.
+> - **Also:** a warning on stderr when the dir read overlaps the shell's workspace or rootfs
+>   setting: the server refuses that setting, so the records there may not be its own.
+
 **A11 — Non-blocking stderr.**
 - **The handler.** The server's handler becomes a `QueueHandler` (queue bounded at 1000)
   whose `enqueue` is overridden to drop and count on a full queue. The stock `emit` would
@@ -354,6 +374,34 @@ that way.
   - the thread and unraisable-exception hooks still write `sys.stderr` (both rare, crash
     paths);
   - the native helper writes to the inherited stderr only on a crash.
+
+> **Amendment 2026-11-05 (step 4, [`M3-step4-stderr.md`](M3-step4-stderr.md) Q1–Q4, approved
+> by Victor; two refinements from the build and its review await his OK, §9 there: the
+> hand-off's drain gate in Q2, and the type-name note in Q4):**
+> - **Q1:** a plain `logging.Handler` (`vestibule.stderr_log`) with its own writer thread, in
+>   place of `QueueHandler` and `QueueListener`. A listener writes through handlers, and one
+>   blocked on a full pipe holds a lock that `logging.shutdown` waits for at exit. The queue is
+>   a `queue.SimpleQueue` bounded by `qsize()`, because `queue.Queue` can deadlock a thread
+>   against itself when a finalizer logs from inside it. The thread writes with `os.write` to
+>   its own `os.dup(2)`, in `sys.stderr`'s encoding with `backslashreplace`.
+> - **Q2:** every exit waits at most 20 ms for queued lines: the POSIX hand-off, the Windows
+>   `os._exit` branch, and `logging.shutdown` (through the handler's `flush`). This amends
+>   S1-D5's "~50 ms" to about 70 ms in the worst case. The hand-off writes its own line only
+>   when that drain finished and the `select` check finds room (a writer still blocked on the
+>   pipe would take any room a read frees), and the line is cut to 512 bytes (PIPE_BUF on
+>   macOS).
+> - **Q3:** a queued line is capped at 16,384 characters, keeping its first and last 8,192
+>   around `...[cut N chars]...`. The bound counts lines, and some come from outside: the SDK
+>   logs a whole invalid notification.
+> - **Q4:** a log call that fails to format queues one note, `<logger>: a log call failed to
+>   format (<exception>) at <file>:<line>`, in place of the stock traceback, which writes
+>   `sys.stderr` under the handler's lock. An exception whose `str()` raises too is named by its
+>   type alone. `logging.raiseExceptions` still decides whether it's reported.
+> - **The switch** is the first line of `server._main()`. `vestibule-mcp setup` and `audit` keep
+>   the plain handler.
+> - **One more residual,** older than step 4: on Windows, an exception that escapes
+>   `server.run` is printed by the interpreter straight to `sys.stderr`, so on a stuck pipe the
+>   exit waits for the client's kill. POSIX catches it and exits through the hand-off.
 
 **A12 — What the audit is not.** It's a record of what agents ran, kept where the sandboxed
 code can't reach it. It isn't tamper-evident. The user, and any tool running as the user

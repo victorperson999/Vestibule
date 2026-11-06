@@ -46,7 +46,7 @@ KILLED = "killed"    # the client had to kill it
 class StdioServer:
     """A `vestibule-mcp` subprocess plus a minimal JSON-RPC client."""
 
-    def __init__(self, proc: asyncio.subprocess.Process) -> None:
+    def __init__(self, proc: asyncio.subprocess.Process, read_stderr: bool = True) -> None:
         self.proc = proc
         self.stderr_lines: list[str] = []
         self.bad_stdout: list[str] = []  # anything on stdout that is not JSON-RPC 2.0
@@ -54,16 +54,18 @@ class StdioServer:
         self._spawned = asyncio.Event()
         self._pending: dict[int, asyncio.Future[dict]] = {}
         self._next_id = 1
-        self._readers = [
-            asyncio.create_task(self._read_stdout()),
-            asyncio.create_task(self._read_stderr()),
-        ]
+        self._readers = [asyncio.create_task(self._read_stdout())]
+        if read_stderr:
+            self._readers.append(asyncio.create_task(self._read_stderr()))
 
     @classmethod
     async def start(cls, workspace: Path, settings: dict[str, str] | None = None,
-                    base_env: dict[str, str] | None = None) -> "StdioServer":
+                    base_env: dict[str, str] | None = None,
+                    stderr: int | None = None) -> "StdioServer":
         # The dev shell's own VESTIBULE_* settings must not leak into the server under test.
         # `base_env` replaces the inherited environment (criterion 17's minimal launch).
+        # `stderr`: an fd the server writes its log to instead, which nobody here reads
+        # (M3 step 4's client that never reads stderr).
         source = os.environ if base_env is None else base_env
         env = {k: v for k, v in source.items() if not k.startswith("VESTIBULE_")}
         env["VESTIBULE_WORKSPACE"] = str(workspace)
@@ -73,10 +75,10 @@ class StdioServer:
             str(SERVER_EXE),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE if stderr is None else stderr,
             env=env,
         )
-        return cls(proc)
+        return cls(proc, read_stderr=stderr is None)
 
     async def _read_stdout(self) -> None:
         assert self.proc.stdout is not None

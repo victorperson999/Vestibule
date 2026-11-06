@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -24,17 +25,20 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from vestibule import __version__, audit, cleanup, rootfs, workspace
+from vestibule import __version__, audit, cleanup, rootfs, stderr_log, workspace
 from vestibule.backends.base import RunRefusedError, RunResult
 from vestibule.backends.container import ContainerBackend
 from vestibule.backends.naive import kill_guest
 from vestibule.backends.select import BackendSelector, Selection
 from vestibule.config import ALLOWED_LANGUAGES, ConfigError, Limits
 
+_LOG_FORMAT = "%(asctime)s vestibule %(levelname)s %(message)s"
+# `setup`, `audit` and the tests keep this handler; the server switches to a non-blocking
+# one when it starts serving (_main, M3 step 4).
 logging.basicConfig(
     stream=sys.stderr,  # NOT stdout
     level=logging.INFO,
-    format="%(asctime)s vestibule %(levelname)s %(message)s",
+    format=_LOG_FORMAT,
 )
 log = logging.getLogger("vestibule")
 
@@ -375,6 +379,9 @@ def _truncate(s: str, limit: int = LIMITS.max_output_bytes) -> str:
 
 
 async def _main() -> None:
+    # M3 step 4 (A11): from here on a log call never waits for stderr, so a client that
+    # stops reading it can't stall the event loop.
+    stderr_log.install(_LOG_FORMAT)
     if CONFIG_ERROR:
         log.error("%s", CONFIG_ERROR)
     if sys.platform == "win32":
@@ -441,10 +448,22 @@ def _hand_off_and_exit(trigger: str) -> None:
         note = f"hand-off failed: {e!r}"
     finally:
         with contextlib.suppress(Exception):
-            # os.write, not logging: one atomic line, no handler locks.
-            line = f"vestibule shutdown ({trigger}): {note}\n"
-            os.write(2, line.encode(errors="replace"))
+            # The lines logged before this one go first, at most 20 ms (M3 Q2). If they
+            # didn't all go in that time, the log's writer may be blocked on this pipe, where
+            # it would take any room a read frees, so this line is skipped too. On a busy
+            # machine the writer may only be late: then the line is lost, never the exit.
+            # A11: on a full pipe the write below would block.
+            if stderr_log.drain() and _stderr_has_room():
+                # os.write, not logging: one atomic line, no handler locks. Under PIPE_BUF
+                # (512 bytes on macOS), so a pipe that says it has room takes all of it.
+                data = f"vestibule shutdown ({trigger}): {note}".encode(errors="replace")
+                os.write(2, data[:511] + b"\n")
         os._exit(0)
+
+
+def _stderr_has_room() -> bool:
+    """True if fd 2 takes a write now (A11). A Linux pipe says so only with a page free."""
+    return bool(select.select([], [2], [], 0)[1])
 
 
 def _spawn_cleaner(payload: dict[str, object]) -> None:
@@ -508,6 +527,8 @@ async def _shutdown() -> None:
     if not clean or leftovers:
         log.warning("shutdown: exiting with cleanup still pending (%d other task(s))",
                     len(leftovers))
+        with contextlib.suppress(Exception):  # a raise here would skip the os._exit below
+            stderr_log.drain()  # the lines above, at most 20 ms (M3 Q2)
         for stream in (sys.stderr, sys.stdout):
             with contextlib.suppress(Exception):
                 stream.flush()
@@ -521,14 +542,20 @@ def _other_live_tasks() -> list[asyncio.Task]:
 
 def run() -> None:
     """Console entry point: `vestibule-mcp` serves MCP on stdio; `vestibule-mcp setup`
-    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1)."""
+    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1); `vestibule-mcp audit
+    [N]` prints the last N calls (docs/plans/M3/M3-step3-audit-command.md)."""
     args = sys.argv[1:]
     if args == ["setup"]:
         sys.exit(rootfs.setup_main())
+    if args[:1] == ["audit"]:
+        from vestibule import audit_cli  # a terminal command: its stdout is the user's
+
+        sys.exit(audit_cli.main(args[1:]))
     if args:
         # Not an error: refusing to start would leave the client saying only "failed to
         # connect" (the M1 follow-up's rule). A human at a terminal sees this line.
-        log.warning('ignoring unexpected arguments %s; the only subcommand is "setup"', args)
+        log.warning('ignoring unexpected arguments %s; the subcommands are "setup" and '
+                    '"audit"', args)
     asyncio.run(_main())
 
 

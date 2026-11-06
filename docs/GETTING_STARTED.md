@@ -192,6 +192,16 @@ exact command.
   directory: sandboxed code could reach the records. Point one of the two settings somewhere
   else, then restart the server. `VESTIBULE_WORKSPACE=~/.vestibule` does this with the default
   audit folder.
+- **`vestibule-mcp audit` says `no records`**: the command reads `VESTIBULE_AUDIT_DIR` from your
+  shell (default `~/.vestibule/audit`), and the first line names the folder it read. If your MCP
+  config sets the setting, set the same value for the command.
+  - *`… unreadable lines skipped`*: a record torn by a full disk or a crash, or a hand edit.
+    Every other record is still shown.
+  - *`warning: the audit directory (…) and the workspace (…) overlap`*: sandboxed code can write
+    to the folder it read, so those records may be forged. The server refuses that setting.
+  - *Escapes such as `\u65e5` in place of characters*: the output isn't UTF-8 (a Windows pipe,
+    or a terminal in a legacy charset), so everything outside ASCII is printed escaped. Control
+    and invisible formatting characters are printed escaped everywhere.
 - **`usage: … not measured: …`**: the result names the numbers it lacks, and why.
   - *not readable from outside a container*: container runs report only `wall`. Anything
     more could only come from the guest's own output, which it can fake.
@@ -215,6 +225,12 @@ exact command.
   again. The two stores are separate.
 - **Logs** go to the server's stderr, never stdout (stdout is the MCP channel). Your MCP
   client decides where stderr ends up.
+  - *`stderr was not being read: dropped N log line(s)`*: the client stopped reading the
+    server's log for a while, so N lines were thrown away instead of making the server wait.
+    Nothing else was affected: tool calls kept answering, and the audit log is separate.
+  - *`<logger>: a log call failed to format (…) at <file>:<line>`*: a log call, Vestibule's or
+    a library's, had arguments that didn't fit its message. That line is lost; the note says
+    where it came from.
 - **Leftover containers**: `docker ps -a --filter label=vestibule.run=1`. Each one carries
   its own deadline. A running container normally ends itself at that deadline, and any
   later Vestibule run removes containers more than a minute past it, in whatever state

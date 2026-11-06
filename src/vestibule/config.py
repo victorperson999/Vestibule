@@ -172,18 +172,9 @@ def _audit_problem(limits: Limits, *, explicit: bool) -> str | None:
     so the dir must be absolute and outside the workspace and the rootfs dir. Static, so it runs
     at startup. An unset default that can't expand (no home directory) is not a problem here:
     the writer reports it on every record instead (W4)."""
-    shown = f"VESTIBULE_AUDIT_DIR={_shown(limits.audit_dir)}"
-    try:
-        audit = limits.audit_path
-    except RuntimeError as e:  # no home directory, or a ~user that doesn't exist
-        return f"{shown} must be an absolute path or start with ~ ({e})" if explicit else None
-    if not audit.is_absolute():  # relative, drive-relative (Windows), or a relative home
-        if not explicit:
-            return None
-        if limits.audit_dir.startswith("~"):
-            return (f"{shown} expands to {audit}, which isn't absolute: the home directory is "
-                    "relative")
-        return f"{shown} must be an absolute path or start with ~"
+    audit, problem = audit_dir(limits)
+    if audit is None:
+        return problem if explicit else None
     for what, setting, raw in (("the workspace", "VESTIBULE_WORKSPACE", limits.workspace_dir),
                                ("the rootfs directory", "VESTIBULE_ROOTFS_DIR", limits.rootfs_dir)):
         try:
@@ -194,6 +185,22 @@ def _audit_problem(limits: Limits, *, explicit: bool) -> str | None:
             return (f"the audit directory ({audit}, VESTIBULE_AUDIT_DIR) and {what} ({other}, "
                     f"{setting}) overlap; point one of them somewhere else")
     return None
+
+
+def audit_dir(limits: Limits) -> tuple[Path | None, str | None]:
+    """The audit dir as a path, or None and why VESTIBULE_AUDIT_DIR can't name one (A8). Shared
+    by the server's check and `vestibule-mcp audit`, so both give the same message."""
+    shown = f"VESTIBULE_AUDIT_DIR={_shown(limits.audit_dir)}"
+    try:
+        audit = limits.audit_path
+    except RuntimeError as e:  # no home directory, or a ~user that doesn't exist
+        return None, f"{shown} must be an absolute path or start with ~ ({e})"
+    if not audit.is_absolute():  # relative, drive-relative (Windows), or a relative home
+        if limits.audit_dir.startswith("~"):
+            return None, (f"{shown} expands to {audit}, which isn't absolute: the home "
+                          "directory is relative")
+        return None, f"{shown} must be an absolute path or start with ~"
+    return audit, None
 
 
 def _overlap(a: Path, b: Path) -> bool:
