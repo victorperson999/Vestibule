@@ -556,8 +556,9 @@ test this step doesn't touch.
 | 2.9 | low | Simplicity: the warning and the two env reads aren't in the signed plan | Kept, with 2.1, 2.2 and 2.5 fixed. Victor decides (below) |
 | 2.10 | info | Test 7's depth differs from §5 | Above: 500 is a depth that parses under pytest on 3.11 |
 
-**For Victor's sign-off:** two review changes to what was approved, R4 as tightened (1.1) and
-the warning (1.6, 2.9). Removing the warning means four lines in `main` and its three tests.
+**For Victor's sign-off (approved 2026-11-05):** two review changes to what was approved,
+R4 as tightened (1.1) and the warning (1.6, 2.9). Removing the warning means four lines in
+`main` and its three tests.
 
 **Mutants.** All 39 turned a test red, each with exit status 1, after a green control. Every
 touched file was restored byte for byte and checked against its hash.

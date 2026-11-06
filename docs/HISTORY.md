@@ -1050,8 +1050,8 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
       legacy 8-bit terminal charset (KOI8-R, or cp1252 on a Windows pipe) puts printable
       characters on bytes a terminal reads as control codes, so output that isn't UTF-8 is now
       pure ASCII. One looping symlink stopped the whole listing.
-    - **Left for Victor:** R4 as tightened, and the overlap warning, which reads two settings
-      the plan said it wouldn't.
+    - **Left for Victor, approved 2026-11-05:** R4 as tightened, and the overlap warning,
+      which reads two settings the plan said it wouldn't.
   - **Found by the gate:** one teardown error in a native test on the first Linux run. It didn't
     come back: 20 of 20 alone, and the later runs were clean.
 - **Step 4 plan signed off, 2026-11-04 ([plan](plans/M3/M3-step4-stderr.md), v2.1).** Step 4
@@ -1075,7 +1075,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   - a queued line is capped at 16,384 characters, keeping its first and last 8,192;
   - a log call that fails to format queues a one-line note instead of the stock traceback.
 - **Step 4 — non-blocking stderr, done 2026-11-05
-  ([plan](plans/M3/M3-step4-stderr.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step4-stderr.md) §9; commit `de9e10c`).**
   - **Now:** a client that stops reading the server's stderr no longer freezes the server.
     - Log calls only put the line in a queue (1,000 lines, each cut to 16,384 characters). One
       background thread writes the queue to its own copy of stderr.
@@ -1100,10 +1100,17 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
       after the warning it exists to save.
     - **The hand-off's line** is now written only when the queue drained in time. A writer
       still blocked on the pipe would otherwise take the room the line needed.
-  - **Left for Victor:**
+  - **Left for Victor, approved 2026-11-05:**
     - that drain gate, which can also drop the line on a very busy machine (never the exit);
     - an exception whose own text can't be printed is named by its type, instead of counting
       as a dropped line.
   - **Not fixed, recorded:** on Windows, an exception that escapes `server.run` is printed
     straight to stderr, so on a stuck pipe the exit waits for the client's kill. It is older
     than step 4.
+- **Review changes to steps 3 and 4 approved, 2026-11-05.** Each review changed something
+  Victor had signed, and each change waited for his OK. He committed both steps with the
+  changes in, then approved them:
+  - **Step 3:** R4 as tightened (output that isn't UTF-8 is pure ASCII), and the warning
+    when the audit dir overlaps the workspace or the rootfs.
+  - **Step 4:** the shutdown line is written only if the log drained in time, and an
+    exception whose own text can't be printed is named by its type.

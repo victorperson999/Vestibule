@@ -339,7 +339,8 @@ that way.
 - **Naming.** PLAN.md's `vestibule --audit` becomes `vestibule-mcp audit`, to match `setup`.
 
 > **Amendment 2026-11-04 (step 3, [`M3-step3-audit-command.md`](M3-step3-audit-command.md) R1–R5,
-> approved by Victor; R4 tightened by the review, §9 there):**
+> approved by Victor; R4's tightening and the warning, from the review, approved 2026-11-05;
+> §9 there):**
 > - **R1:** the sanitizer escapes every character in the categories `Cc`, `Cf`, `Cs`, `Zl` and
 >   `Zp`, a superset of the list above, with an 8-digit `\U` escape above U+FFFF. It also catches
 >   LRM, RLM, ALM, the zero-width characters and the tag characters. The costs: ZWNJ (U+200C)
@@ -376,8 +377,8 @@ that way.
   - the native helper writes to the inherited stderr only on a crash.
 
 > **Amendment 2026-11-05 (step 4, [`M3-step4-stderr.md`](M3-step4-stderr.md) Q1–Q4, approved
-> by Victor; two refinements from the build and its review await his OK, §9 there: the
-> hand-off's drain gate in Q2, and the type-name note in Q4):**
+> by Victor; two refinements from the build and its review, approved 2026-11-05, §9 there:
+> the hand-off's drain gate in Q2, and the type-name note in Q4):**
 > - **Q1:** a plain `logging.Handler` (`vestibule.stderr_log`) with its own writer thread, in
 >   place of `QueueHandler` and `QueueListener`. A listener writes through handlers, and one
 >   blocked on a full pipe holds a lock that `logging.shutdown` waits for at exit. The queue is

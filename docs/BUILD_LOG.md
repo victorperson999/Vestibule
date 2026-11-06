@@ -52,7 +52,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 1 | Usage numbers in every result: native counters read from `guest/` after the sandbox exits (timed-out runs too, 1 s wait), `wall` from the server, `limits hit:`, and the not-measured notes for every backend | 2026-11-02 | `40f63be` | 615 Linux (0 skipped) + 1 added after the gate; 460 + 135 POSIX/Linux-only skips on Windows |
 | M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | `fb26ba1` | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
 | M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | `a9dfc09` | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
-| M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | pending | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
+| M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | `de9e10c` | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -114,7 +114,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M3 step 4 — non-blocking stderr (2026-11-05)
 
-- **Commit:** pending.
+- **Commit:** `de9e10c`.
 - **Plan:** [`docs/plans/M3/M3-step4-stderr.md`](plans/M3/M3-step4-stderr.md) (v2.1 after the
   `skeptic` review, signed 2026-11-04 with Q1–Q4). The build's changes, the mutants and both
   review rounds are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md)
@@ -159,7 +159,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   - **Round 2:** 5 low issues, all confirmed (one in part, one raised to low–medium). The
     fixes: the drain gate's comment, the plan's §9 and the amendment's header, the fill's stated
     purpose, and the Windows residual.
-  - **Left for Victor:** the drain gate and Q4's type-name note (plan §9.2).
+  - **Approved by Victor 2026-11-05,** left for him at build time: the drain gate and Q4's
+    type-name note (plan §9.2).
 - **Mutants:** 23 of 23 red after a green control, in WSL on 3.14.
 - **Gate:**
   - check_env, ruff and mypy clean on both platforms.
@@ -222,8 +223,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   - **Round 1:** `critic` found 2 medium and 4 low issues on the code, and `verifier` confirmed
     all six (one medium lowered to low).
   - **Round 2,** on the fixes: 1 medium and 9 low, all confirmed (the medium lowered to low).
-  - The plan's §9 has both tables. Two changes to what Victor approved await his OK: R4
-    tightened (ASCII unless UTF-8), and the overlap warning.
+  - The plan's §9 has both tables. Two changes to what Victor approved, R4 tightened (ASCII
+    unless UTF-8) and the overlap warning, were approved by him 2026-11-05.
 - **Mutants:** 39 of 39 red after a green control, 38 on Windows and the broken-pipe handler in
   WSL.
 - **Gate (after round 2's fixes):**
