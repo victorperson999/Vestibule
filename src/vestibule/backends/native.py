@@ -83,6 +83,9 @@ class _Run:
     cgroup: str | None = None  # where init must be, once placed (S4-D7)
     applied: frozenset[str] = frozenset()  # the guest's limits that read back exactly
     unplaced: str | None = None  # why placement failed, for the detail (S6-D7)
+    # A scope systemd may have made that nothing else stops: placement was cut short, or found
+    # the helper gone. The finisher stops it by name (M3 step 5 fix).
+    stray_unit: bool = False
 
 
 class NativeBackend(Warden):
@@ -214,8 +217,10 @@ class NativeBackend(Warden):
             raise RuntimeError("native isolation needs Linux")
         assert run.proc is not None and run.sync_w is not None
         try:
+            run.stray_unit = True  # until place() returns: a cancel or an error keeps it
             placed = await native_cgroup.place(run.run_id, run.proc.pid,
                                                timeout_s + _RUNTIME_MAX_SLACK_S, limits)
+            run.stray_unit = placed == native_cgroup.HELPER_GONE
             cgroup = None
             if isinstance(placed, str):  # not placed; the reason goes into the detail (S6-D7)
                 run.unplaced = placed
@@ -314,7 +319,13 @@ class NativeBackend(Warden):
         finally:
             for transport in run.transports:
                 transport.close()
-            sem.release()
+            try:
+                # After the helper, even if a step above failed; the slot is released anyway
+                # (M3 step 5 fix). Once the helper is reaped, its scope can't gain it anymore.
+                if run.stray_unit:
+                    await native_cgroup.stop_unit(run.run_id)  # bounded; never raises
+            finally:
+                sem.release()
 
     async def drain(self, timeout: float | None = None) -> bool:
         """Wait for the detached finishers, never cancelling them; True when none is left.

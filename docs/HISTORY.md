@@ -1133,7 +1133,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   only) and S5-D3 (one sentence in golden rule 1 for `audit`'s stdout) were taken as
   recommended with the sign-off. Both belong to 5b.
 - **Step 5a — the acceptance suite, done 2026-11-06
-  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit `03f0fb7`).**
   - **Now:** M3's criteria are tested through the server's own tool dispatch, with real
     backends and a real audit file (`tests/test_audit_acceptance.py`, 15 tests):
     - every outcome's records on native: ran, timed out, cancelled, refused, not run, blocked;
@@ -1160,3 +1160,37 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   - **Found, not fixed:** a cancel that lands during native placement, a window of about 15 ms,
     can leave an empty systemd scope for up to timeout + 30 s. It is older than M3. The fix
     waits for Victor (BUILD_LOG's known issues).
+- **The placement-cancel fix's plan signed off, 2026-11-06
+  ([plan](plans/M3/M3-step5-placement-cancel.md), v2).** Victor chose to fix 5a's finding before
+  5b.
+  - **The cause, now measured:** a cancel during native placement makes the paused helper exit
+    at once. systemd can then attach it while it is a zombie (exited, not yet reaped), and the
+    scope is born empty and stays active until its `RuntimeMaxSec`. The same can happen when
+    placement finds the helper gone.
+  - **The fix:** the run carries a flag while placement is unfinished. Its finisher then stops
+    `vestibule-<id>.scope` by name, within 5 s, after the helper is gone.
+  - **The review:** `skeptic` found 7 issues (1 high); `verifier` confirmed or partly
+    confirmed 7 and found 1 plausible, and its experiments found the cause. The high one: v1's
+    test couldn't move a process into the scope from where the gate runs pytest. v2's tests
+    hand systemd a zombie's pid instead, which makes the real empty scope on demand.
+  - **The decision this amends:** M2's S4-D6 ("the finisher does nothing new").
+- **The placement-cancel fix, done 2026-11-06
+  ([plan](plans/M3/M3-step5-placement-cancel.md) §7; commit pending).**
+  - **Now:** a call cancelled while native is placing its run (Ctrl+C in Claude Code) no longer
+    leaves an empty systemd scope. The same holds for a placement that finds the helper gone.
+    The run's cleanup stops the scope by name once the helper is gone, within 5 s. A normal run
+    never sends that stop.
+  - **How we know:**
+    - two tests reproduce the real empty scope by handing systemd a zombie's pid. They failed
+      on the old code and pass now;
+    - cancels at random moments left a scope 2 times in 40 before the fix, and 0 in 100 after;
+    - 9 deliberately broken versions each turned their own test red;
+    - Linux has 818 tests, 0 skipped, and Windows 641 plus 157 Linux-only skips.
+  - **Review:** `critic` ran twice on the code and found only low issues. One was a broken
+    version that every test missed: it would have held a run's slot 5 s longer on a hung bus.
+    A test now catches it.
+  - **Still not covered, stated:**
+    - any POSIX shutdown during placement, where the cleanup never runs;
+    - a placement whose 5 s bound passes after systemd answered.
+
+    Both are rare, and the scope still goes at its time limit.
