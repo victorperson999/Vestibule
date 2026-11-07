@@ -53,6 +53,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 2 | Audit log: `blocked`/`start`/`end` records from one writer thread, `VESTIBULE_AUDIT_DIR` with its overlap check, the `audit:` line, and `ran`/`run_id`/`image`/output sizes on every `RunResult` | 2026-11-03 | `fb26ba1` | 693 Linux (0 skipped); 533 + 140 POSIX/Linux-only skips on Windows |
 | M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | `a9dfc09` | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
 | M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | `de9e10c` | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
+| M3 step 5a | M3's acceptance suite through `server.call_tool` with real backends and a real audit file (no `src/` change); the cold-start benchmark run again | 2026-11-06 | pending | 814 Linux (0 skipped); 641 + 153 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -70,6 +71,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
 | 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching |
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
+| 2026-11-06 (M3 step 5a, verifier) | native placement | A cancel that lands while `native_cgroup.place` waits on `busctl` (a window of about 15 ms after the helper's spawn) can leave the run's scope behind: systemd may already have the request, `busctl` is killed, and the backend never learns the unit's name, so nothing stops it. systemd removes it at its `RuntimeMaxSec` (the timeout + 30 s). It holds no process (`populated 0`, no tasks, in both cases seen). 2 of 20 timed cancels left one; the other 18 left nothing. Older than M3 (M2 step 4). The acceptance test cancels once the guest runs, as a Ctrl+C on a running call does | open; the fix (stop the unit by name when placement is cancelled) waits for Victor |
+| 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
 
 **Closed:**
 - The 2026-10-25 server-logging issue (a client that stops reading stderr blocks the server at
@@ -111,6 +114,64 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M3 step 5a — the acceptance suite and the benchmark (2026-11-06)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M3/M3-step5-acceptance.md`](plans/M3/M3-step5-acceptance.md) (v2 after
+  the `skeptic` review, signed 2026-11-06). The build, the mutants, the benchmark and the review
+  are in its §9. Contract: [`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) §5.
+- **What:**
+  - **`tests/test_audit_acceptance.py` (new):** 15 tests through `server.call_tool`, with a
+    fresh selector, a temp workspace and a real `AuditLog` on a temp dir. Its docstring maps
+    every criterion to its tests, the existing ones included. It covers:
+    - **Criterion 1, real backends:** native ran, timed out, cancelled, a full slot refused, a
+      removed rootfs not run, then blocked; the container's image id, and a missing image
+      refused.
+    - **Criterion 2, native:** `print(1)`; the memory bomb's peak; the classic fork bomb's
+      `pids_peak` and refusals; a busy loop's throttling; a file reader under 48 MiB.
+    - **Criterion 3:** a guest that fakes its numbers, on native, container and naive.
+    - **Criteria 4–6:** native without a bus; the audit dir invisible from inside native; a
+      log that can't write.
+  - Markers are per test (`native`, `docker`, none).
+  - **The rest is mapped** to tests that already use the real component (plan §3.2):
+    criterion 1's outer deadline, unexpected error and setup error; criterion 4's missing
+    report and old kernel; most of criteria 5 and 6; and criteria 7–9.
+  - No `src/` change.
+- **Benchmark:**
+  - This tree: native 117.7 ms median / 141.1 ms p95, container 895.4 / 1002.3 ms.
+  - `c5fe2a2` (pre-M3), run right before it: 123.7 / 153.5 and 887.0 / 960.2 ms. So M3's cost
+    is within the noise, and the host is slower than on 2026-10-31 (82 and 392 ms).
+  - 5b updates the README's table and PLAN.md's two numbers.
+- **Found:**
+  - All 15 passed on the first run, so the mutants carried the proof: 11 of 11 red on their
+    named tests, each failure read.
+  - The review found a cancel during native placement that can leave an empty scope (known
+    issues, above).
+- **Review:** `critic` found 9 issues (1 medium, 8 low). `verifier` confirmed 5, rated 1
+  plausible and 2 partly confirmed, and refuted 1; the medium was lowered to low.
+  - **The fixes:** teardown drains every warden used; the scope check can't be empty; the
+    cancel waits for the guest to run; only whole records are parsed; `Limits.audit_dir`
+    matches the log.
+  - **Refuted:** the fork bomb's stderr is about 60 % of the collection cap, and a slower host
+    prints less.
+- **Mutants:** 11 of 11 red after a green control, in WSL on 3.14, before the review's fixes
+  and again after them.
+- **Gate:**
+  - check_env, ruff and mypy clean on both platforms.
+  - Linux (434 s of 540): 3.14 full suite 814 passed, 0 skipped; 3.11 Docker-free 769; stdio 5.
+  - Windows: 641 passed, plus 153 POSIX/Linux-only skips.
+  - After the review's fixes, which touched only the new file: the file passed again on 3.14
+    (15), 3.11 (13) and Windows (4 + 11 skips), and test 1 passed 10 of 10.
+- **Where to start if it breaks:**
+  - **A `test_c1_*` record mismatch:** the handler's outcome mapping (`server._handle_run_code`,
+    `audit.end_from_result`) or a backend's `ran`/`run_id`/`image`.
+  - **A `test_c2_*` number:** the helper's `_read_usage` and native's `_usage`; check the
+    kernel first (the flags at the top of the file).
+  - **`test_c3_a_native_guest_cant_change_its_numbers`:** the guest reached an fd it shouldn't
+    have; look at `_guest`'s `_close_from(3)` first.
+  - **"scopes left behind":** a finisher or placement left a unit; see the placement-cancel row
+    in the known issues.
 
 ## M3 step 4 — non-blocking stderr (2026-11-05)
 
