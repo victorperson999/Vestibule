@@ -1256,3 +1256,50 @@ accepted 2026-11-07).
     stays not determined (S5-D2).
   - **Not in M3, by decision:** workspace quotas (they need root) and retention (old files are
     deleted by hand).
+
+## M4 — Polish for adoption (in progress)
+
+Goal: a stranger installs Vestibule and gets a sandboxed result in under 2 minutes on a clean
+machine, following only the README; and `SECURITY.md` says honestly what it protects and what
+it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) (signed off
+2026-11-07).
+
+### Decision sign-offs
+
+- **The M4 contract — signed off 2026-11-07 (v2).** `skeptic` reviewed v1 (19 findings, 3
+  high) and `verifier` checked its 15 checkable claims, confirming most and finding two more
+  problems. v2 takes every finding (the contract's §8). The two that changed the plan most:
+  - an sdist built from the working tree would have shipped local files such as
+    `.claude/settings.local.json`, so the release builds from a clean export with an include
+    list;
+  - a demo with only Vestibule's tools would have implied more than the README installs, so the
+    README now says the boundary is code sent to `run_code` only, and shows the sandbox-only
+    session.
+
+  Victor chose the recommended option on all nine decisions:
+  - **P1 — install with `uv tool install vestibule-mcp`.** The command every message names is
+    then on `PATH`, `setup` and the server are one version, and uv brings its own Python.
+    Declined: `uvx` (the named fixes wouldn't run, and versions could differ), and `pipx` (it
+    needs Python and pipx first).
+  - **P2 — release on mcp 1.x, narrowed to the minor the gates ran;** the 2.x move gets its own
+    milestone after M4. This **amends M2's S1-D1** ("before the PyPI release"). Declined:
+    rewriting the protocol layer first.
+  - **P3 — keep M2's Ubuntu decision (N5).** Stock Ubuntu 23.10+ gets the container backend,
+    with Docker Engine from Docker's apt repo. The snap can't run Vestibule. No AppArmor
+    profile; the `docker` group's cost is stated.
+  - **P4 — one `setup` command everywhere,** downloading only what the machine uses.
+  - **P5 — `setup` ends with the real readiness check,** worded for the terminal's environment.
+  - **P6 — Victor runs the first-run test, following only the README,** on fresh VMs at
+    25 Mbit/s, against the release candidate before the upload. It includes live Cursor and
+    Claude Desktop sessions.
+  - **P7 — a real recorded demo GIF,** with a caption saying what it shows.
+  - **P8 — GitHub's private vulnerability reporting** (Victor turns it on).
+  - **P9 — one manually triggered macOS job** for the Docker-free tests and the smoke test.
+  - **Out of M4:** the mcp 2.x move, the Windows→WSL bridge, a custom image, the liveness
+    lease, container runs on macOS, arm64, standing CI.
+
+### Build steps (6 planned: 0–5)
+
+- **Step 0 — the spike, no repo code,** is next: `uv tool install` with native on several
+  Pythons, GUI clients' `PATH`, nested virtualization, stock Ubuntu's failure, Debian minimal's
+  user bus, and whether uninstall follows symlinks.
