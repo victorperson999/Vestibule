@@ -284,6 +284,13 @@ this isn't a soft limit failing, it's something broken.
 - **Cleanup:** systemd removes the emptied scope with our sub-cgroups when the helper exits
   (spike A2, and §1), and `CollectMode` removes one that failed. The finisher does nothing new.
 
+> **Amendment 2026-11-06 (M3 step 5 fix, [`M3-step5-placement-cancel.md`](../M3/M3-step5-placement-cancel.md)):** one case
+> the finisher now handles. systemd accepts the pid of a helper that has exited but isn't
+> reaped yet, and the scope is then born empty and stays until its `RuntimeMaxSec`. A
+> placement cut short, by a cancel or an error, or one that found the helper gone, sets
+> `stray_unit`. The finisher then stops `vestibule-<id>.scope` by name, after the helper is
+> gone and within 5 s.
+
 ### S4-D7 (fixed; extends S3-D8) — The verdict counts only limits the kernel holds for this sandbox
 
 - **Init reports where it is.** Right after "go", before `unshare(NEWCGROUP)`, init reads
@@ -543,6 +550,11 @@ Each mutant must turn its guarding test red:
 - **A request cancelled during placement:** the finisher SIGTERMs the paused helper (no handler
   yet, so it dies); placement kills `busctl` if it's still running; a scope that was made
   empties and is removed, or fails and is collected (`CollectMode`).
+
+  > **Amendment 2026-11-06 (M3 step 5 fix, [`M3-step5-placement-cancel.md`](../M3/M3-step5-placement-cancel.md)):** not
+  > always. If systemd attaches the helper after it has exited and before it is reaped, the
+  > scope is born empty and is never removed on its own (2 of 40 cancels left one). The
+  > finisher now stops it by name.
 - **systemd slower than 5 s:** the run goes on without limits (S4-D3). If the helper lands in
   the scope later, the envelope and `RuntimeMaxSec` apply to it.
 - **A user bus that accepts and never answers:** the 5 s bound ends the wait; `busctl` is

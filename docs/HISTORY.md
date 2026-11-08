@@ -1050,8 +1050,8 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
       legacy 8-bit terminal charset (KOI8-R, or cp1252 on a Windows pipe) puts printable
       characters on bytes a terminal reads as control codes, so output that isn't UTF-8 is now
       pure ASCII. One looping symlink stopped the whole listing.
-    - **Left for Victor:** R4 as tightened, and the overlap warning, which reads two settings
-      the plan said it wouldn't.
+    - **Left for Victor, approved 2026-11-05:** R4 as tightened, and the overlap warning,
+      which reads two settings the plan said it wouldn't.
   - **Found by the gate:** one teardown error in a native test on the first Linux run. It didn't
     come back: 20 of 20 alone, and the later runs were clean.
 - **Step 4 plan signed off, 2026-11-04 ([plan](plans/M3/M3-step4-stderr.md), v2.1).** Step 4
@@ -1075,7 +1075,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
   - a queued line is capped at 16,384 characters, keeping its first and last 8,192;
   - a log call that fails to format queues a one-line note instead of the stock traceback.
 - **Step 4 — non-blocking stderr, done 2026-11-05
-  ([plan](plans/M3/M3-step4-stderr.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step4-stderr.md) §9; commit `de9e10c`).**
   - **Now:** a client that stops reading the server's stderr no longer freezes the server.
     - Log calls only put the line in a queue (1,000 lines, each cut to 16,384 characters). One
       background thread writes the queue to its own copy of stderr.
@@ -1100,10 +1100,97 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
       after the warning it exists to save.
     - **The hand-off's line** is now written only when the queue drained in time. A writer
       still blocked on the pipe would otherwise take the room the line needed.
-  - **Left for Victor:**
+  - **Left for Victor, approved 2026-11-05:**
     - that drain gate, which can also drop the line on a very busy machine (never the exit);
     - an exception whose own text can't be printed is named by its type, instead of counting
       as a dropped line.
   - **Not fixed, recorded:** on Windows, an exception that escapes `server.run` is printed
     straight to stderr, so on a stuck pipe the exit waits for the client's kill. It is older
     than step 4.
+- **Review changes to steps 3 and 4 approved, 2026-11-05.** Each review changed something
+  Victor had signed, and each change waited for his OK. He committed both steps with the
+  changes in, then approved them:
+  - **Step 3:** R4 as tightened (output that isn't UTF-8 is pure ASCII), and the warning
+    when the audit dir overlaps the workspace or the rootfs.
+  - **Step 4:** the shutdown line is written only if the log drained in time, and an
+    exception whose own text can't be printed is named by its type.
+- **Step 5 plan signed off, 2026-11-06 ([plan](plans/M3/M3-step5-acceptance.md), v2).** Step 5
+  is M3's exam, in two parts at Victor's request (S5-D1):
+  - **5a:** tests through `server.call_tool` with real backends and a real audit file, and the
+    cold-start benchmark run again;
+  - **5b:** live Claude Code sessions on Linux and Windows, each ending with a call cancelled
+    by Ctrl+C. Then the docs pass, and "M3 accepted" last.
+
+  `skeptic` found 13 issues (6 medium); `verifier` confirmed 11 and rated 2 plausible. Every
+  one changed the plan. The main ones:
+  - the live check's cancelled call had the 10 s default timeout, so a late Ctrl+C would have
+    recorded "timed out";
+  - the file-reader test's assertions couldn't fail;
+  - an end-to-end `audit` test repeated one step 3's review had dropped.
+
+  Out of that came a rule: 5a adds a test only where real backends or real runs are unproven,
+  and maps what is already tested with the real component. S5-D2 (Windows' stderr check: Linux
+  only) and S5-D3 (one sentence in golden rule 1 for `audit`'s stdout) were taken as
+  recommended with the sign-off. Both belong to 5b.
+- **Step 5a — the acceptance suite, done 2026-11-06
+  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit `03f0fb7`).**
+  - **Now:** M3's criteria are tested through the server's own tool dispatch, with real
+    backends and a real audit file (`tests/test_audit_acceptance.py`, 15 tests):
+    - every outcome's records on native: ran, timed out, cancelled, refused, not run, blocked;
+    - the container's image id, and a missing image refused;
+    - real usage numbers for `print(1)`, a memory bomb, a fork bomb, a busy loop and a file
+      reader;
+    - a guest that can't fake its numbers, on all three backends;
+    - native without a systemd bus;
+    - the audit folder invisible from inside the sandbox;
+    - a log that can't write, while the run still happens.
+
+    What the real components already prove is mapped, not repeated. No `src/` change.
+  - **How we know:** 11 deliberately broken versions each turned their own test red. The
+    failures were checked: each was the property that broke. Linux has 814 tests, 0 skipped,
+    and Windows 641 plus 153 Linux-only skips.
+  - **The benchmark:** native's median is now 118 ms and the container's 895 ms, against the
+    README's 82 and 392. The code from before M3 measures the same today, so M3 costs nothing
+    measurable: the host got slower. 5b updates the README's numbers.
+  - **Review:** `critic` found 9 issues and `verifier` confirmed or partly confirmed 7; none
+    was left high or medium. The fixes:
+    - teardown drains every warden used;
+    - the leftover-scope check can't be skipped by accident;
+    - the cancel waits until the guest runs.
+  - **Found, not fixed:** a cancel that lands during native placement, a window of about 15 ms,
+    can leave an empty systemd scope for up to timeout + 30 s. It is older than M3. The fix
+    waits for Victor (BUILD_LOG's known issues).
+- **The placement-cancel fix's plan signed off, 2026-11-06
+  ([plan](plans/M3/M3-step5-placement-cancel.md), v2).** Victor chose to fix 5a's finding before
+  5b.
+  - **The cause, now measured:** a cancel during native placement makes the paused helper exit
+    at once. systemd can then attach it while it is a zombie (exited, not yet reaped), and the
+    scope is born empty and stays active until its `RuntimeMaxSec`. The same can happen when
+    placement finds the helper gone.
+  - **The fix:** the run carries a flag while placement is unfinished. Its finisher then stops
+    `vestibule-<id>.scope` by name, within 5 s, after the helper is gone.
+  - **The review:** `skeptic` found 7 issues (1 high); `verifier` confirmed or partly
+    confirmed 7 and found 1 plausible, and its experiments found the cause. The high one: v1's
+    test couldn't move a process into the scope from where the gate runs pytest. v2's tests
+    hand systemd a zombie's pid instead, which makes the real empty scope on demand.
+  - **The decision this amends:** M2's S4-D6 ("the finisher does nothing new").
+- **The placement-cancel fix, done 2026-11-06
+  ([plan](plans/M3/M3-step5-placement-cancel.md) §7; commit pending).**
+  - **Now:** a call cancelled while native is placing its run (Ctrl+C in Claude Code) no longer
+    leaves an empty systemd scope. The same holds for a placement that finds the helper gone.
+    The run's cleanup stops the scope by name once the helper is gone, within 5 s. A normal run
+    never sends that stop.
+  - **How we know:**
+    - two tests reproduce the real empty scope by handing systemd a zombie's pid. They failed
+      on the old code and pass now;
+    - cancels at random moments left a scope 2 times in 40 before the fix, and 0 in 100 after;
+    - 9 deliberately broken versions each turned their own test red;
+    - Linux has 818 tests, 0 skipped, and Windows 641 plus 157 Linux-only skips.
+  - **Review:** `critic` ran twice on the code and found only low issues. One was a broken
+    version that every test missed: it would have held a run's slot 5 s longer on a hung bus.
+    A test now catches it.
+  - **Still not covered, stated:**
+    - any POSIX shutdown during placement, where the cleanup never runs;
+    - a placement whose 5 s bound passes after systemd answered.
+
+    Both are rare, and the scope still goes at its time limit.

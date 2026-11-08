@@ -1,7 +1,8 @@
 # M3 step 4 — Non-blocking stderr
 
-Status: **v2.1, signed off 2026-11-04; built 2026-11-05 (§9).** Two refinements made while
-building await Victor's OK (§9.2). v2.1 is a second pass over Q2–Q4 on Victor's request:
+Status: **v2.1, signed off 2026-11-04; built 2026-11-05 (§9).** Victor approved the two
+refinements made while building on 2026-11-05 (§9.2). v2.1 is a second pass over Q2–Q4 on
+Victor's request:
 - Q2's drain no longer checks for room first;
 - Q3's memory figure is corrected to characters, not bytes;
 - Q4's note is guarded.
@@ -485,7 +486,7 @@ sat unread in the server's stderr`, with a 4,096-byte pipe. After the change it 
 
 ### 9.2 Changes from v2.1
 
-**For Victor's OK:**
+**For Victor's OK (approved 2026-11-05):**
 1. **The hand-off writes its line only if the drain finished** (review round 1, finding 4). In
    v2.1 it drained, then checked for room on its own.
    - **Why:** the race between the check and the write is wider than §4 said. When the drain

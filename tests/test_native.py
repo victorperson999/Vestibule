@@ -7,6 +7,7 @@ Every run loads the real seccomp filter (step 5; step 6 deleted the test-only by
 so a run that reaches the guest reports `native` (with a cgroup) or `native-degraded` (without).
 """
 import asyncio
+import contextlib
 import errno
 import getpass
 import json
@@ -1025,6 +1026,9 @@ async def test_a_hanging_busctl_costs_at_most_the_placement_bound(backend, limit
         0, "ran\n", "native-degraded", ALL_LIMITS + " — systemd did not place the run within 5 s")
     assert any("placement took over" in m for m in caplog.messages), caplog.messages
     assert not Path(f"/proc/{pidfile.read_text().strip()}").exists()
+    # place() returned (its bound), so the finisher sends no stop by name: on this bus it would
+    # hang to its own 5 s bound (M3 step 5 fix, plan §2.4).
+    assert await backend.drain(3)
 
 
 async def test_without_busctl_the_run_degrades_at_once(backend, limits, tmp_path, monkeypatch,
@@ -1038,15 +1042,150 @@ async def test_without_busctl_the_run_degrades_at_once(backend, limits, tmp_path
     assert any("placement failed" in m for m in caplog.messages), caplog.messages
 
 
-async def test_a_cancel_during_placement_leaves_nothing(backend, limits, tmp_path, monkeypatch):
-    pidfile = tmp_path / "busctl.pid"
-    _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pidfile}"\nexec sleep 60\n')
+async def test_a_cancel_during_placement_leaves_nothing(backend, limits, tmp_path, monkeypatch,
+                                                       caplog):
+    pids = tmp_path / "pids"  # one file per busctl method ($6), so neither call hides the other
+    pids.mkdir()
+    _fake_busctl(tmp_path, monkeypatch, f'echo $$ > "{pids}/$6"\nexec sleep 60\n')
     task = asyncio.create_task(backend.run("python", "print('ran')", 10, limits))
     await asyncio.sleep(0.5)  # inside placement, every time: busctl never answers
-    assert pidfile.exists() and not task.done()
+    assert (pids / "StartTransientUnit").exists() and not task.done()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    t0 = time.monotonic()
     assert await backend.drain(10)
-    assert not Path(f"/proc/{pidfile.read_text().strip()}").exists()
+    # The finisher stops the scope by name (M3 step 5 fix); on this hung bus it gives up at
+    # its bound, and every busctl is gone.
+    assert time.monotonic() - t0 >= native_cgroup._PLACE_WAIT_S - 0.2
+    assert any("stopping its scope took over" in m for m in caplog.messages), caplog.messages
+    for method in ("StartTransientUnit", "StopUnit"):
+        assert not Path(f"/proc/{(pids / method).read_text().strip()}").exists(), method
     assert _helpers() == []
+
+
+# --- a scope an unfinished placement may leave (M3 step 5 fix,
+# docs/plans/M3/M3-step5-placement-cancel.md) -------------------------------------------------
+
+def _zombie() -> subprocess.Popen:
+    """A child that has exited and isn't reaped. systemd accepts its pid for a scope and moves
+    nothing, so the scope is born empty and stays active: what a cancelled placement can leave
+    (plan §1). The caller reaps it."""
+    p = subprocess.Popen(["true"], stdin=subprocess.DEVNULL)
+    deadline = time.monotonic() + 5
+    while True:
+        with open(f"/proc/{p.pid}/stat") as f:
+            if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                return p
+        assert time.monotonic() < deadline, "the child never became a zombie"
+        time.sleep(0.005)
+
+
+def _zombie_scopes(monkeypatch, zombie: subprocess.Popen) -> list[str]:
+    """systemd gets the zombie's pid in place of the helper's; the units asked for, in order."""
+    real, units = native_cgroup._start_unit, []
+
+    def start(unit, pid, runtime_max_s, limits):
+        units.append(unit)
+        return real(unit, zombie.pid, runtime_max_s, limits)
+
+    monkeypatch.setattr(native_cgroup, "_start_unit", start)
+    return units
+
+
+def _stop_by_hand(units: list[str]) -> None:
+    for unit in units:  # so a red run leaves nothing either
+        subprocess.run(["systemctl", "--user", "stop", unit], env=native_cgroup.bus_env(),
+                       capture_output=True, timeout=10, stdin=subprocess.DEVNULL)
+
+
+async def _gone(unit: str, within_s: float = 2) -> bool:
+    deadline = time.monotonic() + within_s
+    while True:
+        live = scopes()
+        assert live is not None, "systemctl --user failed, so no scope check is possible"
+        if unit not in live:
+            return True
+        if time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(0.05)
+
+
+@cgroups_required
+async def test_a_cancel_during_placement_stops_the_scope_systemd_made(backend, limits,
+                                                                     monkeypatch):
+    zombie = _zombie()
+    units = _zombie_scopes(monkeypatch, zombie)
+    task = asyncio.create_task(backend.run("python", "print('ran')", 10, limits))
+    try:
+        t0 = time.monotonic()  # the helper never shows up in the scope: placement waits on
+        while not (units and units[0] in (scopes() or set())):
+            assert time.monotonic() - t0 < 4 and not task.done(), "systemd never made the scope"
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await backend.drain(10)
+        assert await _gone(units[0]), f"{units[0]} was left behind"
+    finally:
+        if not task.done():  # a failed wait above: end the run before the fixture's drain
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        _stop_by_hand(units)
+        zombie.wait()
+
+
+@cgroups_required
+async def test_a_helper_gone_before_placement_stops_its_scope(backend, limits, monkeypatch):
+    zombie = _zombie()
+    units = _zombie_scopes(monkeypatch, zombie)
+
+    async def gone(pid, unit):
+        return None  # as when the helper died during placement
+
+    monkeypatch.setattr(native_cgroup, "_in_scope", gone)
+    try:
+        r = await backend.run("python", "print('ran')", 10, limits)
+        assert (r.exit_code, r.stdout, r.isolation, r.isolation_detail) == (
+            0, "ran\n", "native-degraded", ALL_LIMITS + " — the helper was gone before placement")
+        assert await backend.drain(10)
+        assert await _gone(units[0]), f"{units[0]} was left behind"
+    finally:
+        _stop_by_hand(units)
+        zombie.wait()
+
+
+@cgroups_required
+async def test_a_placed_run_never_stops_its_scope_by_name(backend, limits, monkeypatch):
+    stopped: list[str] = []
+
+    async def record(run_id):
+        stopped.append(run_id)
+
+    monkeypatch.setattr(native_cgroup, "stop_unit", record)
+    r = await backend.run("python", "print(1)", 10, limits)
+    assert (r.exit_code, r.isolation) == (0, "native"), r
+    assert await backend.drain(10) and stopped == []
+
+
+async def test_a_stop_that_fails_is_logged_and_replaces_any_start_job(tmp_path, monkeypatch,
+                                                                     caplog):
+    """`replace` turns a start job still pending into the stop (plan §3); any refusal but "not
+    loaded" is a warning, never silence."""
+    argv = tmp_path / "argv"
+    _fake_busctl(tmp_path, monkeypatch, f'echo "$@" > "{argv}"\necho "Access denied" >&2\n'
+                 'exit 1\n')
+    await native_cgroup.stop_unit("0" * 16)
+    assert argv.read_text().split()[-4:] == [
+        "StopUnit", "ss", f"vestibule-{'0' * 16}.scope", "replace"]
+    assert "could not stop its scope (Access denied)" in caplog.text, caplog.text
+
+
+@cgroups_required
+async def test_stopping_a_unit_that_isnt_there_is_quiet(caplog):
+    caplog.set_level(logging.INFO, logger="vestibule.native")
+    t0 = time.monotonic()
+    await native_cgroup.stop_unit("0" * 16)
+    assert time.monotonic() - t0 < native_cgroup._PLACE_WAIT_S
+    assert [r.getMessage() for r in caplog.records if r.name.startswith("vestibule")] == []

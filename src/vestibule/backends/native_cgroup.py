@@ -23,6 +23,9 @@ log = logging.getLogger("vestibule.native")
 
 CGROUP_FS = "/sys/fs/cgroup"
 _PLACE_WAIT_S = 5  # the whole placement, from busctl's spawn to the last readback (S4-D3)
+# place()'s reason when the helper was gone: systemd may still have made the scope, so the run
+# stops it by name (M3 step 5 fix, docs/plans/M3/M3-step5-placement-cancel.md).
+HELPER_GONE = "the helper was gone before placement"
 # The helper's allowance on top of the guest's limits, as the scope's envelope (N3, step 0).
 _ENVELOPE_MEM_MB = 64
 _ENVELOPE_TASKS = 16
@@ -69,7 +72,7 @@ async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Pl
     if env is None:
         log.warning("run %s: no user bus; limits not applied", run_id)
         return "no systemd user bus"
-    unit = f"vestibule-{run_id}.scope"
+    unit = _unit(run_id)
     busctl = None
     try:
         # One bound around all of it: busctl's own --timeout doesn't cover connecting (§1).
@@ -88,8 +91,8 @@ async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Pl
                         else "systemd refused the scope")
             scope = await _in_scope(pid, unit)
             if scope is None:
-                log.warning("run %s: the helper was gone before placement", run_id)
-                return "the helper was gone before placement"
+                log.warning("run %s: %s", run_id, HELPER_GONE)
+                return HELPER_GONE
             # A thread: moving a process between cgroups takes a kernel-wide lock (S4-D5).
             return await asyncio.to_thread(_layout, run_id, scope, pid, limits)
     except TimeoutError:
@@ -104,6 +107,44 @@ async def place(run_id: str, pid: int, runtime_max_s: int, limits: Limits) -> Pl
             with contextlib.suppress(ProcessLookupError):
                 busctl.kill()
             await busctl.wait()
+
+
+async def stop_unit(run_id: str) -> None:
+    """Stop the run's scope by name, for a run whose placement didn't finish or found the helper
+    gone: systemd can attach a helper that has exited but isn't reaped, and that scope is born
+    empty and stays until its RuntimeMaxSec (M3 step 5 fix). Bounded; never raises."""
+    env = bus_env()
+    if env is None:
+        return
+    busctl = None
+    try:
+        async with asyncio.timeout(_PLACE_WAIT_S):
+            busctl = await asyncio.create_subprocess_exec(
+                "busctl", "--user", "call", "org.freedesktop.systemd1",
+                "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "StopUnit", "ss",
+                _unit(run_id), "replace", env=env,
+                stdin=asyncio.subprocess.DEVNULL,  # the server's stdin is the MCP channel
+                stdout=asyncio.subprocess.DEVNULL,  # golden rule 1
+                stderr=asyncio.subprocess.PIPE)
+            _, err = await busctl.communicate()
+        text = err.decode(errors="replace").strip()
+        if busctl.returncode == 0:
+            log.info("run %s: stopped its scope by name", run_id)
+        elif "not loaded" not in text:  # "not loaded": systemd made none
+            log.warning("run %s: could not stop its scope (%s)", run_id, text)
+    except TimeoutError:
+        log.warning("run %s: stopping its scope took over %d s", run_id, _PLACE_WAIT_S)
+    except OSError as e:
+        log.warning("run %s: could not stop its scope (%s)", run_id, e)
+    finally:
+        if busctl is not None and busctl.returncode is None:
+            with contextlib.suppress(ProcessLookupError):
+                busctl.kill()
+            await busctl.wait()
+
+
+def _unit(run_id: str) -> str:
+    return f"vestibule-{run_id}.scope"
 
 
 def _start_unit(unit: str, pid: int, runtime_max_s: int, limits: Limits) -> list[str]:
