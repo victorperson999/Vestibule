@@ -1,6 +1,7 @@
 # M3 contract — audit log + resource reporting
 
-Status: **signed off 2026-11-01 (v2).** Revised after the `skeptic` review; `verifier`
+Status: **accepted 2026-11-07** (M3 step 5; the acceptance record follows §5's criteria).
+Signed off 2026-11-01 (v2), revised after the `skeptic` review; `verifier`
 confirmed all 13 findings (§7). Victor chose option 1 on each of A1–A3. The rest of the
 decisions are fixed, with one defensible answer each.
 
@@ -507,6 +508,27 @@ change that, because the same user can recompute the chain. The README says so.
     runs a few calls, including one cancelled with Ctrl+C. `vestibule-mcp audit` then shows
     them, and each result has its `usage:` line.
 
+**Acceptance record (2026-11-07, M3 steps 5a and 5b).** Every criterion has evidence, on WSL2
+Ubuntu 26.04.1 (kernel 6.6.87.2-microsoft-standard-WSL2) with Python 3.14 and 3.11, and on
+Windows 11 with Docker Desktop 28.5.1. The handler tests in `tests/test_audit_acceptance.py`
+go through `server.call_tool` with a fresh selector, a temp workspace and a real `AuditLog` on
+a temp dir, so selection, the run, the rendering, both records and the writer thread are all
+in the path. A behavior already tested with the real component is mapped, not repeated. Plan:
+[`M3-step5-acceptance.md`](M3-step5-acceptance.md).
+
+| # | Evidence (`tests/` unless noted) | What was observed |
+|---|---|---|
+| 1 | `test_audit_acceptance.py::test_c1_*`; `test_audit.py`'s outcome table; `test_native.py::test_an_empty_tree_fails_setup_at_mounts`; the live checks | native: `ran`, `timed_out`, and `cancelled` through an anyio task group once the guest runs; a full slot `refused` with its message; a removed rootfs `not_run`, then a `blocked(refused)` naming `setup`; empty code `blocked`. Container: `ran` with `image_ran` equal to `docker image inspect`'s id, and a missing image `refused` with the pull command. The outer deadline, an unexpected error and a native setup error: stand-in wardens, and the real helper for the setup error's `ran=False`. Live: ran, timed_out, ran, ran, cancelled on Linux; ran, ran, timed_out, cancelled on Windows |
+| 2 | `test_c2_*`; the Linux live check | `print(1)`: `cpu`, `mem_peak` and `pids_peak` above 0 and equal to the record's; a memory bomb: the OOM note, `mem_peak` within 10 % below `mem_mb`; the classic fork bomb, after a controlled fork loop: `pids_peak` equal to `pids_max` and a nonzero `limits hit: pids (N new processes or threads refused)`; a timed-out busy loop: `limits hit: cpu (throttled in N of M periods of 100 ms)`; a reader of 108 MiB under a 48 MiB limit: exit 0, no OOM note, no memory hit. Live: `print(1)` read `cpu=36ms, mem_peak=13MiB, pids_peak=2`, the busy loop `throttled in 40 of 41 periods of 100 ms`, the bomb exit 137 with the note and `mem_peak=256MiB` |
+| 3 | `test_c3_*` | a native guest prints a fake `usage:` line, a fake `limits hit:` line and the helper's own report lines on stdout and stderr, and tries them on fds 3–63 (each `EBADF`): the result's own line keeps numbers within the limits, equal to the record's. The same guest in a container and in naive: `wall` and that backend's not-measured note only, and null usage in the record |
+| 4 | `test_c4_*`; `test_native.py::test_the_counters_wait_is_bounded`; `test_native_verdict.py::test_a_missing_counter_is_named_with_its_reason` and the helper's counter-file tests | native without a bus: `native-degraded (limits not applied: cpu, memory, pids — no systemd user bus)` and `cpu, mem_peak and pids_peak not measured: this run had no cgroup`, matching the record's `not_measured`; a timed-out run with no report says so within its bound; a counter missing on an old kernel is named with the version it needs |
+| 5 | `test_c5_*`; `test_audit.py::test_the_dir_it_makes_is_0700_and_the_file_0600`; `test_config.py::test_stdio_relative_audit_dir_blocks_every_call` and `::test_audit_dir_refused`; `test_lifecycle.py::test_the_container_command_never_names_the_audit_dir`; the Linux live check | from inside native, `stat`, `listdir` and `open` on the dir's and the file's absolute paths each get `ENOENT`; 0700 and 0600; a relative or overlapping dir blocks every call as a config error; no container `-v` names it. Live: `~/.vestibule/audit` 700, its file 600 |
+| 6 | `test_c6_*`; `test_audit.py` | through the handler, a real log whose dir can't be made: the output is there, and `audit: not recorded (…)` sits just above `isolation:`. On a real `AuditLog`: a writer stuck past 2 s gives `not confirmed` and a later record still lands; a deleted dir or file is reopened (POSIX) |
+| 7 | `test_audit_cli.py`; the live checks | every bullet, with the real writer's open file and the real console script over a cp1252 pipe. Live: the newest rows were the session's calls in order, with the right outcomes; on Windows both plain and piped through `Out-String`, exit 0 |
+| 8 | `test_stdio_e2e.py` (`stdioutil` turns the audit on) | the real server's stdout carries only JSON-RPC |
+| 9 | `test_stderr_log.py::test_a_stuck_stderr_never_blocks_a_log_call` and `::test_a_client_that_never_reads_stderr` | with the writer blocked and the queue full, `emit` returns at once and nothing reaches `sys.stderr`; a stdio client that never reads stderr gets every run, where `c5fe2a2` hung at call 6 (step 4) |
+| 10 | the live checks (step 5b; BUILD_LOG) | Linux Claude Code 2.1.319, native: `print(1)`, a busy loop with timeout 2, the memory bomb, node, then a `sleep(60)` cancelled by Ctrl+C; results 1–4 each had a `usage:` line with all three kernel numbers; shutdown `SIGINT`, nothing left. Windows Claude Code 2.1.319, container: `print(1)`, node, the busy loop, then the cancelled sleep; each of the three results had `usage: wall=…; cpu, mem_peak and pids_peak not measured: not readable from outside a container`; no container left |
+
 ---
 
 ## 6. Implementation order (each step ≈ one commit; each its own plan, `skeptic`-reviewed)
@@ -517,7 +539,7 @@ change that, because the same user can recompute the chain. The README says so.
 | 2 | Audit writer: `audit.py` (the writer thread, the queue, acknowledgements, reopen and newline repair), `VESTIBULE_AUDIT_DIR` with its validation, the records and outcomes wired into `_handle_run_code` including cancellation (A2, A3, A5–A8) | src ~250, tests ~300 |
 | 3 | `vestibule-mcp audit` with the sanitizer (A10) | src ~110, tests ~140 |
 | 4 | Non-blocking stderr (A11) | src ~60, tests ~100 |
-| 5 | Acceptance suite, docs (README "Audit log" section, ARCHITECTURE, PLAN status and the amended M3 acceptance), live checks | tests ~300 |
+| 5 | Acceptance suite, docs (README "Audit log" section, ARCHITECTURE, PLAN status and the amended M3 acceptance), live checks. Built in two parts (S5-D1): 5a the suite and the benchmark, 5b the live checks and the docs; a fix between them for a cancel during native placement ([`M3-step5-placement-cancel.md`](M3-step5-placement-cancel.md)) | tests ~300 |
 
 Every step runs the full loop: plan, `skeptic`, sign-off, build, `gate`, `critic`, `verifier`,
 docs.

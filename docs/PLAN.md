@@ -75,7 +75,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 - cgroups v2: `memory.max`, `cpu.max`, `pids.max` (filesystem writes).
 - `no_new_privs` + a required seccomp allowlist (our own libseccomp binding, derived from Docker's profile) + drop capabilities.
 - A fresh helper process per run makes the blocking syscalls, so they never stall the async server.
-- **Benchmark cold-start latency vs. the container backend.** Measured on WSL2: native 82 ms median, container 392 ms. The container path there goes through Docker Desktop's VM, so the README quotes both numbers with that caveat, not a ratio.
+- **Benchmark cold-start latency vs. the container backend.** Measured on WSL2: native 82 ms median, container 392 ms (2026-10-31). On 2026-11-06 the same host measured 118 ms and 895 ms with the code of `03f0fb7`, and the code from before M3 measured the same, so the host got slower. The container path there goes through Docker Desktop's VM, so the README quotes both numbers with that caveat, not a ratio.
 
 **Acceptance:** on Linux, code runs with no host filesystem visibility (a canary planted at an absolute host path can't be read), no network, enforced mem/cpu/pids caps, and denied syscalls reported. Result reports `isolation: native`. Cold-start benchmark recorded.
 
@@ -87,9 +87,13 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
 - Structured JSONL audit trail of every execution (request, code hash, exit, resource high-water marks, denied syscalls).
 - `memory.peak` / `cpu.stat` surfaced in every result.
-- A `vestibule --audit` CLI to pretty-print what agents have been doing.
+- A `vestibule-mcp audit` command to pretty-print what agents have been doing.
 
-**Acceptance:** every run appends one audit record; `--audit` prints a readable history; results include real usage numbers.
+**Acceptance:** every run appends one audit record; `vestibule-mcp audit` prints a readable history; results include real usage numbers.
+
+**Detailed contract:** `docs/plans/M3/M3-audit-usage.md`; its 10 acceptance criteria supersede the list above. It amends "every result" for containers (A1): a container result reports `wall` only, because its kernel numbers could reach the server only through the guest's own output, which the guest can fake.
+
+**Status (2026-11-07):** ✅ accepted. Built in steps 1–5, step 5 in two parts with a fix between them; the acceptance suite, `tests/test_audit_acceptance.py`, covers criteria 1–6 through the server on WSL2 Ubuntu 26.04 and Windows, and the live checks from Claude Code on Linux (native) and Windows (container) passed (results in `docs/HISTORY.md`).
 
 ### Milestone 4 — Polish for adoption · ~week 4 · treat as a real feature
 
@@ -127,7 +131,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
 ## Résumé bullets (draft — fill in real numbers)
 
-- *Built and shipped an open-source MCP server providing kernel-isolated code execution for AI agents (Linux user/mount/pid/net namespaces, cgroups v2, seccomp-bpf), adopted by N developers (X GitHub stars); native sandbox cold start ~82 ms median vs. ~392 ms for the Docker-based backend on the same host (Docker Desktop on WSL2).*
+- *Built and shipped an open-source MCP server providing kernel-isolated code execution for AI agents (Linux user/mount/pid/net namespaces, cgroups v2, seccomp-bpf), adopted by N developers (X GitHub stars); native sandbox cold start ~118 ms median vs. ~895 ms for the Docker-based backend on the same host (Docker Desktop on WSL2, measured 2026-11-06 at `03f0fb7`).*
 - *Designed a layered "defense-in-depth" threat model for autonomous LLM code execution, mitigating prompt-injection-driven filesystem and network abuse; documented syscall-level guarantees in a public security spec.*
 
 Every N/X/Y must be measured and defensible — interview-proof.
