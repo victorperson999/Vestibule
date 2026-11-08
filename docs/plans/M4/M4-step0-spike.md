@@ -27,8 +27,8 @@ change what the README must say:
 
 **Part B, on the VMs and the GUI clients, is done, and no signed decision reverses.** Nested
 virtualization, the GUI clients' `PATH` and stock Ubuntu came out as predicted. Two predictions
-were wrong, and six findings change the plans (B-1 to B-6). The amendments to the contract wait
-for Victor's sign-off, so that §3 changes only once.
+were wrong, and six findings change the plans (B-1 to B-6). Victor signed off the contract's
+amendments on 2026-11-08, and they're applied.
 
 ## Results, part A
 
@@ -159,6 +159,10 @@ Hosts:
   - P1 has the README give GUI clients the path from `uv tool dir --bin`. Bare
     `vestibule-mcp` resolved in both, when the client started after `update-shell`.
   - A client left running through `update-shell` wasn't tested.
+
+**Not measured:** A-1 said part B would check whether uv's own installer puts `.local\bin` on
+`PATH`. The kit brought its own `uv.exe`, so it didn't. Step 5's first run installs uv as the
+README says, and answers it.
 
 The VMs stay for P6's first-run pass. `m4-ubuntu` and `m4-debian` have a `fresh-install`
 checkpoint from before the kit's key and `sudo` rule. `m4-win11` has none, and now holds Docker

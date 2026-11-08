@@ -1327,4 +1327,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     - Debian's user-bus fix needs a reboot.
     - Docker's recommended Windows install needs Virtual Machine Platform turned on first.
     - uv may pick Python 3.15 when there's no usable system Python.
-  - The contract amendments wait for Victor's sign-off.
+  - **Victor signed off the contract amendments on 2026-11-08,** and they're applied. Victor
+    also chose two small messages for step 2: `setup` names `ca-certificates` when a download
+    fails certificate checks, and the error under snap Docker names the snap and points to
+    Docker's apt repo. Step 0 is done.

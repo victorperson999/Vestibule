@@ -56,6 +56,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 5a | M3's acceptance suite through `server.call_tool` with real backends and a real audit file (no `src/` change); the cold-start benchmark run again | 2026-11-06 | `03f0fb7` | 814 Linux (0 skipped); 641 + 153 POSIX/Linux-only skips on Windows |
 | M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | `7a3c30f` | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
 | M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
+| M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, amendments' hash pending | no test change |
 
 ## Known open issues
 
@@ -122,6 +123,27 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M4 step 0 — spike (2026-11-08)
+
+- **Commits:** `6798fe2` (part A), `f5e8eb0` (part B); the contract amendments' hash pending.
+- **Plan:** [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) §6, "Step 0 measures";
+  report [`docs/plans/M4/M4-step0-spike.md`](plans/M4/M4-step0-spike.md).
+- **What:** no repo code. The wheel was installed and run on Windows, WSL, distro containers,
+  and Hyper-V VMs (stock Ubuntu 24.04, Debian 13 minimal, nested Windows 11), and Claude
+  Desktop's and Cursor's `PATH` was recorded. Findings A-1 to A-5 and B-1 to B-6. The contract
+  gained dated amendments.
+- **Files:** docs only: the spike report, the contract, HISTORY, this log.
+- **Where the evidence is:** `C:\Users\victo\m4spike\logs\`. The kit is in the `vm\` and `gui\`
+  folders beside it, and the VMs are `m4-ubuntu`, `m4-debian` and `m4-win11`.
+- **Broke along the way:**
+  - `gui\setup.ps1` stopped at uv's first progress line: under
+    `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns a redirected native stderr
+    line into a terminating error. Fixed in the kit.
+  - Booting the Windows ISO needs a key press within seconds, and the mouse doesn't work on the
+    Hyper-V firmware page. Use the keyboard only.
+  - A Microsoft account with Windows Hello-only sign-in gives a blank Enhanced Session login.
+    Turning that setting off fixes it.
 
 ## M3 step 5b — the live checks and the docs pass (2026-11-07)
 

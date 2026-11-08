@@ -87,6 +87,15 @@ Every message that names the setup fix tells the user to run `vestibule-mcp setu
     unchanged.
   - GUI clients, which may not inherit the shell's `PATH`, get the absolute path from
     `uv tool dir --bin`. The README shows that.
+
+> **Amendment 2026-11-08 (step 0, [`M4-step0-spike.md`](M4-step0-spike.md) A-1 and B-6, approved by Victor):**
+> - On Windows, Claude Desktop and Cursor found the bare `vestibule-mcp` after
+>   `uv tool update-shell`, with no re-login, so the Windows README uses the bare name. The
+>   client must start after `update-shell`.
+> - The `uv tool dir --bin` advice stays for macOS, which step 0 didn't measure.
+> - A-1's question, whether uv's own installer puts `.local\bin` on `PATH`, wasn't measured.
+>   Step 5's first run installs uv as the README says, and answers it.
+
 - **(2) `uvx vestibule-mcp`,** the form many MCP servers document.
   - Nothing goes on `PATH`, so every message naming a command must become
     `uvx vestibule-mcp …`.
@@ -147,6 +156,14 @@ The container path has costs of its own, and the README must state them:
     `/tmp`, where run dirs live;
   - its README says `--security-opt no-new-privileges=true` stops containers from starting,
     and Vestibule always passes it (§7).
+
+> **Amendment 2026-11-08 (step 0, [`M4-step0-spike.md`](M4-step0-spike.md) B-5, approved by Victor):** measured on snap Docker 29.8.0:
+> - `no-new-privileges` alone stops containers from starting, so that is the blocker.
+> - The dot-directory reason is wrong on this snap: a bind mount of `~/.vestibule/workspace`
+>   worked. A bind mount of a host `/tmp` folder came up empty, and run dirs live there.
+> - The conclusion stands: only Docker's apt repo works. Victor chose that Vestibule's error
+>   names the snap and points to that repo (§6, step 2).
+
 - **The `docker` group is root-equivalent** (Docker's own docs). Rootless Docker avoids that,
   and on 24.04 its `docker-ce-rootless-extras` package ships the AppArmor profile it needs.
 
@@ -394,12 +411,20 @@ Every claim in it points to a test, a plan decision, or a stated residual.
 
 | Platform | Prerequisites | Commands | Expected |
 |---|---|---|---|
-| Linux with systemd (Debian, Fedora, Arch, WSL2) | uv, Claude Code; on a minimal install, `dbus-user-session` (if step 0 confirms) | `uv tool install vestibule-mcp`, `vestibule-mcp setup`, `claude mcp add --scope user vestibule -- vestibule-mcp` | `ready …: isolation native` |
+| Linux with systemd (Debian, Fedora, Arch, WSL2) | uv, Claude Code; on a minimal install, `ca-certificates` and `dbus-user-session`, then a reboot | `uv tool install vestibule-mcp`, `vestibule-mcp setup`, `claude mcp add --scope user vestibule -- vestibule-mcp` | `ready …: isolation native` |
 | Ubuntu 23.10+ | uv, Claude Code, Docker Engine from Docker's apt repo | the same three | `ready …: isolation container`, with the line saying why native isn't used |
-| Windows | uv, Claude Code, Docker Desktop | the same three | `ready …: isolation container` |
+| Windows | uv, Claude Code, Docker Desktop (Virtual Machine Platform turned on first) | `uv tool install vestibule-mcp`, `uv tool update-shell` and a new terminal, `vestibule-mcp setup`, `claude mcp add --scope user vestibule -- vestibule-mcp` | `ready …: isolation container` |
 | macOS | the same | the same | untested for runs (P9) |
 
 Then: "ask your agent to run `print(1)`".
+
+> **Amendment 2026-11-08 (step 0, [`M4-step0-spike.md`](M4-step0-spike.md) A-1, B-1, B-2 and B-3, approved by Victor):** the Linux
+> and Windows rows above now carry what step 0 measured.
+> - A minimal Debian needs `ca-certificates` before `setup` can download, and the user-bus
+>   fix takes effect only after a reboot.
+> - On a clean Windows 11, Docker Desktop's recommended install needs the Virtual Machine
+>   Platform feature turned on in an admin PowerShell, then a restart. That is part of
+>   installing Docker, so it's outside P6's clock.
 
 ---
 
@@ -471,6 +496,14 @@ Then: "ask your agent to run `print(1)`".
 | 3 | F1 and F2: version, metadata, the sdist include list, the re-frozen constraints, the re-pin, `RELEASE.md` and the smoke script; P9's workflow | src ~20, script ~100 |
 | 4 | Docs: the README per F4, `SECURITY.md` per F5, GETTING_STARTED; the demo GIF (Victor records) | docs |
 | 5 | The first-run tests on the release candidate (§5), fixes if any; Victor uploads; the confirmation from PyPI; the docs pass; "M4 accepted" | — |
+
+> **Amendment 2026-11-08 (step 0, [`M4-step0-spike.md`](M4-step0-spike.md) B-1, B-4 and B-5, approved by Victor):**
+> - **Step 2** also adds two messages, with no new dependency. When `setup`'s download fails
+>   certificate verification, it names `ca-certificates`. When the container probe fails
+>   under snap Docker, the message names the snap and points to Docker's apt repo. Step 2's
+>   plan decides how each is detected.
+> - **Step 3's** smoke script runs Python 3.11 through 3.15, because uv 0.13.7 picks 3.15
+>   where there's no usable system Python. F1's classifiers still claim only what ran.
 
 **Step 0 measures:**
 - `uv tool install` from a local wheel on Linux and Windows, native included, with Ubuntu's
