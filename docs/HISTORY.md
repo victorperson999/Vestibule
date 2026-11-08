@@ -1300,6 +1300,19 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
 
 ### Build steps (6 planned: 0–5)
 
-- **Step 0 — the spike, no repo code,** is next: `uv tool install` with native on several
-  Pythons, GUI clients' `PATH`, nested virtualization, stock Ubuntu's failure, Debian minimal's
-  user bus, and whether uninstall follows symlinks.
+- **Step 0 — the spike, no repo code: part A done 2026-11-08, part B pending
+  ([report](plans/M4/M4-step0-spike.md)).**
+  - **Part A, on this machine:**
+    - `uv tool install` from a clean wheel works on Windows (3.11, and a uv-managed 3.14) and
+      on Linux (3.11–3.14), and on Ubuntu 24.04's and Debian 13's own Pythons.
+    - Each first call reports the expected isolation: `container` on Windows, `native` on
+      WSL.
+    - Uninstall deletes don't follow symlinks on either platform.
+  - **Three things the README must say:**
+    - Windows needs `uv tool update-shell`.
+    - Linux's uninstall needs `chmod -R u+rwX` first, because a guest can lock folders in its
+      workspace.
+    - A guest's links can point outside the workspace on the host: real NTFS symlinks on
+      Windows with Developer Mode on.
+  - **Part B, needing Victor:** the GUI clients' `PATH`, nested virtualization, stock Ubuntu
+    24.04, and Debian 13 minimal. The contract amendments wait for it.
