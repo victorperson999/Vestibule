@@ -515,6 +515,92 @@ its new trigger, and no scope was left. All 11 mutants were red again, and the W
 passed (4, plus 11 skips). The fixes touched only the new test file, and only at the findings'
 lines, so the full gate wasn't run again.
 
+**Then, before 5b:** Victor chose to fix the empty scope first. That fix has its own plan and
+review ([`M3-step5-placement-cancel.md`](M3-step5-placement-cancel.md), commit `7a3c30f`).
+
+### 5b — the live checks and the docs (2026-11-07)
+
+**The kit,** outside the repo:
+- **WSL `~/vestibule-live/`:** `start.sh` unchanged from M2. `mcp.json` gains the record before
+  its `exec`: `readlink /proc/$$/fd/2 >~/vestibule-live-fd2.txt; exec …`. New: `prompt.txt`
+  and a read-only `check.sh` (the audit, the modes, the log's tail, the fd record, leftovers).
+- **`%USERPROFILE%\vestibule-live\`:** `start.ps1`, `mcp.json`, `prompt.txt` and a read-only
+  `check.ps1` (`audit` plain and piped, leftover containers). Windows PowerShell 5.1 drops an
+  empty `""` argument to a native program, which would make `--tools` swallow the next flag,
+  so `start.ps1` calls Claude Code's `claude.exe` with the rest of the line after `--%`
+  (tested: the empty argument arrives).
+
+**Linux, native: passed.** Claude Code 2.1.319 (its native installer updated itself from
+2.1.316 on the first launch; that launch, and a second in which a shell command was typed at
+Claude Code's prompt, made no calls). Judged from the session transcript and `check.sh`:
+
+| Call | Result |
+|---|---|
+| `print(1)` | exit 0; `usage: wall=133ms, cpu=36ms, mem_peak=13MiB, pids_peak=2 (the whole sandbox, including its setup and file cache)` |
+| `while :; do :; done`, timeout 2 | `[timed out and was terminated]`, exit -1; `wall=4095ms, cpu=3007ms, mem_peak=5MiB, pids_peak=2`; `limits hit: cpu (throttled in 40 of 41 periods of 100 ms)` |
+| 100 chunks of 10 MiB | exit 137; `[out of memory: … at its 256 MiB limit]`; `mem_peak=256MiB`; also `limits hit: cpu (throttled in 3 of 4 periods of 100 ms)` |
+| node hello | exit 0; `cpu=77ms, mem_peak=55MiB, pids_peak=8` |
+| `time.sleep(60)` | Ctrl+C about 39 s in; Claude Code's "interrupted" result |
+
+- `vestibule-mcp audit`: `audit records in /home/…/.vestibule/audit`, then ran, timed_out,
+  ran, ran, cancelled (`wall=39469ms`), "5 of 5 calls, from 1 file". The folder 700, the file
+  600.
+- The log's last line: `vestibule shutdown (SIGINT): nothing to clean up`. No
+  `vestibule-warden`, no `vestibule-*` unit.
+- **Recorded, not judged:** Claude Code 2.1.319 hands the server a **socket** as stderr
+  (`socket:[3922420]`). Step 4's writer uses `os.write` and `select`, which work on both.
+- **The 4.1 s wall** of the 2 s timeout is S3-D10's 2 s startup grace, by design.
+
+**Windows, container: passed.** Claude Code 2.1.319. Results: `print(1)` and node, exit 0;
+the busy loop `[timed out and was terminated]` at `wall=7187ms` (the container's 5 s grace);
+each of the three with `usage: wall=…; cpu, mem_peak and pids_peak not measured: not readable
+from outside a container` and `isolation: container`; the sleep cancelled about 32 s in.
+`vestibule-mcp audit` plain and piped through `Out-String` printed the same four rows (ran,
+ran, timed_out, cancelled with `wall=31781ms`), and the piped run's exit code was 0. No
+`vestibule-` container was left.
+
+**Seen in both sessions:**
+- the `server/discover` request and the SDK's 31-error warning: on Linux in the server's log
+  (`mcp.json` sends its stderr there), on Windows in Claude Code's MCP log. It isn't new: M1's
+  live check recorded it (HISTORY), and M2 7b's server log has it too. It is now a BUILD_LOG
+  known-issue row;
+- after the cancel, "STDIO connection dropped" and the unknown-message-ID line in Claude Code's
+  MCP log, as in M2 7b (its known issue, re-measured).
+
+**Differences from §3.4:** Ctrl+C came about 39 s and 32 s in, not within about 20 s; both
+landed well before the 60 s timeout, so both are cancels. The prompt also asked the agent to
+show each result unchanged. The memory bomb is bounded at 1000 MiB, so a missing limit
+couldn't have filled the host.
+
+**The docs pass** (§4) is as listed there, plus two troubleshooting entries in
+GETTING_STARTED for what the live checks showed. §3.3's benchmark rule applied: the README's
+table and PLAN.md's two places have 5a's first-run numbers, with the commit and the note that
+the pre-M3 code measured the same. §4's "accepted" lines (the README's M3 row, PLAN.md's
+status, the contract's status, HISTORY's "M3 accepted" and BUILD_LOG's row) were written last,
+after the review below. The grep over the live docs returns nothing, and `tests/test_docs.py`
+passes.
+
+**Gate,** after the docs pass: green on both platforms. Linux, 417 s of 540: 3.14 full suite
+819 passed, 0 skipped; 3.11 Docker-free 774; stdio 5. Windows: 641 passed, plus 158
+POSIX/Linux-only skips. The review's fixes below touched only docs.
+
+**Review.** `critic` found 9 issues, 2 medium and 7 low. It also checked every quoted result,
+audit row, mode, wall time and log line against the raw transcripts and logs, and found them
+right. `verifier` confirmed all 9, one of them pending until the accepted lines, and lowered
+finding 2 to low.
+
+| # | Finding | Verdict | Done |
+|---|---|---|---|
+| 1 | The `server/discover` warning called new with Claude Code 2.1.319 | confirmed, med: M2 7b's server log (2.1.316) has it, and HISTORY records it at M1's live check | GETTING_STARTED, the BUILD_LOG row (dated from M1) and entry, HISTORY and this section no longer tie it to 2.1.319 |
+| 2 | The README's status block said M3 passed before the review; the other accepted lines were missing | confirmed, low | The accepted lines written after the review; this section says so |
+| 3 | "Seen in both sessions' MCP logs": on Linux the warning is only in the server log | confirmed, low | Corrected above |
+| 4 | "Five calls, every one `isolation: native`": call 5 was cancelled, with no result | confirmed, low | BUILD_LOG and HISTORY say results 1–4 |
+| 5 | The README's usage bullets: a run that never started shows a bare `wall`; `native-degraded` with a cgroup gets the kernel numbers | confirmed, low | Both said |
+| 6 | "Every call leaves records": a config error leaves none, by design (contract A6) | confirmed, low | The README names both exceptions; ARCHITECTURE says "that reaches the handler" |
+| 7 | "0600 in a 0700 folder": an existing folder keeps its mode (`audit.py:144`) | confirmed, low | The README says so |
+| 8 | The event-loop lines read as complete lists | confirmed, low | CLAUDE.md and ARCHITECTURE give examples, not a list |
+| 9 | No 5b row or gate line in BUILD_LOG | confirmed, pending | Written |
+
 ## 10. Review record
 
 `skeptic` reviewed v1: 13 findings, 6 medium and 7 low, verdict "sound with amendments".

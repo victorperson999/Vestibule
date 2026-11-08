@@ -47,6 +47,7 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 > Two backends are accepted, and every result states the isolation that actually applied.
 > - **Native isolation on Linux (M2):** each run executes in a fresh sandbox built from the kernel's own namespaces, cgroup limits and a seccomp allowlist, with no root and no Docker. It passed its 17-criterion acceptance on WSL2 Ubuntu 26.04 and a check from a live Linux Claude Code session.
 > - **The container backend (M1)**, the floor on Windows and macOS: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps). It passed its 14-criterion acceptance suite on Windows with Docker Desktop and a check from a live Claude Code session.
+> - **Usage numbers and an audit log (M3):** every result reports what the run used, measured from outside the sandbox, and every call leaves a record in a local audit log that `vestibule-mcp audit` prints. It passed its 10-criterion acceptance, including live Claude Code sessions on Linux (native) and Windows (container).
 >
 > Not yet published to PyPI.
 
@@ -55,7 +56,7 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 | M0        | MCP server +`run_code` end-to-end (naive backend, **no isolation**)                  | ✅ done                                                                                                                                                         |
 | M1        | Container backend (Docker/Podman) — the cross-platform isolation floor, +`read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](docs/plans/M1/M1-container-backend.md) |
 | M2        | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required)                 | ✅ accepted 2026-10-31 (all 17 acceptance criteria + live-agent check) — see [`docs/plans/M2/M2-native-warden.md`](docs/plans/M2/M2-native-warden.md) |
-| M3        | Audit log + resource reporting                                                               | planned                                                                                                                                                         |
+| M3        | Audit log + resource reporting                                                               | ✅ accepted 2026-11-07 (all 10 acceptance criteria + live-agent checks) — see [`docs/plans/M3/M3-audit-usage.md`](docs/plans/M3/M3-audit-usage.md) |
 | M4        | Install/onboarding polish,`SECURITY.md` threat model                                       | planned                                                                                                                                                         |
 
 ## One-time setup
@@ -83,7 +84,7 @@ docker pull docker.io/library/node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339
 Then ask your agent to run some code. The first `run_code` call checks your setup, and every result states the isolation that actually applied (normally `isolation: native` on Linux and `isolation: container` elsewhere).
 
 - If a call is ever `Blocked:`, the message names the exact fix and says whether to retry or restart.
-- To see what your agents ran: `.venv/bin/vestibule-mcp audit` (Windows: `.venv\Scripts\vestibule-mcp audit`) prints the last 20 calls, one line each, with the time, language, outcome, isolation, exit code, usage, any denied syscalls and the code's first line. `audit 50` prints the last 50. Everything taken from a record is printed escaped, so code an agent ran can't drive your terminal.
+- To see what your agents ran: `.venv/bin/vestibule-mcp audit` (Windows: `.venv\Scripts\vestibule-mcp audit`) prints the last 20 calls, one line each, with the time, language, outcome, isolation, exit code, usage, any denied syscalls and the code's first line. `audit 50` prints the last 50. Everything taken from a record is printed escaped, so code an agent ran can't drive your terminal. What the records keep, and who can read them: [Usage numbers and the audit log](#usage-numbers-and-the-audit-log).
 - Run Vestibule as your own user. It never needs root, and on Linux and macOS a server started as root refuses to run code, because the code would run as root too.
 - `setup` unpacks about 357 MB into `~/.vestibule/rootfs`, checking every byte against the pins; a second run doesn't touch the network. If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
 - The images are `python:3.12-slim` and `node:22-slim` as of 2026-10-10, pinned by digest so they can never change silently. The flip side: they get no upstream security fixes until Vestibule re-pins them.
@@ -105,7 +106,7 @@ Set these as environment variables in Vestibule's entry in your MCP client's con
 | `VESTIBULE_IMAGE_PYTHON`      | pinned `python:3.12-slim` | Image for `python` and `bash` runs. See the override rules above.                                                                                                                                                                                                                                                       |
 | `VESTIBULE_IMAGE_NODE`        | pinned `node:22-slim`     | Image for `node` runs.                                                                                                                                                                                                                                                                                                    |
 | `VESTIBULE_ROOTFS_DIR`        | `~/.vestibule/rootfs`     | Linux only: where `vestibule-mcp setup` unpacks the native sandbox's root filesystems, and where the server looks for them. Keep it on the Linux disk and outside the workspace.                                                                                                                                         |
-| `VESTIBULE_AUDIT_DIR`         | `~/.vestibule/audit`      | The audit log: one JSONL file per server process, one record per `run_code` call (the code up to 4 KiB, never the output). Must be absolute or start with `~`, and outside the workspace and the rootfs folder, or every call is `Blocked:`. On Windows a custom folder keeps its own permissions, which may let other users read it; the default under your profile doesn't. `vestibule-mcp audit` reads it too: if your MCP config sets it, set it in your shell as well. |
+| `VESTIBULE_AUDIT_DIR`         | `~/.vestibule/audit`      | The audit log: one JSONL file per server process, with a `start` and an `end` record per `run_code` call, or one `blocked` record for a call refused before it reached a backend (the code up to 4 KiB, never the output; [more](#usage-numbers-and-the-audit-log)). Must be absolute or start with `~`, and outside the workspace and the rootfs folder, or every call is `Blocked:`. On Windows a custom folder keeps its own permissions, which may let other users read it; the default under your profile doesn't. `vestibule-mcp audit` reads it too: if your MCP config sets it, set it in your shell as well. |
 | `VESTIBULE_DEFAULT_TIMEOUT_S` | `10`                      | Timeout when a call doesn't set `timeout_seconds`.                                                                                                                                                                                                                                                                        |
 | `VESTIBULE_MAX_TIMEOUT_S`     | `60`                      | Ceiling on `timeout_seconds`.                                                                                                                                                                                                                                                                                             |
 | `VESTIBULE_MAX_CODE_BYTES`    | `262144`                  | Larger code is refused before anything runs.                                                                                                                                                                                                                                                                                |
@@ -129,14 +130,14 @@ On Linux, Vestibule doesn't need Docker. Each run gets a fresh sandbox built fro
 
 **What `auto` picks.** On Linux, the strongest guarantee that verifies, in this order: `native`, then a full `container` (if Docker or Podman works), then `native-degraded`, then `container-degraded`, then `Blocked:` with both reasons. A full container beats degraded native because limits protect the host itself: without a memory cap, a native sandbox could set off the *host's* OOM killer. On Windows and macOS, `auto` uses the container backend and never tries native.
 
-**Speed,** measured through the server itself, 50 `print(1)` runs per backend after a warm-up, on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1:
+**Speed,** measured through the server itself, 50 `print(1)` runs per backend after a warm-up, on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1, on 2026-11-06 with the code of `03f0fb7`:
 
-| Backend   | Median | p95    |
-| --------- | ------ | ------ |
-| native    | 82 ms  | 107 ms |
-| container | 392 ms | 413 ms |
+| Backend   | Median | p95     |
+| --------- | ------ | ------- |
+| native    | 118 ms | 141 ms  |
+| container | 895 ms | 1002 ms |
 
-The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (`docker ps`). So these are this host's numbers, not a speed-up factor. `scripts/bench_coldstart.py` reproduces them.
+The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (`docker ps`). So these are this host's numbers, not a speed-up factor. On 2026-10-31 the same host measured 82 ms and 392 ms; the code from before M3, run again in the same session as the numbers above, measures the same as today's, so the host got slower, not the code. `scripts/bench_coldstart.py` reproduces them.
 
 ### Where native works
 
@@ -160,6 +161,24 @@ The prerequisites, which the first `run_code` call checks for you:
 - For two of the usage numbers in each result: Linux 5.19 for `mem_peak` and 6.1 for `pids_peak`. On an older kernel the run is the same, and the result names what it didn't measure, for example `mem_peak not measured: Linux 5.19+ needed`.
 
 "Expected" rows follow from those prerequisites, not from a run. M4's fresh-machine test runs on a stock Ubuntu 24.04 VM.
+
+## Usage numbers and the audit log
+
+**A run's result says what it used,** on a `usage:` line (only a `Blocked:` call, and a run whose sandbox never reported back, have none), and each number on it comes from somewhere the sandboxed code can't write:
+
+- **`native`, and `native-degraded` when the run still had a cgroup of its own:** `wall`, `cpu`, `mem_peak` and `pids_peak`, read from the run's own cgroup after the sandbox has exited, timed-out runs included. When the run hit its process cap or was CPU-throttled, a `limits hit:` line follows, for example `limits hit: cpu (throttled in 40 of 41 periods of 100 ms)`. A process killed at the memory cap gets its own note instead: `[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]`.
+- **`container` and `container-degraded`:** `wall` only, and the line says why: `cpu, mem_peak and pids_peak not measured: not readable from outside a container`. A container can read its own cgroup, but those numbers could reach Vestibule only through the container's own output, which the code shares and could fake.
+- **The rest** (`native-degraded` without a cgroup of its own, and `none`): `wall`, and the line names what wasn't measured, and why. A run that never started (`isolation: none (… nothing was executed)`) shows `wall` alone.
+
+`mem_peak` counts the whole sandbox, as the line itself says: its setup, the code's processes, the files in its `/tmp`, and the file cache it read. So the same code can read 2–5× differently from one run to the next (python 14 vs 6 MiB, node 55 vs 11 MiB, measured). Read it as what the run cost the machine, not as the program's own size.
+
+**The audit log.** Every `run_code` call that reaches Vestibule leaves records in `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), one JSONL file per server process: a `start` and an `end` sharing one id, or one `blocked` record for a call refused before it reached a backend. Two kinds of call leave none: one that fails the tool's input schema, since the MCP SDK rejects it before Vestibule sees it, and every call while a setting is invalid, since none of them, the audit folder included, can be trusted then (each call is `Blocked:` with the setting's name). `vestibule-mcp audit` shows a `start` with no `end` as `no end`: the run is still going, the server stopped mid-run, or the record was lost.
+
+- **What a record keeps:** the language, the timeout, the backend and the isolation the result reported, the outcome (ran, timed out, cancelled, refused…), the exit code, the usage numbers, any denied syscalls, the image that ran, and the code itself, cut at 4 KiB, with its SHA-256 and its full size. Of the output it keeps only the sizes, never the content: output is unbounded, and it may hold what the code read from your workspace.
+- **Who can read it:** on Linux and macOS, each file is 0600, and a folder Vestibule creates is 0700 (one that already exists keeps its own mode). On Windows, they take their folder's permissions: the default folder under your profile is limited to you, SYSTEM and Administrators, but a custom one such as `D:\audit` may let other users read it.
+- **A failed write never stops a run.** The result says so on an `audit:` line just above `isolation:`, either `audit: not recorded (…)` or, when the disk didn't answer within 2 s, `audit: not confirmed (…)`.
+- **It isn't tamper-proof.** The sandboxed code can never reach it, but you, and any tool running as you (an agent's own shell tool outside Vestibule, for one), can edit it.
+- **Nothing deletes old records.** Delete old files by hand when you like; 100 MB holds about 20,000 runs.
 
 ## Know the limits
 

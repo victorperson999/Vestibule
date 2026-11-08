@@ -63,7 +63,7 @@ Flow: `initialize` handshake → host calls `tools/list` to discover tools → h
 3. **Validation & policy** — reject malformed/oversized/over-limit requests before the warden sees them. First defense layer, and cheap.
 4. **Invoking the warden** — call it, supervise it, enforce an *outer* deadline in case the warden itself hangs.
 5. **Result shaping** — turn `{stdout, stderr, exit, usage, denied_syscalls, isolation}` into model-readable content.
-6. **Audit logging** — structured record per call (stderr/file, never stdout).
+6. **Audit logging** — records of each `run_code` call that reaches the handler, in a local JSONL file, written by their own thread, never to stdout (the audit writer, below).
 7. **Config** — limits/policy from env or file so users tune without editing code.
 
 It explicitly does **not** isolate or execute untrusted code in-process. Its only cgroup work is placing each run's helper from outside, before the sandbox starts (Part 2, stages 1–3).
@@ -89,7 +89,7 @@ The "user" of your schema is an LLM reading `description` fields to decide how t
 
 The MCP SDK is `async`, and the native warden is all blocking syscalls (`unshare`, `mount`, `fork`, `waitpid`). **None of them runs in the server's process.** Each run starts a fresh, single-threaded helper interpreter with `asyncio.create_subprocess_exec` (N1), the same call the container backend uses for `docker run` and the M0 naive backend for its subprocess. The helper makes the blocking calls; the server only reads pipes.
 
-Forking the server instead (from an executor thread, as this document first said) was rejected: the server is multi-threaded (the event loop, the SDK's machinery), and `fork()` copies only the calling thread, so a lock another thread held stays locked forever in the child. The one blocking step left in the server, moving the helper between cgroups (the kernel takes a global lock for it), runs in a thread (`asyncio.to_thread`).
+Forking the server instead (from an executor thread, as this document first said) was rejected: the server is multi-threaded (the event loop, the SDK's machinery), and `fork()` copies only the calling thread, so a lock another thread held stays locked forever in the child. Blocking work in the server that can be slow or get stuck runs off the event loop. For example, moving the helper between cgroups (the kernel takes a global lock for it) runs in a thread (`asyncio.to_thread`), and the audit file and stderr each have one daemon writer thread of their own (below, and "Log calls never wait for stderr" above).
 
 ### The audit writer: one thread, one wait per call
 

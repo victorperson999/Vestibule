@@ -92,6 +92,9 @@ test that selects a real backend fails there.
 - `tests/test_native_acceptance.py` is the M2 exam: criteria 1–13 of the native contract,
   run through the real tool handler with real native sandboxes. It runs on Linux and needs
   what the native-marked resource-limit tests need, the user manager included.
+- `tests/test_audit_acceptance.py` is the M3 exam: the usage numbers and the audit records,
+  run through the real tool handler with real backends and a real audit file. Its native
+  tests need what the M2 exam needs, and its two container tests are Docker-marked.
 - `tests/test_stdio_e2e.py` starts the real `vestibule-mcp` from the venv and talks raw
   JSON-RPC to it, including shutting it down the way a client does.
 - `tests/test_docs.py` fails when a doc link or a `docs/…` path goes stale.
@@ -231,6 +234,16 @@ exact command.
   - *`<logger>: a log call failed to format (…) at <file>:<line>`*: a log call, Vestibule's or
     a library's, had arguments that didn't fit its message. That line is lost; the note says
     where it came from.
+  - *`Failed to validate request: 31 validation errors for ClientRequest`*, naming
+    `server/discover`, once as a session starts: Claude Code first tries a newer protocol's
+    opening request, which the MCP SDK Vestibule uses doesn't know. The SDK answers
+    it with an error and logs the whole validation failure, and Claude Code then connects the
+    usual way. Harmless, even where Claude Code's own MCP log labels it an error.
+- **After you interrupt a call** (Ctrl+C in Claude Code), Claude Code's MCP log says the
+  connection dropped (`Received a response for an unknown message ID … Request cancelled`):
+  the MCP SDK answers the cancelled call, and Claude Code doesn't expect that answer. The run
+  was stopped and cleaned up, and its audit record says `cancelled`. Whether a later call in
+  the same session still works hasn't been tested; if one fails, restart the session.
 - **Leftover containers**: `docker ps -a --filter label=vestibule.run=1`. Each one carries
   its own deadline. A running container normally ends itself at that deadline, and any
   later Vestibule run removes containers more than a minute past it, in whatever state

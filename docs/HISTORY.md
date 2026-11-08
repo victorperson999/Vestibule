@@ -892,11 +892,12 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     as root. The docs now say to run the checks as your own user.
   - **Totals:** 553 → 562 tests on Linux, none skipped; ruff and mypy clean.
 
-## M3 — Audit log + resource reporting (in progress)
+## M3 — Audit log + resource reporting (✅ accepted 2026-11-07)
 
 Goal: every `run_code` result carries real usage numbers, every call leaves a record in a
 local audit log, and `vestibule-mcp audit` shows what agents have been doing. Contract:
-[`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) (signed off 2026-11-01).
+[`docs/plans/M3/M3-audit-usage.md`](plans/M3/M3-audit-usage.md) (signed off 2026-11-01,
+accepted 2026-11-07).
 
 ### Decision sign-offs
 
@@ -1175,7 +1176,7 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
     hand systemd a zombie's pid instead, which makes the real empty scope on demand.
   - **The decision this amends:** M2's S4-D6 ("the finisher does nothing new").
 - **The placement-cancel fix, done 2026-11-06
-  ([plan](plans/M3/M3-step5-placement-cancel.md) §7; commit pending).**
+  ([plan](plans/M3/M3-step5-placement-cancel.md) §7; commit `7a3c30f`).**
   - **Now:** a call cancelled while native is placing its run (Ctrl+C in Claude Code) no longer
     leaves an empty systemd scope. The same holds for a placement that finds the helper gone.
     The run's cleanup stops the scope by name once the helper is gone, within 5 s. A normal run
@@ -1194,3 +1195,139 @@ local audit log, and `vestibule-mcp audit` shows what agents have been doing. Co
     - a placement whose 5 s bound passes after systemd answered.
 
     Both are rare, and the scope still goes at its time limit.
+- **Step 5b — the live checks and the docs, done 2026-11-07
+  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit `c615671`).**
+  - **Linux Claude Code, live.** Victor ran a session with only Vestibule's two tools. Five
+    native runs; the first four results each said `isolation: native`, and the fifth was
+    cancelled:
+    - `print(1)`'s result read `cpu=36ms, mem_peak=13MiB, pids_peak=2`;
+    - a busy loop with a 2 s timeout was stopped, and showed it was throttled in 40 of 41 CPU
+      periods;
+    - a memory bomb died at its 256 MiB limit with the note saying so;
+    - a node hello;
+    - a 60 s sleep, cancelled with Ctrl+C.
+
+    `vestibule-mcp audit` then listed exactly those five, in order, the cancel included. The
+    folder was readable only by Victor, the server shut down cleanly, and nothing was left.
+  - **Windows Claude Code, live.** Four calls in containers: two hellos, the busy loop and the
+    cancelled sleep. Each result carried its wall time and said why the other numbers aren't
+    measured in a container. `vestibule-mcp audit` showed all four, typed plainly and piped
+    alike, and no container was left.
+  - **Seen on the way,** none of it in Vestibule's code:
+    - Claude Code opens each session with a newer kind of request, as it did at M1's live check
+      (above). The MCP library answers it with an error and logs a long warning, then the
+      session connects normally;
+    - after the cancel, Claude Code again reported Vestibule's connection as dropped, as it did
+      in M2;
+    - on Linux, Claude Code's safety classifier held back some of the agent's chat text, but
+      every call ran as written.
+
+    The first is now a BUILD_LOG known issue as well, and both are in GETTING_STARTED's
+    troubleshooting.
+  - **Docs:** the README explains the usage numbers and the audit log (what a record keeps, who
+    can read it, that a failed write never stops a run, that it isn't tamper-proof, and that
+    old files are deleted by hand), and its speed table has this week's numbers. `CLAUDE.md`,
+    `ARCHITECTURE.md`, `PLAN.md`, `GETTING_STARTED.md` and the contract are brought up to date,
+    and the contract has its acceptance record, criterion by criterion.
+  - **Golden rule 1 gets one sentence (S5-D3, approved with the plan):** the terminal commands
+    aren't the server, so `vestibule-mcp audit` printing its table to stdout is allowed. The
+    rule itself is unchanged.
+  - **Review:** `critic` found 9 issues in the docs, 2 medium; `verifier` confirmed all 9 and
+    lowered one medium to low. The medium one left: the docs called Claude Code's
+    `server/discover` warning new, though M1's live check had already recorded it. The other
+    medium: one README sentence said M3 had passed before the review was done. The small ones
+    were wording that claimed too much: call 5 had no `isolation:` result, a run that never
+    started shows its wall time alone, a config error leaves no record, an existing audit
+    folder keeps its own permissions, and the event-loop lines read as complete lists. All
+    fixed.
+  - **Totals:** 819 tests on Linux with none skipped, 641 plus 158 Linux-only skips on Windows;
+    ruff and mypy clean.
+- **M3 accepted — 2026-11-07.** Every one of the 10 criteria has its evidence: the exam through
+  the server (5a), the gates on both platforms, and the live sessions with Claude Code on Linux
+  (native) and Windows (container), each ending with a cancelled call that the audit log
+  recorded. The criterion-by-criterion record is in the contract. What carries forward:
+  - **M4:** `SECURITY.md` (the audit isn't tamper-proof; the audit folder's permissions on
+    Windows; the stderr writers left on crash paths); the leftover `%TEMP%` dirs after a hard
+    kill.
+  - **Upstream, with the `mcp<2` move:** the SDK's answer to a cancelled call, and its warning
+    for `server/discover`.
+  - **Stated residuals:** a POSIX shutdown during native placement, and a placement whose 5 s
+    bound passes after systemd answered. What stderr Claude Code on Windows hands the server
+    stays not determined (S5-D2).
+  - **Not in M3, by decision:** workspace quotas (they need root) and retention (old files are
+    deleted by hand).
+
+## M4 — Polish for adoption (in progress)
+
+Goal: a stranger installs Vestibule and gets a sandboxed result in under 2 minutes on a clean
+machine, following only the README; and `SECURITY.md` says honestly what it protects and what
+it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) (signed off
+2026-11-07).
+
+### Decision sign-offs
+
+- **The M4 contract — signed off 2026-11-07 (v2).** `skeptic` reviewed v1 (19 findings, 3
+  high) and `verifier` checked its 15 checkable claims, confirming most and finding two more
+  problems. v2 takes every finding (the contract's §8). The two that changed the plan most:
+  - an sdist built from the working tree would have shipped local files such as
+    `.claude/settings.local.json`, so the release builds from a clean export with an include
+    list;
+  - a demo with only Vestibule's tools would have implied more than the README installs, so the
+    README now says the boundary is code sent to `run_code` only, and shows the sandbox-only
+    session.
+
+  Victor chose the recommended option on all nine decisions:
+  - **P1 — install with `uv tool install vestibule-mcp`.** The command every message names is
+    then on `PATH`, `setup` and the server are one version, and uv brings its own Python.
+    Declined: `uvx` (the named fixes wouldn't run, and versions could differ), and `pipx` (it
+    needs Python and pipx first).
+  - **P2 — release on mcp 1.x, narrowed to the minor the gates ran;** the 2.x move gets its own
+    milestone after M4. This **amends M2's S1-D1** ("before the PyPI release"). Declined:
+    rewriting the protocol layer first.
+  - **P3 — keep M2's Ubuntu decision (N5).** Stock Ubuntu 23.10+ gets the container backend,
+    with Docker Engine from Docker's apt repo. The snap can't run Vestibule. No AppArmor
+    profile; the `docker` group's cost is stated.
+  - **P4 — one `setup` command everywhere,** downloading only what the machine uses.
+  - **P5 — `setup` ends with the real readiness check,** worded for the terminal's environment.
+  - **P6 — Victor runs the first-run test, following only the README,** on fresh VMs at
+    25 Mbit/s, against the release candidate before the upload. It includes live Cursor and
+    Claude Desktop sessions.
+  - **P7 — a real recorded demo GIF,** with a caption saying what it shows.
+  - **P8 — GitHub's private vulnerability reporting** (Victor turns it on).
+  - **P9 — one manually triggered macOS job** for the Docker-free tests and the smoke test.
+  - **Out of M4:** the mcp 2.x move, the Windows→WSL bridge, a custom image, the liveness
+    lease, container runs on macOS, arm64, standing CI.
+
+### Build steps (6 planned: 0–5)
+
+- **Step 0 — the spike, no repo code: parts A and B done 2026-11-08
+  ([report](plans/M4/M4-step0-spike.md)).**
+  - **Part A, on this machine:**
+    - `uv tool install` from a clean wheel works on Windows (3.11, and a uv-managed 3.14) and
+      on Linux (3.11–3.14), and on Ubuntu 24.04's and Debian 13's own Pythons.
+    - Each first call reports the expected isolation: `container` on Windows, `native` on
+      WSL.
+    - Uninstall deletes don't follow symlinks on either platform.
+  - **Three things the README must say:**
+    - Windows needs `uv tool update-shell`.
+    - Linux's uninstall needs `chmod -R u+rwX` first, because a guest can lock folders in its
+      workspace.
+    - A guest's links can point outside the workspace on the host: real NTFS symlinks on
+      Windows with Developer Mode on.
+  - **Part B, on the VMs and the GUI clients:**
+    - Claude Desktop and Cursor both find `vestibule-mcp` and `docker` by bare name after
+      `uv tool update-shell`, with no re-login.
+    - Docker Desktop runs inside a nested Hyper-V VM: `container`.
+    - Stock Ubuntu 24.04 is refused with the right hint. Snap Docker fails on
+      `no-new-privileges`. Docker from its apt repo gives `container`.
+    - Debian 13 minimal has no user bus: `native-degraded`, then `native` after
+      `dbus-user-session` and a reboot.
+  - **What part B adds for the README:**
+    - A minimal Debian needs `ca-certificates` before `setup` works.
+    - Debian's user-bus fix needs a reboot.
+    - Docker's recommended Windows install needs Virtual Machine Platform turned on first.
+    - uv may pick Python 3.15 when there's no usable system Python.
+  - **Victor signed off the contract amendments on 2026-11-08,** and they're applied. Victor
+    also chose two small messages for step 2: `setup` names `ca-certificates` when a download
+    fails certificate checks, and the error under snap Docker names the snap and points to
+    Docker's apt repo. Step 0 is done.

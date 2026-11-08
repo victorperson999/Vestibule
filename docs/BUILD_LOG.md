@@ -54,7 +54,9 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 3 | `vestibule-mcp audit [N]`: the last N calls from every audit file, one line each, every printed value escaped, ASCII output unless the stream is UTF-8 | 2026-11-04 | `a9dfc09` | 781 Linux (0 skipped); 620 + 141 POSIX/Linux-only skips on Windows |
 | M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | `de9e10c` | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
 | M3 step 5a | M3's acceptance suite through `server.call_tool` with real backends and a real audit file (no `src/` change); the cold-start benchmark run again | 2026-11-06 | `03f0fb7` | 814 Linux (0 skipped); 641 + 153 POSIX/Linux-only skips on Windows |
-| M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | pending | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
+| M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | `7a3c30f` | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
+| M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
+| M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, amendments' hash pending | no test change |
 
 ## Known open issues
 
@@ -62,13 +64,14 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 |---|---|---|---|
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
-| 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M3/M4 candidate |
+| 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M4: the M3 contract (§1) left it out as lifecycle, not observability, for deadline-stamped dir names a sweep can judge |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) was considered for M2 step 5 and **rejected** (N4): denying `symlink`/`symlinkat` breaks `python -m venv` and npm `.bin` links in the workspace. M1's measures stay. | Documented (README, contract D1); revisit in M4 `SECURITY.md` |
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. **Re-measured in M2 step 7b** (Claude Code 2.1.316, one sample each): Ctrl+C cancels the call before Claude Code exits, and the cancel path removed the container (seen up at one poll, gone at the next, 0.75 s later); closing the terminal window mid-run closed the server's stdin with the call in flight, and the container was gone within 1.43 s, more than two minutes before its self-deadline. The race wasn't hit, but nothing rules it out. | Later milestone (liveness lease) |
-| 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. | Upstream; look again with the `mcp<2` move |
-| 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. | Before M4's PyPI release |
+| 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. **Seen again in M3 step 5b** with Claude Code 2.1.319, on Linux and on Windows: the same "STDIO connection dropped" and unknown-message-ID lines (`Request cancelled`) in its MCP log, and the cancelled call's audit `end` was written. Documented in GETTING_STARTED's troubleshooting. | Upstream; look again with the `mcp<2` move |
+| 2026-10-14 (M1 live check; a row since M3 step 5b) | MCP SDK and Claude Code | Claude Code opens a session with a `server/discover` request, then falls back to `initialize` (its MCP log: `protocolEra: legacy`, protocol 2025-11-25). Seen at M1's live check (HISTORY), in M2 7b's session (2.1.316) and in M3 5b's (2.1.319). The MCP Python SDK 1.28.1 doesn't know the method: it answers `INVALID_PARAMS` and logs a WARNING with 31 pydantic validation errors on the server's stderr, once per session; Windows Claude Code shows it in its MCP log as an "error". The session then works. Not in Vestibule's code. Documented in GETTING_STARTED's troubleshooting. | Upstream; look again with the `mcp<2` move |
+| 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. **M4's P2 (Victor, 2026-11-07)** releases 0.1.0 on 1.x instead, with the range narrowed to the minor the gates ran, amending M2's S1-D1. | Its own milestone after M4 |
 | 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
-| 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; revisit with M3 quotas |
+| 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; quotas declined in M3 (contract §1): a disk cap needs filesystem quotas or a loop-mounted image, and both need root |
 | 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
 | 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching. Possibly the zombie attach that the M3 step 5 fix now stops (a helper that exits during placement); 0 of 460 runs reproduced it |
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
@@ -121,9 +124,95 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M4 step 0 — spike (2026-11-08)
+
+- **Commits:** `6798fe2` (part A), `f5e8eb0` (part B); the contract amendments' hash pending.
+- **Plan:** [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) §6, "Step 0 measures";
+  report [`docs/plans/M4/M4-step0-spike.md`](plans/M4/M4-step0-spike.md).
+- **What:** no repo code. The wheel was installed and run on Windows, WSL, distro containers,
+  and Hyper-V VMs (stock Ubuntu 24.04, Debian 13 minimal, nested Windows 11), and Claude
+  Desktop's and Cursor's `PATH` was recorded. Findings A-1 to A-5 and B-1 to B-6. The contract
+  gained dated amendments.
+- **Files:** docs only: the spike report, the contract, HISTORY, this log.
+- **Where the evidence is:** `C:\Users\victo\m4spike\logs\`. The kit is in the `vm\` and `gui\`
+  folders beside it, and the VMs are `m4-ubuntu`, `m4-debian` and `m4-win11`.
+- **Broke along the way:**
+  - `gui\setup.ps1` stopped at uv's first progress line: under
+    `$ErrorActionPreference = 'Stop'`, Windows PowerShell 5.1 turns a redirected native stderr
+    line into a terminating error. Fixed in the kit.
+  - Booting the Windows ISO needs a key press within seconds, and the mouse doesn't work on the
+    Hyper-V firmware page. Use the keyboard only.
+  - A Microsoft account with Windows Hello-only sign-in gives a blank Enhanced Session login.
+    Turning that setting off fixes it.
+
+## M3 step 5b — the live checks and the docs pass (2026-11-07)
+
+- **Commit:** `c615671`.
+- **Plan:** [`docs/plans/M3/M3-step5-acceptance.md`](plans/M3/M3-step5-acceptance.md) §3.4 and
+  §4; what happened is in its §9.
+- **What:** no `src/` change.
+  - **Live check, Linux (criterion 10).** Claude Code 2.1.319 in WSL (the native installer
+    updated itself from 2.1.316 at the first launch), started from `~/vestibule-live` with only
+    Vestibule's two tools, as in M2 7b. Its `mcp.json` now records the stderr Claude Code hands
+    the server (`readlink /proc/$$/fd/2`, before the `exec`): a socket. Five calls, one at a
+    time, judged from the session transcript; results 1–4 were each `isolation: native`, and
+    call 5, a native run, was cancelled:
+    - `print(1)`: `usage: wall=133ms, cpu=36ms, mem_peak=13MiB, pids_peak=2 (…)`;
+    - a busy loop with timeout 2: timed out, `limits hit: cpu (throttled in 40 of 41 periods of
+      100 ms)`, wall 4.1 s (the timeout plus S3-D10's 2 s grace);
+    - the memory bomb: exit 137, the OOM note, `mem_peak=256MiB`;
+    - node: `cpu=77ms, mem_peak=55MiB, pids_peak=8`;
+    - `time.sleep(60)`, cancelled by Ctrl+C about 39 s in.
+
+    `vestibule-mcp audit` then showed the five as ran, timed_out, ran, ran, cancelled
+    (`wall=39469ms`), read from `~/.vestibule/audit` (0700, its file 0600). The server log's
+    last line was `vestibule shutdown (SIGINT): nothing to clean up`, and no `vestibule-warden`
+    or `vestibule-*.scope` was left. The selection probe took 174 ms. Two earlier launches made
+    no call: one closed before any prompt, and in one a shell command was typed at Claude
+    Code's prompt.
+  - **Live check, Windows.** Claude Code 2.1.319 from `%USERPROFILE%\vestibule-live` (a new
+    `start.ps1` and an `mcp.json` naming the repo venv's `vestibule-mcp.exe`). Four calls:
+    `print(1)`, node, a busy loop with timeout 2 (timed out, wall 7.2 s: the timeout plus the
+    container's 5 s grace), then a `time.sleep(60)` cancelled about 32 s in. Each of the three
+    results had `usage: wall=…; cpu, mem_peak and pids_peak not measured: not readable from
+    outside a container` and `isolation: container`. `vestibule-mcp audit`, plain and piped
+    through `Out-String`, showed the four in order, with exit 0; no `vestibule-` container was
+    left. Windows' stderr type stays not determined (S5-D2).
+  - **Docs pass:** `README.md` (the M3 status line, a "Usage numbers and the audit log"
+    section, the audit bullet and the `VESTIBULE_AUDIT_DIR` row pointing to it with the record
+    wording fixed, the speed table re-measured), `CLAUDE.md` (golden rule 1's sentence per
+    S5-D3, "What NOT to do", the Async bullet, the repo tree), `docs/ARCHITECTURE.md`
+    (responsibility 6, the blocking-work line), `docs/PLAN.md` (M3's naming and contract line
+    with A1's amendment, the benchmark numbers in two places), `docs/GETTING_STARTED.md` (the
+    M3 exam; two troubleshooting entries from the live checks), the contract (the acceptance
+    record, step 5's row), this file and `docs/HISTORY.md`.
+- **Found:**
+  - Claude Code's `server/discover` request, which the SDK logs as 31 validation errors. Every
+    live session since M1's has logged it (HISTORY records it there); it is now a known-issue
+    row above.
+  - The cancel's dropped connection, seen again on both platforms (its row above).
+  - On Linux, Claude Code's safety classifier withheld some of the agent's text after call 1;
+    every call still ran exactly as written. Not Vestibule's.
+- **Review:** `critic` 2 medium + 7 low; `verifier` confirmed all 9 (one pending until the
+  accepted lines) and lowered one medium to low. All fixed, at the findings' lines (the plan's
+  §9). The medium one: the `server/discover` warning was called new with Claude Code 2.1.319;
+  M1's live check had recorded it.
+- **Gate** (after the docs pass, before the review's fixes, which touched only docs):
+  check_env, ruff and mypy green on both platforms; Linux (417 s of 540) 3.14 full suite 819
+  passed, 0 skipped; 3.11 Docker-free 774; stdio 5. Windows 641 passed + 158 POSIX/Linux-only
+  skips. The 819 and 158 include the test the fix's second review round added after its gate.
+- **Where to start if it breaks:**
+  - **A result without its `usage:` line:** `_format_result` in `server.py`;
+    `test_audit_acceptance.py::test_c2_*` and `::test_c3_*`.
+  - **A cancelled call shown as `no end`:** the cancel branch of `_handle_run_code`, which
+    queues the `end` without waiting; `test_c1_native_records_a_run_a_timeout_and_a_cancel`.
+  - **The live kit,** outside the repo in WSL `~/vestibule-live/` and
+    `%USERPROFILE%\vestibule-live\`: Windows PowerShell 5.1 drops an empty `""` argument, so
+    `start.ps1` passes `--tools ""` after `--%`.
+
 ## M3 step 5 fix — a cancel during native placement (2026-11-06)
 
-- **Commit:** pending.
+- **Commit:** `7a3c30f`.
 - **Plan:** [`docs/plans/M3/M3-step5-placement-cancel.md`](plans/M3/M3-step5-placement-cancel.md)
   (v2 after the `skeptic` review, signed 2026-11-06). The as-built and both review rounds are
   in its §6 and §7. It amends M2's S4-D6 ([`M2-step4-cgroups.md`](plans/M2/M2-step4-cgroups.md)).

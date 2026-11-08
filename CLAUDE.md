@@ -12,7 +12,7 @@ Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, ship
 
 ## Golden rules (invariants — never violate these)
 
-1. **NEVER write to stdout except through the MCP SDK.** The stdio transport uses stdout as the JSON-RPC channel; any stray `print()` corrupts the protocol and breaks the session. All logging goes to **stderr** or a file. This applies to the server *and* anything it spawns.
+1. **NEVER write to stdout except through the MCP SDK.** The stdio transport uses stdout as the JSON-RPC channel; any stray `print()` corrupts the protocol and breaks the session. All logging goes to **stderr** or a file. This applies to the server *and* anything it spawns. The terminal commands are not the server: `vestibule-mcp audit` prints its table to stdout (contract A10), and `setup` writes only to stderr.
 2. **Always run unprivileged.** No feature may require `sudo` or real root. Isolation is achieved via a user namespace (`CLONE_NEWUSER`): the warden holds capabilities only inside it, and the guest keeps the user's own uid through an identity map (N6), so it isn't root inside the namespace either. If a capability needs real root, it doesn't ship.
 3. **Untrusted code NEVER runs in the server process.** All execution happens in a `fork`'d/`subprocess` child that has been isolated. The long-lived server process stays clean.
 4. **Tool handlers return errors as content; they do not raise.** An unhandled exception can kill the MCP session. Every handler path returns readable `TextContent` — including "Blocked: …" messages — because the *model reads them and adapts*.
@@ -28,7 +28,7 @@ Vestibule is a local, kernel-isolated code-execution sandbox for AI agents, ship
 - **Python ≥ 3.11.** Type hints everywhere. `from __future__ import annotations` where useful.
 - **MCP:** the official `mcp` SDK. Low-level `Server` API (not FastMCP) — we want explicit control over tool schemas because *tool descriptions are prompts read by the model*. (The SDK evolves; if an import/signature has drifted, fix it against current docs and note the change.)
 - **Isolation:** `ctypes` calling libc/syscalls directly. cgroups v2 is just filesystem writes (no ctypes). seccomp uses our own small `ctypes` binding over the system `libseccomp.so.2` (`src/vestibule/backends/native_seccomp.py`), required for native since M2 step 5 — never hand-assemble BPF (libseccomp compiles it).
-- **Async:** the MCP server is `async`. Both backends use `asyncio.create_subprocess_exec`: the container backend for the runtime CLI, the native warden for a fresh helper process per run, which makes the blocking syscalls itself (N1). Never block the event loop; the one blocking step left in the server (moving a process between cgroups) runs in a thread.
+- **Async:** the MCP server is `async`. Both backends use `asyncio.create_subprocess_exec`: the container backend for the runtime CLI, the native warden for a fresh helper process per run, which makes the blocking syscalls itself (N1). Never block the event loop: blocking work that can be slow or get stuck runs off it, for example moving a process between cgroups in a thread (`asyncio.to_thread`), and the audit file and stderr each through one daemon writer thread of their own (M3).
 - **Layout:** `src/` layout. Import package `vestibule`; distribution `vestibule-mcp`.
 - **Tooling:** `ruff` (lint+format), `mypy` (types), `pytest` + `pytest-asyncio` (tests). Line length 100.
 - **Commits:** small, milestone-scoped. Conventional-commits style (`feat:`, `fix:`, `docs:`) is nice-to-have.
@@ -49,6 +49,9 @@ vestibule/
 │   ├── __init__.py
 │   ├── server.py            # MCP server: protocol, schemas, validation, dispatch
 │   ├── config.py            # Limits, ALLOWED_LANGUAGES, env loading
+│   ├── audit.py             # M3: the audit records and their one writer thread
+│   ├── audit_cli.py         # M3: `vestibule-mcp audit`, the escaped history printer
+│   ├── stderr_log.py        # M3: non-blocking stderr logging
 │   └── backends/
 │       ├── __init__.py
 │       ├── base.py          # Warden ABC + RunResult dataclass
@@ -84,7 +87,7 @@ The `andrej-karpathy-skills` plugin is installed user-wide; these are its four r
 - **Don't expand the tool surface.** Two tools (`run_code`, `read_workspace`). More tools/params = more the model can misuse.
 - **Don't hand-roll seccomp BPF.** Use libseccomp (our own ctypes binding) to compile it; the allowlist is derived from Docker's profile and is required for native (M2 step 5, N4).
 - **Don't require Docker on Linux** — native isolation is the point there. Docker is the *fallback*, not the default, on Linux.
-- **Don't let output or errors escape to stdout.** (Restating rule #1 because it's the #1 way to break an MCP server.)
+- **Don't let output or errors escape to the server's stdout.** (Restating rule #1 because it's the #1 way to break an MCP server.)
 - **Don't oversell security.** No "unescapable", no "unbreakable". Honest threat modeling is a trust-builder and a differentiator.
 
 ## Security posture (summary; full version → `SECURITY.md`)
