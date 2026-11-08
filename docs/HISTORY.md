@@ -1196,7 +1196,7 @@ accepted 2026-11-07).
 
     Both are rare, and the scope still goes at its time limit.
 - **Step 5b — the live checks and the docs, done 2026-11-07
-  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit pending).**
+  ([plan](plans/M3/M3-step5-acceptance.md) §9; commit `c615671`).**
   - **Linux Claude Code, live.** Victor ran a session with only Vestibule's two tools. Five
     native runs; the first four results each said `isolation: native`, and the fifth was
     cancelled:

@@ -55,7 +55,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 4 | Non-blocking stderr: a bounded queue written by one thread to its own dup of fd 2, drop counting with a gap notice, a 20 ms drain at every exit, and the hand-off line's guards | 2026-11-05 | `de9e10c` | 799 Linux (0 skipped); 637 + 142 POSIX/Linux-only skips on Windows |
 | M3 step 5a | M3's acceptance suite through `server.call_tool` with real backends and a real audit file (no `src/` change); the cold-start benchmark run again | 2026-11-06 | `03f0fb7` | 814 Linux (0 skipped); 641 + 153 POSIX/Linux-only skips on Windows |
 | M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | `7a3c30f` | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
-| M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | pending | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
+| M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -125,7 +125,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M3 step 5b — the live checks and the docs pass (2026-11-07)
 
-- **Commit:** pending.
+- **Commit:** `c615671`.
 - **Plan:** [`docs/plans/M3/M3-step5-acceptance.md`](plans/M3/M3-step5-acceptance.md) §3.4 and
   §4; what happened is in its §9.
 - **What:** no `src/` change.
