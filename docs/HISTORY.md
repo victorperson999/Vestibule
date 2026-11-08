@@ -1300,7 +1300,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
 
 ### Build steps (6 planned: 0–5)
 
-- **Step 0 — the spike, no repo code: part A done 2026-11-08, part B pending
+- **Step 0 — the spike, no repo code: parts A and B done 2026-11-08
   ([report](plans/M4/M4-step0-spike.md)).**
   - **Part A, on this machine:**
     - `uv tool install` from a clean wheel works on Windows (3.11, and a uv-managed 3.14) and
@@ -1314,5 +1314,17 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
       workspace.
     - A guest's links can point outside the workspace on the host: real NTFS symlinks on
       Windows with Developer Mode on.
-  - **Part B, needing Victor:** the GUI clients' `PATH`, nested virtualization, stock Ubuntu
-    24.04, and Debian 13 minimal. The contract amendments wait for it.
+  - **Part B, on the VMs and the GUI clients:**
+    - Claude Desktop and Cursor both find `vestibule-mcp` and `docker` by bare name after
+      `uv tool update-shell`, with no re-login.
+    - Docker Desktop runs inside a nested Hyper-V VM: `container`.
+    - Stock Ubuntu 24.04 is refused with the right hint. Snap Docker fails on
+      `no-new-privileges`. Docker from its apt repo gives `container`.
+    - Debian 13 minimal has no user bus: `native-degraded`, then `native` after
+      `dbus-user-session` and a reboot.
+  - **What part B adds for the README:**
+    - A minimal Debian needs `ca-certificates` before `setup` works.
+    - Debian's user-bus fix needs a reboot.
+    - Docker's recommended Windows install needs Virtual Machine Platform turned on first.
+    - uv may pick Python 3.15 when there's no usable system Python.
+  - The contract amendments wait for Victor's sign-off.

@@ -25,9 +25,10 @@ change what the README must say:
 - on Linux, the uninstall command;
 - in `SECURITY.md`, the workspace's symlinks.
 
-**Part B needs the VMs and the GUI clients, and is pending.** It covers the GUI clients'
-`PATH`, nested virtualization, stock Ubuntu 24.04, and Debian 13 minimal. The amendments to the
-contract are applied once part B is in, so that §3 changes only once.
+**Part B, on the VMs and the GUI clients, is done, and no signed decision reverses.** Nested
+virtualization, the GUI clients' `PATH` and stock Ubuntu came out as predicted. Two predictions
+were wrong, and six findings change the plans (B-1 to B-6). The amendments to the contract wait
+for Victor's sign-off, so that §3 changes only once.
 
 ## Results, part A
 
@@ -92,11 +93,73 @@ contract are applied once part B is in, so that §3 changes only once.
   on Windows (`pywin32`), counting `vestibule-mcp` and `mcp`, not "about 25". Today's resolve
   matches §7: `mcp` 1.30.0, `anyio` 4.16.0, `pydantic` 2.14.3.
 
-## Part B — pending (needs Victor), with what the code predicts
+## Results, part B
 
-| Question | How | Predicted |
+Run 2026-11-08 from the same wheel, with uv 0.13.7 on the VMs. The full output is in `logs\`:
+`vm-*.txt`, `winvm-result.txt` and `gui-path-*.txt`.
+
+Hosts:
+- **`m4-ubuntu`:** Ubuntu 24.04.5, desktop defaults, kernel 7.0.0-42, 2 CPUs, 4 GB.
+- **`m4-debian`:** Debian 13.7 netinst, no tasks, `openssh-server` with
+  `--no-install-recommends`, kernel 6.12.115, 2 CPUs, 2 GB.
+- **`m4-win11`:** Windows 11 Pro build 26300, 4 CPUs, 8 GB, nested on the Ryzen 7600X host.
+- **GUI clients, on this machine:** Claude Desktop 4.23118 (the Store package), Cursor 3.29.9.
+
+| Question (§6) | Predicted | Result |
 |---|---|---|
-| Claude Desktop's and Cursor's `PATH` on Windows | Install both. `gui\setup.ps1` does the README's install and `update-shell`, then adds a `PATH` recorder and a bare-name `vestibule` entry to each config. Open and quit each client from the Start menu; `gui\restore.ps1` puts the configs back. | Both see `.local\bin` without a re-login (the broadcast), and `docker` from the machine `PATH`. |
-| A Hyper-V VM with nested virtualization running Docker Desktop | `vm\create-vms.ps1 -Win11Iso …`: TPM, `ExposeVirtualizationExtensions`, static 8 GB. Inside, Docker Desktop, then `winvm-kit\check.ps1`. | Works on this Ryzen 7600X host; if not, P6's fallback user account. |
-| Stock Ubuntu 24.04's failure stage and message; snap Docker's | `m4-ubuntu` VM, desktop defaults. Claude runs the kit over SSH (`vm\authorize.ps1`), then installs the Docker snap, then Docker's apt repo. | The helper's id-map write fails, and `_native_hint` adds "Ubuntu restricts unprivileged user namespaces on this host…" (`select.py:673`). Snap: `no-new-privileges`, and no access to `~/.vestibule`. Apt Docker: `container`. |
-| Debian 13 minimal's user bus | `m4-debian` VM: no tasks in tasksel, root password left empty (so `sudo` is set up), then `openssh-server` with `--no-install-recommends`, so the bus packages don't come with it. | No `libpam-systemd` and no `dbus-user-session`, so `native-degraded (… no systemd user bus)`. After `apt install dbus-user-session` and a new login, `native`. |
+| Claude Desktop's and Cursor's `PATH` on Windows | Both see `.local\bin` without a re-login, and `docker` | **As predicted.** Both were opened from the Start menu after `uv tool update-shell`, with no sign-out. In both, `where` found `.local\bin\vestibule-mcp.exe` and `docker.exe`. `update-shell` prepended the folder to the user `PATH`; the machine `PATH` doesn't have it, and Explorer was already running. Cursor started the bare-name `vestibule` entry and connected to it. Claude Desktop left no server log to read, so its own start of the server is unconfirmed; P6's live session covers that. |
+| Nested virtualization running Docker Desktop | Works on this host | **Works.** Docker Desktop 4.98.0 (engine 29.9.2) on WSL 2. One `run_code` → `isolation: container` in 1.8 s, including the probe. Pulling both pinned images took 25 s. Installing Docker Desktop took extra steps (B-3). |
+| Stock Ubuntu 24.04, no Docker | The helper's id-map write fails, and `_native_hint` names Ubuntu | **As predicted.** `apparmor_restrict_unprivileged_userns = 1`. `Blocked:` with `[Errno 13] Permission denied: '/proc/self/setgroups'` and "Ubuntu restricts unprivileged user namespaces on this host". Install 3.4 s on the system 3.12.3. `setup` still fetched the trees (7.4 s), which native can't use there. |
+| Snap Docker | `no-new-privileges`, and no access to `~/.vestibule` | **Half right** (B-5). Docker 29.8.0: `Blocked:` with `probe exit 255 … exec /sbin/docker-init: operation not permitted`. |
+| Docker Engine from Docker's apt repo | `container` | **As predicted.** Docker 29.9.3: `isolation: container`, first call 0.74 s, with the default `~/.vestibule/workspace` as well. No container left behind. |
+| Debian 13 minimal's user bus | No bus, so `native-degraded (… no systemd user bus)`; after `dbus-user-session` and a new login, `native` | **No bus, as predicted; the fix needs a reboot** (B-2). `setup` failed first, for a reason nobody predicted (B-1). No system Python, so uv fetched 3.15.2 (B-4). After `ca-certificates`: `native-degraded`. After `dbus-user-session` and a new login: still `native-degraded`. After a reboot: `native`, first call 0.13 s. |
+
+## Findings from part B, for the step plans
+
+- **B-1 (step 4, the README; §3's Linux row) — on a minimal Debian, `setup` fails until
+  `ca-certificates` is installed.**
+  - `uv tool install` works because uv brings its own roots, so `setup` is the first thing to
+    fail: `failed: docker.io: [SSL: CERTIFICATE_VERIFY_FAILED] … unable to get local issuer
+    certificate`, exit 1.
+  - `registry.py` uses `urllib`, so Python's default trust store, and `/etc/ssl/certs` was
+    empty. Installing `ca-certificates` fixed it.
+  - The message doesn't name the fix. The options are a prerequisite line, a hint in `setup`'s
+    message, or `certifi`'s bundle (already in the tree through `httpx`, but it would become a
+    direct dependency).
+- **B-2 (step 4; §3's Linux row; P6) — Debian's user-bus fix needs a reboot.**
+  - `dbus-user-session` installs, and pulls in `libpam-systemd` and `dbus`, but
+    `dbus.socket`, `dbus.service` and `systemd-logind.service` stay inactive. A new login still
+    has no `XDG_RUNTIME_DIR`.
+  - After a reboot all three are active and the run reports `native`.
+  - Starting the services by hand wasn't tried; a reboot is what was measured.
+- **B-3 (step 4; §3's Windows row) — Docker Desktop's recommended install fails on a clean
+  Windows 11.**
+  - The installer's default, "Per-user installation (Recommended)" with WSL 2, stops: it needs
+    the "Virtual Machine Platform" feature and can't enable it without admin.
+  - After `wsl --install --no-distribution` the installer finished, but Docker Desktop still
+    said the feature was off. (The installer's own hint is plain `wsl --install`, not tried.)
+  - `Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All` in an
+    admin PowerShell, then a restart, fixed it. One sample.
+- **B-4 (step 3's smoke loop and F1's classifiers; updates A-4) — uv 0.13.7 picks Python 3.15.**
+  - With no usable system Python, uv fetched CPython 3.15.2. That was Debian minimal, and
+    Windows with only the Store's `python` stub. A-4 said 3.14.
+  - Both runs passed: `native` on Debian, `container` on Windows. No gate runs 3.15, so step
+    3's loop should include it, and F1's classifiers claim what ran.
+- **B-5 (P3's wording; step 4's Ubuntu notes) — the snap's real blocker, and its message.**
+  - Direct `docker run`s on the snap: plain and `--init` work, and
+    `--security-opt no-new-privileges` alone fails with `exec … operation not permitted`.
+    Vestibule always passes that flag.
+  - P3's other reason is half wrong on this snap: a bind mount of `~/.vestibule/workspace`
+    worked. A bind mount of a host `/tmp` folder came up empty, and run dirs live there, so
+    the snap would likely still fail without that flag.
+  - Vestibule's message says "the container runtime cannot enforce the isolation profile" and
+    doesn't name the snap. A user following Ubuntu's own suggestion gets no pointer to Docker's
+    apt repo.
+- **B-6 (P1's wording) — these two GUI clients don't need the absolute path.**
+  - P1 has the README give GUI clients the path from `uv tool dir --bin`. Bare
+    `vestibule-mcp` resolved in both, when the client started after `update-shell`.
+  - A client left running through `update-shell` wasn't tested.
+
+The VMs stay for P6's first-run pass. `m4-ubuntu` and `m4-debian` have a `fresh-install`
+checkpoint from before the kit's key and `sudo` rule. `m4-win11` has none, and now holds Docker
+Desktop.
