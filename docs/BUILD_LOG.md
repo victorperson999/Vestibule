@@ -59,7 +59,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, `f5b3659` | no test change |
 | M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | `7e977fb` | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
-| M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | pending | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
+| M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -136,7 +136,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M4 step 3 — the release packaging (2026-11-09)
 
-- **Commit:** pending.
+- **Commit:** `cbf6424`.
 - **Plan:** [`docs/plans/M4/M4-step3-release.md`](plans/M4/M4-step3-release.md) (v2 after the
   `skeptic` review, signed 2026-11-09). The review record and as-built are its §11 and §12. It adds
   dated amendments to F1 and P9 in [`M4-adoption.md`](plans/M4/M4-adoption.md).
@@ -165,6 +165,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   them. `critic` found 1 medium and 3 low on the diff; `verifier` confirmed all 4, and all are fixed.
 - **Real smoke:** Python 3.11 through 3.15 on Windows (`container`) and WSL (`native`). Each stage was
   shown to fail on a bad wheel or a bad state.
+- **Real `build`, on the commit:** a clean export of `cbf6424` gave an sdist of 27 files, every check
+  and `twine check` passed, and both files reached `dist/`.
 - **Mutants:** 41 of 41 caught on their named tests after a green control.
 - **Gate:** check_env, ruff and mypy clean on both platforms. Linux (380 s of 540): 3.14 full suite
   1014 passed, 0 skipped; 3.11 Docker-free 964; stdio 7. Windows: 826 passed, plus 168

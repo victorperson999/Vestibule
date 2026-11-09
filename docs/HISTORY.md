@@ -1369,7 +1369,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   session's `vestibule` MCP server is stopped once for the Windows venv rebuild; Victor runs the
   secret scan of the history at release time, because it hasn't been scanned yet; the macOS job runs
   after the usual pull request; and on macOS the stdio end-to-end check is the smoke test's stdio run.
-- **Step 3 done 2026-11-09** ([plan](plans/M4/M4-step3-release.md)), commit pending. Nothing was
+- **Step 3 done 2026-11-09** ([plan](plans/M4/M4-step3-release.md)), commit `cbf6424`. Nothing was
   published.
   - **What changed:** version 0.1.0 and its metadata. The sdist is 27 files, not 113. The
     dependency set is what a fresh install gets today, `mcp` 1.30.0 included, and the published
@@ -1380,3 +1380,10 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     the gate is green on both platforms.
   - **What stays:** the history hasn't been scanned for secrets (Victor runs it from the
     checklist), and the macOS job hasn't run: it needs the workflow on `main`.
+- **Step 4's plan signed off 2026-11-09** ([plan](plans/M4/M4-step4-docs.md)): the README,
+  `SECURITY.md` and the demo GIF. Victor took option (1) on V1–V4. The live client sessions and a dry
+  run on the two Linux VMs happen in this step, before the README is frozen. The headline is reworded,
+  because an agent on a hosted model does send its code and output to that model's provider. The GIF
+  is made with `asciinema` and `agg`. And `read_workspace`'s check-then-open race, which M1 accepted
+  as a residual, is fixed before the release, as a small step of its own: the review reproduced it
+  with a swap made from the host, and the tool returned a file from outside the workspace.
