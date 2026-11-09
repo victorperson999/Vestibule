@@ -56,7 +56,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 5a | M3's acceptance suite through `server.call_tool` with real backends and a real audit file (no `src/` change); the cold-start benchmark run again | 2026-11-06 | `03f0fb7` | 814 Linux (0 skipped); 641 + 153 POSIX/Linux-only skips on Windows |
 | M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | `7a3c30f` | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
 | M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
-| M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, amendments' hash pending | no test change |
+| M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, `f5b3659` | no test change |
+| M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | pending | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -64,7 +65,6 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 |---|---|---|---|
 | 2026-10-11 (7a review) | `container.py` run CLI | If the *client* kills the process tree in the ~100 ms between `docker run`'s create and start, the container stays **Created** (never started, no CPU or memory use) until a reaper pass (deadline + 60 s). `--rm` and S7-D5 only act on started containers. | Accepted residual; reaper backstops |
 | 2026-10-11 (S7-D5) | container profile | The self-deadline `timeout` runs as the guest's uid, so a *deliberately* malicious guest can `SIGSTOP` it and live until a reaper finds it, still capped by memory, CPU and pids unless its selection was `container-degraded`, which has only the limits it reported. | Documented residual (M4 `SECURITY.md`) |
-| 2026-10-11 (S7-D1) | server hard exit | After a hard kill (Job Object / TerminateProcess / SIGKILL), per-run `%TEMP%\vestibule-run-*` script dirs are not removed. A startup sweep was rejected because it can't tell whose live run a dir belongs to. | M4: the M3 contract (§1) left it out as lifecycle, not observability, for deadline-stamped dir names a sweep can judge |
 | 2026-10-11 (S7-D2) | workspace | Guest-made symlinks are real host symlinks that host file tools follow, for reads and writes. `read_workspace` refuses them, and the tool description warns. A structural fix (seccomp `symlink` denial) was considered for M2 step 5 and **rejected** (N4): denying `symlink`/`symlinkat` breaks `python -m venv` and npm `.bin` links in the workspace. M1's measures stay. | Documented (README, contract D1); revisit in M4 `SECURITY.md` |
 | 2026-10-15 (M2 step 1b) | shutdown, Windows | Claude Code on Windows closes stdin, waits 300 ms, then `taskkill /T /F`s the server's tree. With a run in flight, M1's in-process cleanup (S7-D1, 0.2–0.4 s) can overrun that window, and the tree kill takes the `docker rm -f` with it, so the container lives until its S7-D5 self-deadline (`timeout + 90` s). A detached cleaner can't help on Windows: the server sits in kill-on-close Job Objects (the console-script launcher's, the venv redirector's, the Python SDK client's). The structural fix is a container-side liveness lease (a watchdog that ends the guest when the server's heartbeat goes stale), which would also cover a server killed outright on any platform. **Re-measured in M2 step 7b** (Claude Code 2.1.316, one sample each): Ctrl+C cancels the call before Claude Code exits, and the cancel path removed the container (seen up at one poll, gone at the next, 0.75 s later); closing the terminal window mid-run closed the server's stdin with the call in flight, and the container was gone within 1.43 s, more than two minutes before its self-deadline. The race wasn't hit, but nothing rules it out. | Later milestone (liveness lease) |
 | 2026-10-31 (M2 step 7b, live check) | MCP SDK and Claude Code | When a user interrupts a running `run_code` call, the MCP Python SDK (1.28.1, `RequestResponder.cancel`) answers the cancelled request with an error, and Claude Code 2.1.316 logs "Received a response for an unknown message ID" and marks the server's connection dropped. The run itself is stopped and cleaned up, and `/exit` still closes the server's stdin, so nothing leaks. Whether Claude Code reconnects for the next call wasn't tested. Not in Vestibule's code. **Seen again in M3 step 5b** with Claude Code 2.1.319, on Linux and on Windows: the same "STDIO connection dropped" and unknown-message-ID lines (`Request cancelled`) in its MCP log, and the cancelled call's audit `end` was written. Documented in GETTING_STARTED's troubleshooting. | Upstream; look again with the `mcp<2` move |
@@ -78,6 +78,14 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
 
 **Closed:**
+- The 2026-10-11 hard-kill issue (per-run script dirs left after a hard kill) is closed by M4
+  step 1. A run dir's name carries its deadline, a POSIX parent's its owner's pid, and each
+  reaper pass sweeps what's overdue. Stated, not fixed:
+  - dirs from before this step have no deadline and are never removed. With no server
+    running, any `vestibule-run-*` or `vestibule-runs-*` left in the temp folder can be
+    deleted by hand (root-owned ones in `/tmp` need `sudo rm -rf` or a reboot);
+  - a host on full native builds no container backend, so it never sweeps;
+  - one narrow POSIX case can leave two empty root-owned folders until reboot (the plan's §5).
 - The 2026-11-06 native-placement issue (a cancel during placement could leave an empty
   scope until its `RuntimeMaxSec`) is closed by the M3 step 5 fix. systemd can attach a
   helper that has exited but isn't reaped, and the scope is then born empty and never
@@ -124,9 +132,54 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M4 step 1 — run dirs left behind by a hard kill (2026-11-08)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step1-run-dir-sweep.md`](plans/M4/M4-step1-run-dir-sweep.md)
+  (v2 after the `skeptic` review, signed 2026-11-08). The review record and as-built are its §8
+  and §9. It adds a dated amendment note to F3 in
+  [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **What:**
+  - **`container.py`:** run dirs are named `vestibule-run-<deadline>-<random>`, with the same
+    deadline as the container's label, and POSIX parents `vestibule-runs-<pid>-<random>`.
+    `_sweep_run_dirs` (one function for Windows' flat layout and POSIX's parents) removes a run
+    dir more than 60 s past its deadline, and an empty parent whose pid is gone. It runs in a
+    thread, as the first step of `_reap_orphans`, ahead of the early return when no labeled
+    container exists.
+  - **Safety rules:** strict name patterns; a top-level entry must be a real dir (no link or
+    junction) owned by this uid; a child of a parent gets no owner check, because Docker
+    re-creates run dirs as root; `_pid_gone` never calls `os.kill` on Windows, where signal 0 is
+    a real Ctrl+C.
+  - **Tests:** new `test_run_dir_sweep.py`, plus a real hard kill in `test_stdio_e2e.py` and a
+    real root-owned child in `test_container.py`.
+- **Found:**
+  - One pass costs about 2 ms over this machine's `%TEMP%` (1,723 entries), and about 55 ms over
+    100,000 entries, so there's no time budget or rate limit.
+  - A Windows junction is a real directory to `S_ISDIR`, so only the reparse check stops one.
+  - `Path.rglob` on Python 3.11 raises if a dir vanishes mid-scan; 3.14's doesn't.
+- **Review:** `skeptic` found 14 issues on v1, 0 high; `verifier` upheld 8 and found 2 plausible,
+  refuting none. Two of `skeptic`'s points reshaped it: the sweep became the reaper's first
+  step, with no task of its own, and test 21's second server has a missing image, so no container
+  exists. Victor kept F3's layout over a single `~/.vestibule/runs` folder. `critic` found no code
+  defect and 5 test or size issues; `verifier` confirmed all 5, and all are fixed. Two were real
+  gaps: the suite stayed green with `keep` ignored in the POSIX branch and with the owner check
+  unwired.
+- **Mutants:** 25 of 25 red on their named tests after a green control.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (367 s of 540): 3.14 full
+  suite 863 passed, 0 skipped; 3.11 Docker-free 816; stdio 6. Windows: 681 passed, plus 162
+  POSIX/Linux-only skips.
+- **Where to start if it breaks:**
+  - **A run fails or a live run's script vanishes:** check the rule in `_run_dir_stale` and that
+    the name's deadline matches the label. Tests: `test_the_stale_rule` and
+    `test_a_runs_dir_carries_its_containers_deadline`.
+  - **Folders pile up in the temp folder:** is the sweep still ahead of `_reap_orphans`' early
+    return? Test: `test_a_hard_killed_servers_run_dir_is_swept_by_the_next_server`.
+  - **A root-owned run dir stays on Linux:** a child must not get an owner check. Test:
+    `test_a_root_owned_run_dir_in_our_parent_is_swept`.
+
 ## M4 step 0 — spike (2026-11-08)
 
-- **Commits:** `6798fe2` (part A), `f5e8eb0` (part B); the contract amendments' hash pending.
+- **Commits:** `6798fe2` (part A), `f5e8eb0` (part B), `f5b3659` (the contract amendments).
 - **Plan:** [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) §6, "Step 0 measures";
   report [`docs/plans/M4/M4-step0-spike.md`](plans/M4/M4-step0-spike.md).
 - **What:** no repo code. The wheel was installed and run on Windows, WSL, distro containers,

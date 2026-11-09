@@ -1331,3 +1331,17 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     also chose two small messages for step 2: `setup` names `ca-certificates` when a download
     fails certificate checks, and the error under snap Docker names the snap and points to
     Docker's apt repo. Step 0 is done.
+- **Step 1's plan signed off 2026-11-08** ([plan](plans/M4/M4-step1-run-dir-sweep.md)): the
+  sweep of run dirs a hard kill leaves. Victor kept F3's layout over `skeptic`'s
+  `~/.vestibule/runs` alternative, and took T1–T3 as written: undated dirs are skipped
+  silently, pre-M4 leftovers stay, and a host on full native never sweeps.
+- **Step 1 done 2026-11-08** ([plan](plans/M4/M4-step1-run-dir-sweep.md)), commit pending.
+  - **What changed:** a container run's script folder now has its deadline in its name, and
+    on Linux and macOS its parent folder has the server's pid. Each reaper pass first removes
+    folders more than 60 s past their deadline, and empty parents whose server is gone. So a
+    hard-killed server no longer leaves its folders behind for good.
+  - **How it was checked:** a real hard kill followed by a second server, a real root-owned
+    folder, and 25 of 25 mutants red. The gate is green on both platforms.
+  - **What stays:** folders from before this step are never removed, a host on full native
+    never sweeps, and one narrow Linux case can leave two empty root-owned folders until
+    reboot (the plan's §5).

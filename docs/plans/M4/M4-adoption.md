@@ -350,6 +350,12 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
     (`container.py:661–662`), which is the usual state after a hard kill. The directory scan
     runs in a thread, off the event loop.
 
+> **Amendment 2026-11-08 (step 1, [`M4-step1-run-dir-sweep.md`](M4-step1-run-dir-sweep.md)
+> §2.4, approved by Victor):** the sweep is the first step of the reaper's pass, ahead of its
+> `ps` and that early return, not a task of its own. It still runs at first use and after
+> each run, whatever the reaper finds. An empty parent whose pid is gone has no grace period;
+> the plan's §5 states the one narrow case that costs.
+
 **F4 — The README.**
 - **Order:**
   1. the demo GIF and the why;

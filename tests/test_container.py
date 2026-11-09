@@ -11,9 +11,11 @@ interpreter versions the config comment claims.
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import secrets
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -22,6 +24,7 @@ import pytest
 
 from dockerutil import docker_required, plant, ps_names, remove
 
+import vestibule.backends.container as container_mod
 from vestibule.backends.container import ContainerBackend
 from vestibule.config import Limits
 
@@ -267,6 +270,27 @@ async def test_four_simultaneous_runs_succeed(backend, limits):
     for i, r in enumerate(results):
         assert r.exit_code == 0
         assert f"tok-{i}" in r.stdout
+
+
+@docker_required
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only parent dir")
+def test_a_root_owned_run_dir_in_our_parent_is_swept(tmp_path, limits):
+    """M4 step 1 test 22: a run dir Docker re-created belongs to root, which is what the
+    user-owned parent exists for, so a child of a parent gets no owner check."""
+    root = tmp_path / "temp"
+    parent = root / "vestibule-runs-999999999-abcd1234"  # a pid that can't exist
+    parent.mkdir(parents=True, mode=0o700)
+    child = parent / "vestibule-run-1-abcd1234"
+    subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{parent}:/p",
+                    limits.image_python, "mkdir", f"/p/{child.name}"],
+                   check=True, capture_output=True)
+    if child.stat().st_uid == os.getuid():
+        pytest.skip("this Docker creates bind-mount entries as the user, not root")
+
+    container_mod._sweep_run_dirs(str(root), time.time(), set(), os.getuid())
+
+    assert not child.exists()
+    assert not parent.exists()
 
 
 # ------------------------------------------------------------ step 5: selection (§5)
