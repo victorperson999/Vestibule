@@ -246,7 +246,7 @@ def test_naive_guests_are_in_the_kill_list():
     assert job.empty  # nothing for the cleaner; the hand-off kills the guest itself
 
 
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups, /proc")
+linux_only = pytest.mark.skipif(sys.platform != "linux", reason="process groups and /proc")
 
 
 def _alive(tag: str) -> list[int]:
@@ -282,7 +282,7 @@ async def _start_naive_sleeper(tmp_path):
     return naive, task, tag
 
 
-@posix_only
+@linux_only
 async def test_naive_cancel_kills_the_guest_and_its_children(tmp_path):
     """Step-1b critic round 2: a cancelled naive run must not leave its guest running
     (POSIX exits with os._exit, which skips the teardown that used to kill it)."""
@@ -295,7 +295,7 @@ async def test_naive_cancel_kills_the_guest_and_its_children(tmp_path):
     assert naive.live_procs() == []
 
 
-@posix_only
+@linux_only
 async def test_naive_hand_off_kills_the_guest_group(tmp_path, monkeypatch):
     """The hand-off kills a running naive guest's whole process group, its `sleep` child
     included (the first fix killed only the interpreter)."""

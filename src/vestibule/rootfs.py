@@ -1,7 +1,8 @@
-"""The native rootfs cache and `vestibule-mcp setup` (M2 step 2,
-docs/plans/M2/M2-step2-rootfs.md S2-D1, S2-D5, S2-D7, S2-D9, S2-D10).
+"""The native rootfs cache and `vestibule-mcp setup`'s native step (M2 step 2,
+docs/plans/M2/M2-step2-rootfs.md S2-D1, S2-D5, S2-D7, S2-D9, S2-D10; the command itself is
+setup_cli.py since M4 step 2).
 
-`setup` fetches each digest-pinned image straight from its registry (registry.py), unpacks
+The step fetches each digest-pinned image straight from its registry (registry.py), unpacks
 it (unpack.py), and leaves:
 
     <rootfs_dir>/<index-hex>-<arch>/        the tree: a sandbox's /
@@ -25,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from vestibule import registry
-from vestibule.config import ConfigError, Limits
+from vestibule.config import Limits
 
 # 2: directories without group/other write (2026-10-25). A tree made under an older format is
 # not accepted, so the next setup replaces it instead of keeping a world-writable /var/tmp.
@@ -99,19 +100,9 @@ def setup_command(limits: Limits) -> str:
                      "vestibule-mcp setup"])
 
 
-def setup_main() -> int:
-    """`vestibule-mcp setup`: 0 when every image is ready, 1 otherwise (S2-D1)."""
-    if sys.platform != "linux":  # S2-D7; also tells mypy the rest is Linux-only
-        _say("vestibule setup: native isolation is Linux-only, so there is nothing to set "
-             "up here. The container backend uses the images from the README's "
-             "`docker pull` lines.")
-        return 0
-    try:
-        limits = Limits.from_env()  # not server.LIMITS: that falls back to the defaults
-    except ConfigError as e:
-        _say("vestibule setup: invalid settings, nothing was changed:")
-        for problem in e.problems:
-            _say(f"  - {problem}")
+def install(limits: Limits) -> int:
+    """`setup`'s native step: 0 when every image is ready, 1 otherwise (S2-D1)."""
+    if sys.platform != "linux":  # never: setup_cli checks first; the guard is for mypy (S2-D7)
         return 1
     try:
         rootfs_dir = limits.rootfs_path
@@ -158,7 +149,7 @@ def setup_main() -> int:
 
 
 def _install(rootfs_dir: Path, image_ref: str, arch: str) -> str:
-    if sys.platform == "win32":  # never: setup_main returns first; the guard is for mypy
+    if sys.platform == "win32":  # never: install returns first; the guard is for mypy
         raise SetupError("Linux only")
     if find(rootfs_dir, image_ref) is not None:
         return "already present"
@@ -253,7 +244,7 @@ def _write_marker(tmp: Path, path: Path, marker: dict[str, Any]) -> None:
 
 def _lock(rootfs_dir: Path) -> int | None:
     """An exclusive flock on the lock file, or None if another setup holds it."""
-    if sys.platform == "win32":  # never: setup_main returns first; the guard is for mypy
+    if sys.platform == "win32":  # never: install returns first; the guard is for mypy
         raise SetupError("Linux only")
     import fcntl
 
@@ -278,4 +269,8 @@ def _inside(child: str, parent: str) -> bool:
 
 
 def _say(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    from vestibule.audit_cli import _clean  # only `setup` prints: the server never loads it
+
+    if sys.stderr is not None:  # print(file=None) would write to stdout instead
+        # Escaped: a setting, or a registry's own error text, must not drive the terminal.
+        print(_clean(msg), file=sys.stderr, flush=True)

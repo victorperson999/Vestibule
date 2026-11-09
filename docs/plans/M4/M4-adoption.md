@@ -200,6 +200,15 @@ Today the README has three setup paths:
   `setup` exits 0 when the final check says ready, whatever an optional step skipped.
 - **(2) Keep the `docker pull` lines.** No code; the README stays per platform.
 
+> **Amendment 2026-11-08 (step 2, [`M4-step2-setup.md`](M4-step2-setup.md) §4, approved by Victor):**
+> - `setup` pulls only the images that are missing, so a second run needs no network.
+> - An image the machine needs that wasn't confirmed or pulled exits 1, even when the check
+>   says `container`. The probe uses only the python image, so otherwise every node run
+>   would be `Blocked:` after a `ready`. On a native or native-degraded result it changes
+>   nothing.
+> - `VESTIBULE_BACKEND` narrows what a machine needs: `container` skips the trees, `native`
+>   skips the images, `naive` skips both. A root user skips the trees too.
+
 ### P5 (Victor, 2026-11-07: (1)) — Does setup end with a readiness check?
 
 - **(1) Recommended: yes, run the server's real selection once and print what it returns.**
@@ -291,6 +300,10 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
   there, and the README says so.
 - **(2) No macOS run.** The README says "never run on macOS".
 
+> **Amendment 2026-11-09 (step 3, [`M4-step3-release.md`](M4-step3-release.md) §4, approved by Victor):**
+> `tests/test_stdio_e2e.py` is Docker-marked and these runners have no Docker, so on macOS "the
+> stdio end-to-end tests" means the smoke test's real stdio session, plus `test_signals.py`.
+
 ### Fixed decisions
 
 **F1 — The release.**
@@ -313,6 +326,12 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
   render check of the PyPI description (`twine check`).
 - **Victor uploads** (`uv publish` with his token). A release is outward-facing and can't be
   taken back, so Claude never runs it.
+
+> **Amendment 2026-11-09 (step 3, [`M4-step3-release.md`](M4-step3-release.md) §4, approved by Victor):**
+> - The re-freeze moves only what the release wheel pulls in. The dev tools and what only they
+>   need stay at their pins, so the gate's own checks don't change with the set they check.
+> - Before the upload, `release_smoke.py smoke` fails on any package a fresh install gets that
+>   neither gate ran.
 
 **F2 — The release checklist** (a new `RELEASE.md` under `docs/`, and a smoke script).
 - **Build from a clean export** (`git archive HEAD`), never the working tree, and give the
@@ -349,6 +368,12 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
     own: the reaper's pass returns early when no labeled container exists
     (`container.py:661–662`), which is the usual state after a hard kill. The directory scan
     runs in a thread, off the event loop.
+
+> **Amendment 2026-11-08 (step 1, [`M4-step1-run-dir-sweep.md`](M4-step1-run-dir-sweep.md)
+> §2.4, approved by Victor):** the sweep is the first step of the reaper's pass, ahead of its
+> `ps` and that early return, not a task of its own. It still runs at first use and after
+> each run, whatever the reaper finds. An empty parent whose pid is gone has no grace period;
+> the plan's §5 states the one narrow case that costs.
 
 **F4 — The README.**
 - **Order:**

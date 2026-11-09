@@ -37,6 +37,10 @@ M2 step 1b (docs/plans/M2/M2-step1-linux-baseline.md, S1-D5): each run is record
 its temp dir and its CLI process until both its finisher and the CLI are done, so the
 POSIX shutdown hand-off can snapshot everything this backend still owns
 (`cleanup_snapshot`).
+
+M4 step 1 (docs/plans/M4/M4-step1-run-dir-sweep.md, F3): a run dir's name carries its deadline
+and a POSIX parent's its owner's pid, so a sweep can remove what a hard kill left behind
+(`_sweep_run_dirs`).
 """
 from __future__ import annotations
 
@@ -44,8 +48,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 import secrets
 import shutil
+import stat
 import tempfile
 import time
 from dataclasses import dataclass
@@ -53,6 +59,7 @@ from pathlib import Path
 
 from vestibule.backends.base import RunRefusedError, RunResult, Warden
 from vestibule.config import Limits
+from vestibule.workspace import _is_symlink_or_reparse
 
 log = logging.getLogger("vestibule.container")
 
@@ -77,6 +84,10 @@ _SEM_WAIT_S = 5
 _DEADLINE_SLACK_S = 90
 # A reaper removes a container only when now > its deadline + this margin (S4-D3).
 _REAP_MARGIN_S = 60
+# F3: what a sweep may touch. `fullmatch`, ASCII digits only: anything else is never removed.
+# Nine digits can't overflow os.kill's pid argument.
+_RUN_DIR = re.compile(r"vestibule-run-([0-9]{1,12})-[a-z0-9_]+")
+_RUN_PARENT = re.compile(r"vestibule-runs-([0-9]{1,9})-[a-z0-9_]+")
 # How to start a runtime that is not responding, for refusal messages. Runtime-specific
 # so a Podman user is never pointed at Docker Desktop (and vice versa).
 START_HINTS = {
@@ -103,6 +114,70 @@ def _container_user() -> str:
     if getuid is not None and getgid is not None:
         return f"{getuid()}:{getgid()}"
     return "1000:1000"
+
+
+def _run_dir_stale(name: str, now: float, keep: set[str]) -> bool:
+    """F3's rule (unit-tested without Docker): past its own deadline + margin, never on bad data."""
+    match = _RUN_DIR.fullmatch(name)
+    return match is not None and name not in keep and now > int(match[1]) + _REAP_MARGIN_S
+
+
+def _pid_gone(pid: int) -> bool:
+    """Whether a POSIX parent's owner has exited. A reused pid only keeps the parent."""
+    if os.name != "posix":  # Windows' signal 0 is CTRL_C_EVENT: a real Ctrl+C, not a probe
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:  # another user's process, say: not gone
+        return False
+    return False
+
+
+def _real_dir_owned_by(path: str, uid: int | None) -> bool:
+    """A real directory, not a link or junction, and owned by `uid` when there is one (POSIX)."""
+    try:
+        st = os.lstat(path)
+    except OSError:  # gone since the listing
+        return False
+    if not stat.S_ISDIR(st.st_mode) or _is_symlink_or_reparse(st):
+        return False
+    return uid is None or st.st_uid == uid
+
+
+def _remove_if_stale(path: str, name: str, now: float, keep: set[str]) -> None:
+    if _run_dir_stale(name, now, keep):
+        log.info("sweep: removing stale run dir %s", name)
+        # Refuses a link at the top and doesn't descend into one. A busy dir waits for the
+        # next sweep.
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _sweep_run_dirs(root: str, now: float, keep: set[str], uid: int | None) -> None:
+    """F3: remove what a hard-killed server left under `root`.
+
+    Windows has dated dirs at the root and POSIX has them inside pid-stamped parents, so one
+    pass handles both. `/tmp` is shared, so a top-level entry must be a real dir of ours. A
+    child gets no owner check: Docker re-creates a run dir as root, and that is what the
+    user-owned 0700 parent exists to let us delete (`_run_dir_parent`).
+    """
+    with os.scandir(root) as entries:
+        found = [e for e in entries if _RUN_PARENT.fullmatch(e.name) or _RUN_DIR.fullmatch(e.name)]
+    for entry in found:
+        if not _real_dir_owned_by(entry.path, uid):
+            continue
+        parent = _RUN_PARENT.fullmatch(entry.name)
+        if parent is None:
+            _remove_if_stale(entry.path, entry.name, now, keep)
+            continue
+        with contextlib.suppress(OSError):  # a parent we can't read never ends the pass
+            with os.scandir(entry.path) as children:
+                names = [c.name for c in children]
+            for name in names:
+                _remove_if_stale(os.path.join(entry.path, name), name, now, keep)
+            if _pid_gone(int(parent[1])):
+                os.rmdir(entry.path)  # refuses, and so keeps, anything not empty
 
 
 class ContainerBackend(Warden):
@@ -272,7 +347,10 @@ class ContainerBackend(Warden):
             # D9: script goes to a per-run host temp dir mounted read-only at /sandbox —
             # not argv (Windows command-line limits), not stdin (-i forbidden), not the
             # workspace (would pollute the persistent channel).
-            tmpdir = tempfile.mkdtemp(prefix="vestibule-run-", dir=self._run_dir_parent())
+            # F3: the name carries the label's deadline, so a sweep can judge a leftover.
+            tmpdir = tempfile.mkdtemp(
+                prefix=f"vestibule-run-{deadline_epoch}-", dir=self._run_dir_parent()
+            )
             self._runs[name] = _RunRecord(tmpdir)
             self._active.add(name)  # before the container can exist: reaper-proof
             try:
@@ -482,7 +560,8 @@ class ContainerBackend(Warden):
         if os.name != "posix":
             return None
         if self._run_parent is None or not os.path.isdir(self._run_parent):
-            self._run_parent = tempfile.mkdtemp(prefix="vestibule-runs-")
+            # F3: the pid lets a sweep tell when this parent's owner has gone.
+            self._run_parent = tempfile.mkdtemp(prefix=f"vestibule-runs-{os.getpid()}-")
         return self._run_parent
 
     def cleanup_snapshot(
@@ -647,6 +726,19 @@ class ContainerBackend(Warden):
             return
         self._reap_task = asyncio.create_task(self._reap_orphans())
 
+    async def _sweep_stale_run_dirs(self) -> None:
+        """F3: remove the run dirs a hard-killed server left, off the event loop."""
+        if self._closing:  # shutdown: housekeeping can wait for next time
+            return
+        keep = {os.path.basename(r.tmpdir) for r in self._runs.values()}
+        uid = getattr(os, "getuid", lambda: None)()
+        try:
+            await asyncio.to_thread(
+                lambda: _sweep_run_dirs(tempfile.gettempdir(), time.time(), keep, uid)
+            )
+        except Exception:  # detached task; a failed sweep must not skip the reaper's pass
+            log.exception("sweep: pass failed")
+
     async def _reap_orphans(self) -> None:
         """S4-D3: remove labeled containers past their owner-stamped deadline.
 
@@ -654,7 +746,11 @@ class ContainerBackend(Warden):
         daemon timestamps, no local timeout config. Containers without a parseable
         deadline are skipped loudly, never removed; this process's in-flight runs
         are protected by the active-name set (and by their future deadlines).
+
+        The run-dir sweep (F3) comes first: a hard kill usually leaves no labeled
+        container, and this pass returns early then.
         """
+        await self._sweep_stale_run_dirs()
         try:
             listing = await self._cli("ps", "-aq", "--filter", "label=vestibule.run=1")
             ids = listing.split() if listing else []
@@ -719,11 +815,35 @@ class ContainerBackend(Warden):
             # check (M1 step 6 plan §2).
             raise RunRefusedError(
                 f"image {image} is not usable ({reason}). If it is missing, run "
-                f"`{self._runtime} pull {image}` once and retry; Vestibule never "
-                f"pulls images itself. If {self._runtime} itself is not responding, "
+                f"`{self._runtime} pull {image}` once and retry; a tool call never "
+                f"pulls images. If {self._runtime} itself is not responding, "
                 f"start it{START_HINTS.get(self._runtime, '')}, then retry."
             )
         self._image_ids[image] = out.strip() or None
+
+    async def image_present(self, image: str) -> bool | None:
+        """`setup`'s image step (M4 P4): True, False, or None when the runtime gave no answer."""
+        res = await self._cli_status("image", "inspect", "--format", "{{.Id}}", image)
+        return None if res is None else res[0] == 0
+
+    async def pull_image(self, image: str) -> int:
+        """`<runtime> pull`; its exit code. Only `setup` calls this, never a tool call (D2). The
+        runtime's progress goes to stderr, because stdout is never ours to write (golden rule 1).
+        A line-speed wait, so nothing bounds it: the user sees the progress and has Ctrl+C."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._runtime, "pull", image,
+                stdin=asyncio.subprocess.DEVNULL, stdout=2, stderr=2,
+            )
+        except OSError as e:
+            log.error("%s pull: cannot spawn: %s", self._runtime, e)
+            return 127
+        try:
+            return await proc.wait()
+        except asyncio.CancelledError:  # Ctrl+C: never leave the CLI running unowned
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise
 
     async def _cli_status(
         self, *args: str, timeout: float = _CLEANUP_STEP_S

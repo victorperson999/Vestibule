@@ -1,0 +1,33 @@
+# M4 P9: the one macOS run. It shows the server starts, answers and shuts down there. GitHub's macOS
+# runners have no Docker, so container runs stay untested. Manual only, and not a standing pipeline.
+name: macOS check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+      - name: Build the dev venv from the constraints
+        run: |
+          uv venv --python 3.11 .venv
+          uv pip install --python .venv/bin/python -e ".[dev]" -c requirements/constraints.txt
+      - name: Check the venv
+        run: .venv/bin/python scripts/check_env.py --expect-python 3.11
+      - name: Docker-free tests
+        run: .venv/bin/python -m pytest -q -rs -p no:cacheprovider -m "not docker and not native and not network"
+      - name: Build from a clean export
+        run: .venv/bin/python scripts/release_smoke.py build
+      # No Docker here, so `setup` and the first call are `Blocked:`. A fresh install may resolve
+      # newer packages than the constraints, which is reported.
+      - name: Install the wheel and try it
+        run: .venv/bin/python scripts/release_smoke.py smoke dist/*.whl --python 3.11 --allow-drift

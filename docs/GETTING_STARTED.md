@@ -20,8 +20,9 @@ python -m venv .venv
 venv is identical on every platform. Without it, pip picks the newest versions allowed by
 `pyproject.toml`. Changing a pin is a deliberate commit; the file's header says how.
 
-Then pull the two pinned sandbox images with the exact commands in the README's
-**One-time setup**. Vestibule never pulls images itself.
+Then run `vestibule-mcp setup` once (the README's **One-time setup**). It gets what this machine
+can use, and pulls the two pinned sandbox images where the container backend needs them. A tool
+call never pulls anything.
 
 The install is *editable*: a source change takes effect the next time the server process
 starts. An agent session that is already running keeps the old code until you restart it.
@@ -142,6 +143,12 @@ server never downloads them itself. Until `setup` has run, native isn't availabl
 `auto` a working container is used instead, and otherwise the call is `Blocked:` with the
 exact command.
 
+`setup` skips the trees where native can't start (user namespaces refused, a root user) or isn't
+wanted (`VESTIBULE_BACKEND=container` or `naive`). Then it runs the server's own selection once.
+If the answer isn't full `native`, it pulls whichever of the two images are missing and checks
+again. It exits 0 when the final check says ready, and prints that answer plus what can differ for
+a client started another way.
+
 ```bash
 # inside WSL, with a dev venv:
 ~/.venvs/vestibule/bin/vestibule-mcp setup
@@ -159,6 +166,11 @@ exact command.
   the directory except its own entries. To start over, delete the directory.
 - **Tests:** the ones that fetch the real images are marked `network`; the comparison with
   `docker export` is marked `docker` too. The Linux gate runs both.
+
+## Releasing
+
+The checklist is [`RELEASE.md`](RELEASE.md). `scripts/release_smoke.py build` makes the two files from
+a clean export of `HEAD`, and `smoke` tries an install on Python 3.11 through 3.15.
 
 ## Troubleshooting
 

@@ -11,9 +11,11 @@ interpreter versions the config comment claims.
 import asyncio
 import contextlib
 import logging
+import os
 import re
 import secrets
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -22,7 +24,10 @@ import pytest
 
 from dockerutil import docker_required, plant, ps_names, remove
 
+import vestibule.backends.container as container_mod
+from vestibule import setup_cli
 from vestibule.backends.container import ContainerBackend
+from vestibule.backends.select import BackendSelector
 from vestibule.config import Limits
 
 pytestmark = pytest.mark.docker
@@ -269,6 +274,27 @@ async def test_four_simultaneous_runs_succeed(backend, limits):
         assert f"tok-{i}" in r.stdout
 
 
+@docker_required
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only parent dir")
+def test_a_root_owned_run_dir_in_our_parent_is_swept(tmp_path, limits):
+    """M4 step 1 test 22: a run dir Docker re-created belongs to root, which is what the
+    user-owned parent exists for, so a child of a parent gets no owner check."""
+    root = tmp_path / "temp"
+    parent = root / "vestibule-runs-999999999-abcd1234"  # a pid that can't exist
+    parent.mkdir(parents=True, mode=0o700)
+    child = parent / "vestibule-run-1-abcd1234"
+    subprocess.run(["docker", "run", "--rm", "--network", "none", "-v", f"{parent}:/p",
+                    limits.image_python, "mkdir", f"/p/{child.name}"],
+                   check=True, capture_output=True)
+    if child.stat().st_uid == os.getuid():
+        pytest.skip("this Docker creates bind-mount entries as the user, not root")
+
+    container_mod._sweep_run_dirs(str(root), time.time(), set(), os.getuid())
+
+    assert not child.exists()
+    assert not parent.exists()
+
+
 # ------------------------------------------------------------ step 5: selection (§5)
 
 
@@ -444,3 +470,38 @@ async def test_run_cancelled_at_spawn_leaves_no_container(
     # A late container's start re-creates its deleted bind source on Docker Desktop;
     # the CLI reap removes it again once the CLI has exited (7b gate finding).
     assert len(run_dirs) == 3 and [d for d in run_dirs if d.exists()] == []
+
+
+@docker_required
+@pytest.mark.network
+def test_a_real_pull_writes_nothing_to_stdout():
+    """M4 P4, golden rule 1: a runtime prints its progress to stdout unless told otherwise."""
+    code = ("import asyncio, sys\n"
+            "from vestibule.backends.container import ContainerBackend\n"
+            "sys.exit(asyncio.run(ContainerBackend('docker').pull_image(sys.argv[1])))\n")
+    r = subprocess.run([sys.executable, "-c", code, Limits().image_python], capture_output=True,
+                       text=True, timeout=120, stdin=subprocess.DEVNULL)
+    assert (r.returncode, r.stdout) == (0, ""), r.stderr
+    assert "Digest: sha256:" in r.stderr
+
+
+@docker_required
+async def test_the_readiness_check_leaves_no_container_or_run_dir(tmp_path, monkeypatch):
+    """M4 P5: `setup` ends right after its check, so nothing may be left for a server to clean.
+    By this check's own owner label, so a live Vestibule server elsewhere is never counted."""
+    owners = []
+    real = BackendSelector._new_backend
+
+    def recorded(self, *args, **kwargs):
+        made = real(self, *args, **kwargs)
+        owners.append(made.owner)
+        return made
+
+    monkeypatch.setattr(BackendSelector, "_new_backend", recorded)
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(temp))
+    result = await setup_cli._check(Limits(workspace_dir=str(tmp_path / "ws"), backend="container"))
+    assert result.verdict == "container", result
+    assert owners and all(ps_names(f"label=vestibule.owner={o}") == "" for o in owners)
+    assert list(temp.iterdir()) == []

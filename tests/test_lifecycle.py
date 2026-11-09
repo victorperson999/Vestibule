@@ -237,6 +237,64 @@ class FakeCliProc:
         self._done.set()
 
 
+@pytest.fixture()
+async def spawned(monkeypatch):
+    """`create_subprocess_exec` hands back this FakeCliProc and records how it was called."""
+    proc = FakeCliProc()
+    calls = []
+
+    async def spawn(*argv, **kw):
+        calls.append((argv, kw))
+        return proc
+
+    monkeypatch.setattr(container_mod.asyncio, "create_subprocess_exec", spawn)
+    return proc, calls
+
+
+async def test_a_pull_keeps_stdout_empty_and_returns_the_exit_code(spawned):
+    """M4 P4, golden rule 1: `setup` reaches stdout through nothing, a runtime's progress included."""
+    proc, calls = spawned
+    proc.exit(3)
+    assert await ContainerBackend("docker").pull_image("python@sha256:abc") == 3
+    argv, kw = calls[0]
+    assert argv == ("docker", "pull", "python@sha256:abc")
+    assert (kw["stdin"], kw["stdout"], kw["stderr"]) == (asyncio.subprocess.DEVNULL, 2, 2)
+
+
+async def test_a_pull_that_cant_start_is_an_exit_code(monkeypatch):
+    async def spawn(*argv, **kw):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(container_mod.asyncio, "create_subprocess_exec", spawn)
+    assert await ContainerBackend("docker").pull_image("x") == 127
+
+
+async def test_a_cancelled_pull_kills_the_cli(spawned):
+    proc, calls = spawned
+    task = asyncio.create_task(ContainerBackend("docker").pull_image("x"))
+    while not calls:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0)  # into proc.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert proc.killed
+
+
+@pytest.mark.parametrize("answer, present", [((0, "sha256:1", ""), True),
+                                             ((1, "", "No such image"), False),
+                                             (None, None)])
+async def test_image_present_tells_no_answer_from_no_image(monkeypatch, answer, present):
+    b = ContainerBackend("docker")
+
+    async def cli(*args, timeout=5):
+        assert args[:2] == ("image", "inspect")
+        return answer
+
+    monkeypatch.setattr(b, "_cli_status", cli)
+    assert await b.image_present("x") is present
+
+
 async def test_timed_out_result_returns_before_any_kill(monkeypatch, tmp_path):
     """Codex budget regression (2026-07-05): on guest timeout the honest timed-out
     result returns immediately — kill/rm never serialize into the result path, so a

@@ -18,13 +18,16 @@ one; cleanup removes only those exact names.
 """
 import asyncio
 import json
+import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 from dockerutil import docker_required, ps_names, remove
+from nativeutil import SKIP_REASON as NATIVE_SKIP_REASON
 from stdioutil import (
     CLIENT_GRACE_S,
     SERVER_EXE,
@@ -267,3 +270,90 @@ async def test_stdio_real_sdk_client_hands_off_a_run_in_flight(tmp_path, trace_f
     finally:
         if name is not None:
             remove(name)
+
+
+@docker_required
+@pytest.mark.skipif(sys.platform == "linux" and NATIVE_SKIP_REASON is not None,
+                    reason=f"the real `setup` would download the trees: {NATIVE_SKIP_REASON}")
+async def test_setups_answer_is_what_the_first_call_gets(tmp_path):
+    """M4 P5, criterion 3 in the small: the real command says `ready … isolation X`, exits 0 with
+    nothing on stdout, leaves no run dir, and a client's first call gets exactly X."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    ws = tmp_path / "ws"
+    settings = {"VESTIBULE_WORKSPACE": str(ws), "VESTIBULE_AUDIT_DIR": str(tmp_path / "audit"),
+                "TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp)}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")} | settings
+    r = await asyncio.to_thread(subprocess.run, [str(SERVER_EXE), "setup"], capture_output=True,
+                                text=True, timeout=120, stdin=subprocess.DEVNULL, env=env)
+    assert (r.returncode, r.stdout) == (0, ""), r.stderr
+    ready = "ready in this terminal's environment: isolation "
+    isolation = next(line[len(ready):] for line in r.stderr.splitlines() if line.startswith(ready))
+    assert not _dated_run_dirs(temp)
+
+    server = await StdioServer.start(ws, settings)
+    try:
+        await server.initialize()
+        text = await server.call("run_code", {"language": "python", "code": "print(1)"})
+    finally:
+        await server.close_like_sdk()
+        await server.kill()
+    assert text.splitlines()[-1] == f"isolation: {isolation}", text
+
+
+def _dated_run_dirs(root: Path) -> list[Path]:
+    # os.walk, not rglob: on 3.11 rglob raises if a dir vanishes mid-scan (the warm-up's does).
+    return [Path(base) / d for base, dirs, _ in os.walk(root) for d in dirs
+            if re.fullmatch(r"vestibule-run-[0-9]+-[a-z0-9_]+", d)]
+
+
+async def _until(check, what: str, within_s: float = 15) -> None:
+    deadline = time.monotonic() + within_s
+    while not check():
+        assert time.monotonic() < deadline, f"never happened: {what}"
+        await asyncio.sleep(0.1)
+
+
+@docker_required
+async def test_a_hard_killed_servers_run_dir_is_swept_by_the_next_server(tmp_path):
+    """M4 step 1 (F3, criterion 8): a real hard kill leaves a dated run dir, and the next
+    server removes it once its deadline has passed, with no container present."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    settings = {"VESTIBULE_BACKEND": "container",
+                "TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp)}
+
+    killed = await StdioServer.start(tmp_path / "ws", settings)
+    try:
+        await killed.initialize()
+        await _start_stubborn_run(killed)
+        # The warm-up's own dir is removed a moment after its run ends.
+        await _until(lambda: len(_dated_run_dirs(temp)) == 1, "one dated run dir")
+    finally:
+        await killed.kill()
+        for rid in killed.run_ids:  # exact names only — never label-wide
+            remove(f"vestibule-{rid}")
+
+    leftovers = _dated_run_dirs(temp)
+    assert len(leftovers) == 1, leftovers
+    parent = leftovers[0].parent
+    if POSIX:
+        assert parent.name.startswith(f"vestibule-runs-{killed.proc.pid}-"), parent.name
+    suffix = leftovers[0].name.rsplit("-", 1)[1]
+    expired = leftovers[0].rename(
+        leftovers[0].with_name(f"vestibule-run-{int(time.time()) - 3600}-{suffix}")
+    )
+
+    # A missing image: the next server answers `Blocked:` and never creates a container.
+    blocked = await StdioServer.start(
+        tmp_path / "ws", {**settings, "VESTIBULE_IMAGE_PYTHON": "vestibule-no-such-image:nope"}
+    )
+    try:
+        await blocked.initialize()
+        text = await blocked.call("run_code", {"language": "python", "code": "print(1)"})
+        assert text.startswith("Blocked:"), text
+        await _until(lambda: not expired.exists(), "the expired run dir removed")
+        if POSIX:
+            await _until(lambda: not parent.exists(), "the dead server's parent removed")
+    finally:
+        await blocked.kill()

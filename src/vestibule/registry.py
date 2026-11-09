@@ -16,6 +16,7 @@ import hashlib
 import json
 import platform
 import re
+import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -41,6 +42,11 @@ _CHUNK = 1024 * 1024
 _ARCH = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _PATH = re.compile(r"[a-z0-9]+(?:[._-]+[a-z0-9]+)*(?:/[a-z0-9]+(?:[._-]+[a-z0-9]+)*)*")
+# M4 step 0, B-1: a minimal Debian has no CA certificates. uv brings its own, so this is the
+# first thing to fail there.
+_CERT_HINT = (". This machine may have no trusted certificates yet: install the ca-certificates "
+              "package and run setup again. Behind a proxy that inspects TLS, add its "
+              "certificate to the system's trusted store")
 
 
 class RegistryError(Exception):
@@ -127,7 +133,9 @@ class Registry:
                     continue
                 raise RegistryError(_http_problem(e.code, self.ref)) from None
             except OSError as e:  # URLError, timeouts, resets
-                raise RegistryError(f"{self.ref.host}: {getattr(e, 'reason', e)}") from None
+                reason = getattr(e, "reason", e)
+                hint = _CERT_HINT if isinstance(reason, ssl.SSLCertVerificationError) else ""
+                raise RegistryError(f"{self.ref.host}: {reason}{hint}") from None
         raise AssertionError("unreachable")
 
     def manifest(self, digest: str, accept: tuple[str, ...]) -> dict[str, Any]:

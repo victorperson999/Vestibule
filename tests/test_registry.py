@@ -3,6 +3,7 @@ platform: two local HTTP servers stand in for a registry and the CDN its blobs r
 """
 import hashlib
 import json
+import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -302,6 +303,30 @@ def test_the_realm_check_gets_the_registrys_real_scheme(monkeypatch):
     with pytest.raises(RegistryError, match="stop here"):
         reg.manifest(f"sha256:{HEX}", INDEX_TYPES)
     assert seen == ["https"]
+
+
+def _reaching_the_registry_fails_with(monkeypatch, reason):
+    def urlopen(req, timeout):
+        raise registry.urllib.error.URLError(reason)
+
+    monkeypatch.setattr(registry.urllib.request, "urlopen", urlopen)
+    reg = registry.Registry(parse_ref(f"docker.io/library/python@sha256:{HEX}"))
+    with pytest.raises(RegistryError) as ei:
+        reg.manifest(f"sha256:{HEX}", INDEX_TYPES)
+    return str(ei.value)
+
+
+def test_an_untrusted_certificate_names_the_package_that_fixes_it(monkeypatch):
+    """M4 step 0, B-1: a minimal Debian has no CA certificates, and setup is the first to fail."""
+    msg = _reaching_the_registry_fails_with(monkeypatch, ssl.SSLCertVerificationError(
+        1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer"))
+    assert "CERTIFICATE_VERIFY_FAILED" in msg and "install the ca-certificates package" in msg
+
+
+@pytest.mark.parametrize("reason", [ConnectionRefusedError(111, "refused"),
+                                    ssl.SSLError(1, "handshake failure")])
+def test_other_network_failures_get_no_certificate_advice(monkeypatch, reason):
+    assert "ca-certificates" not in _reaching_the_registry_fails_with(monkeypatch, reason)
 
 
 def test_a_rate_limit_says_so(fake):
