@@ -34,6 +34,8 @@ import math
 import os
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -144,6 +146,27 @@ _SYSCTLS = {
         "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
     "max_user_namespaces": "/proc/sys/user/max_user_namespaces",
 }
+# M4 P4: the helper's first steps (native_helper._helper), in a throwaway child. The writes are
+# the test: stock Ubuntu lets `unshare` through and refuses the first write. The ids come first
+# because after `unshare` they read as the overflow id, and mapping that is refused everywhere.
+_USERNS_PROBE = """\
+import ctypes, os, sys
+uid, gid = os.getuid(), os.getgid()
+libc = ctypes.CDLL(None, use_errno=True)
+try:
+    if libc.unshare(0x10000000 | 0x20000000):  # CLONE_NEWUSER | CLONE_NEWPID
+        e = ctypes.get_errno()
+        raise OSError(e, "unshare: " + os.strerror(e))
+    for name, text in (("setgroups", "deny"), ("uid_map", f"{uid} {uid} 1"),
+                       ("gid_map", f"{gid} {gid} 1")):
+        with open(f"/proc/self/{name}", "w") as f:
+            f.write(text)
+except OSError as e:
+    sys.stderr.write(str(e))
+    sys.exit(77)
+"""
+_USERNS_REFUSED = 77  # the probe's exit code when one of those calls was refused
+_USERNS_WAIT_S = 5
 
 
 class _ProbeFailed(RunRefusedError):
@@ -170,6 +193,8 @@ class Selection:
     # S6-D6: a provisional selection (native-degraded over a container refused for now) is
     # selected again once this monotonic time passes; None means cached for the process.
     recheck_at: float | None = None
+    # M4 P5: why `auto` passed over native for this container, for `setup`'s report.
+    why_not_native: str | None = None
 
 
 @dataclass
@@ -374,16 +399,9 @@ class BackendSelector:
                 f"unknown VESTIBULE_BACKEND {limits.backend!r}; use 'auto', 'native', "
                 "'container' or 'naive'. " + _RESTART_HINT
             )
-        # M2 follow-ups F-D1: both backends run the guest as the server's own uid (native's
-        # identity map, the container's --user), so a root server's guest would be host root.
-        # Windows has no uid; its container runs as a fixed uid in Docker Desktop's VM.
-        getuid, geteuid = getattr(os, "getuid", None), getattr(os, "geteuid", None)
-        if getuid is not None and geteuid is not None and 0 in (getuid(), geteuid()):
-            raise _RestartRequired(
-                "the server runs as root, so the code it runs would run as root too; "
-                "Vestibule never needs root. Start it as your own user (on a WSL distro "
-                "with only root, create one with `adduser`), then restart your agent."
-            )
+        refused = root_refusal()
+        if refused:
+            raise _RestartRequired(refused)
         on_linux = sys.platform == "linux"
         if limits.backend == "native":
             if not on_linux:
@@ -436,6 +454,7 @@ class BackendSelector:
         if native is None or container.verdict == "container":
             if native is not None:  # native-degraded loses to a full container
                 await native.warden.drain(_CANDIDATE_DRAIN_S)
+            container.why_not_native = str(native_err) if native is None else native.detail
             return container
         await container.warden.drain(_CANDIDATE_DRAIN_S)  # container-degraded loses
         return native
@@ -483,6 +502,9 @@ class BackendSelector:
                 raise _RestartRequired(overlap)
             if any(rootfs.find(limits.rootfs_path, ref) is None
                    for ref in (limits.image_python, limits.image_node)):
+                refused = await asyncio.to_thread(userns_problem)
+                if refused:  # M4 P4: `setup` skips the trees here, so don't send the user to it
+                    raise RunRefusedError(refused)
                 raise RunRefusedError(
                     f"no native rootfs in {limits.rootfs_path}; run "
                     f"`{rootfs.setup_command(limits)}` once (downloads about 123 MB), then "
@@ -573,7 +595,7 @@ class BackendSelector:
             f"the isolation probe failed even with resource limits off ({second}): "
             "either the container runtime cannot enforce the isolation profile, or the "
             "configured image cannot run the probe (it needs bash and coreutils "
-            "`timeout`); refusing to run without isolation"
+            f"`timeout`); refusing to run without isolation{_snap_hint(runtime)}"
         )
 
     async def _resolve_runtime(self, limits: Limits) -> str:
@@ -670,12 +692,63 @@ def _native_hint(reason: str, sysctls: dict[str, str]) -> str | None:
                 "under systemd's ProtectProc=), so native can't build its sandbox here")
     if "setup failed at" not in reason:
         return None
+    return _namespace_hint(sysctls)
+
+
+def _namespace_hint(sysctls: dict[str, str]) -> str | None:
     if sysctls.get("apparmor_restrict_unprivileged_userns") == "1":
         return ("Ubuntu restricts unprivileged user namespaces on this host, the likely cause; "
                 "lifting that needs root, so use the container backend")
     if sysctls.get("max_user_namespaces") == "0":
         return "user namespaces are disabled on this host (user.max_user_namespaces=0)"
     return None
+
+
+def root_refusal() -> str | None:
+    """M2 follow-ups F-D1: both backends run the guest as the server's own uid (native's identity
+    map, the container's --user), so a root server's guest would be host root. Windows has no
+    uid; its container runs as a fixed uid in Docker Desktop's VM."""
+    getuid, geteuid = getattr(os, "getuid", None), getattr(os, "geteuid", None)
+    if getuid is None or geteuid is None or 0 not in (getuid(), geteuid()):
+        return None
+    return ("the server runs as root, so the code it runs would run as root too; "
+            "Vestibule never needs root. Start it as your own user (on a WSL distro "
+            "with only root, create one with `adduser`), then restart your agent.")
+
+
+def userns_problem() -> str | None:
+    """Why native sandboxes can't start on this host, or None when they can or it's unclear: an
+    unclear answer must never cost a host its native isolation (M4 P4). Blocking. A child
+    process, because `unshare(CLONE_NEWUSER)` refuses a caller with threads and the server has
+    them."""
+    try:
+        r = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", _USERNS_PROBE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,  # golden rule 1
+            stderr=subprocess.PIPE,
+            timeout=_USERNS_WAIT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != _USERNS_REFUSED:
+        return None
+    detail = r.stderr.decode(errors="replace")[:400]
+    reason = f"native sandboxes can't start on this host ({detail})"
+    hint = _namespace_hint(_read_sysctls())
+    return f"{reason}. {hint}" if hint else reason
+
+
+def _snap_hint(runtime: str) -> str:
+    """M4 step 0, B-5: Ubuntu's own suggestion, `snap install docker`, can't run Vestibule. The
+    path as found, not its realpath: /snap/bin/docker is a link to /usr/bin/snap."""
+    path = shutil.which(runtime)
+    if path is None or not path.startswith("/snap/"):
+        return ""
+    return (f". {path} is the snap package. A snap can't start a container with "
+            "no-new-privileges, which every Vestibule run sets. Install Docker Engine from "
+            "Docker's apt repository: https://docs.docker.com/engine/install/ubuntu/")
 
 
 def _read_sysctls() -> dict[str, str]:

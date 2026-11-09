@@ -51,6 +51,7 @@ vestibule/
 │   ├── config.py            # Limits, ALLOWED_LANGUAGES, env loading
 │   ├── audit.py             # M3: the audit records and their one writer thread
 │   ├── audit_cli.py         # M3: `vestibule-mcp audit`, the escaped history printer
+│   ├── setup_cli.py         # M4: `vestibule-mcp setup`, per machine, ending in a readiness check
 │   ├── stderr_log.py        # M3: non-blocking stderr logging
 │   └── backends/
 │       ├── __init__.py

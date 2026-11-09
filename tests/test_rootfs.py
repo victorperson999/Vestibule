@@ -20,11 +20,15 @@ from homeutil import NoHome, RelativeHome
 from stdioutil import SERVER_EXE
 
 import vestibule.server as server
-from vestibule import audit_cli, registry, rootfs
+from vestibule import audit_cli, registry, rootfs, setup_cli
 from vestibule.config import DEFAULT_IMAGE_NODE, DEFAULT_IMAGE_PYTHON, Limits
 
 linux_only = pytest.mark.skipif(sys.platform != "linux", reason="native setup is Linux-only")
 PY, NODE = "1" * 64, "2" * 64
+
+
+def _setup() -> int:
+    return rootfs.install(Limits.from_env())
 
 
 @pytest.fixture(autouse=True)
@@ -76,7 +80,7 @@ def test_no_arguments_serve_mcp(monkeypatch):
 
 
 def test_setup_runs_the_setup_command(monkeypatch):
-    monkeypatch.setattr(server.rootfs, "setup_main", lambda: 7)
+    monkeypatch.setattr(setup_cli, "main", lambda: 7)
     monkeypatch.setattr(sys, "argv", ["vestibule-mcp", "setup"])
     with pytest.raises(SystemExit) as e:
         server.run()
@@ -107,28 +111,11 @@ def test_other_arguments_warn_and_still_serve(monkeypatch, capsys, caplog):
     assert capsys.readouterr().out == ""  # golden rule 1
 
 
-def test_setup_on_another_os_says_linux_only(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "platform", "darwin")
-    assert rootfs.setup_main() == 0
-    out = capsys.readouterr()
-    assert "native isolation is Linux-only" in out.err and out.out == ""
-
-
-def test_setup_reads_its_own_settings(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr(sys, "platform", "linux")  # the config check comes first
-    monkeypatch.setenv("VESTIBULE_MEM_MB", "512m")
-    monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", str(tmp_path / "rootfs"))
-    assert rootfs.setup_main() == 1
-    err = capsys.readouterr().err
-    assert "invalid settings, nothing was changed" in err and "VESTIBULE_MEM_MB='512m'" in err
-    assert not (tmp_path / "rootfs").exists()
-
-
 def test_setup_refuses_a_relative_rootfs_dir(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", "rel/rootfs")  # a server elsewhere won't find it
-    assert rootfs.setup_main() == 1
+    assert _setup() == 1
     assert "must be an absolute path or start with ~" in capsys.readouterr().err
     assert not (tmp_path / "rel").exists()
 
@@ -137,7 +124,7 @@ def test_setup_refuses_a_relative_rootfs_dir(monkeypatch, capsys, tmp_path):
 def test_an_unexpandable_home_is_a_message(monkeypatch, capsys):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", "~no-such-user-vestibule/rootfs")
-    assert rootfs.setup_main() == 1
+    assert _setup() == 1
     assert "VESTIBULE_ROOTFS_DIR or VESTIBULE_WORKSPACE" in capsys.readouterr().err
 
 
@@ -145,11 +132,11 @@ def test_an_unexpandable_home_is_a_message(monkeypatch, capsys):
 def test_a_tree_from_format_1_is_replaced(env):
     """Format 1 trees have world-writable dirs; setup must not call them "already present"."""
     d, _, calls = env
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     marker_path = d / f"{PY}-{_arch()}.json"
     marker_path.write_text(json.dumps({**json.loads(marker_path.read_text()), "format": 1}))
     calls.clear()
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert calls == [f"sha256:{PY}"]
 
 
@@ -161,15 +148,14 @@ def test_setup_does_not_print_the_servers_config_advice(tmp_path):
                        stdin=subprocess.DEVNULL, env=env)
     assert "MCP client's config" not in r.stderr, r.stderr
     assert r.stdout == ""
-    if sys.platform == "linux":
-        assert r.returncode == 1 and "VESTIBULE_MEM_MB='abc'" in r.stderr
+    assert r.returncode == 1 and "VESTIBULE_MEM_MB='abc'" in r.stderr
 
 
 def test_setup_refuses_an_overlap_before_writing_anything(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("VESTIBULE_WORKSPACE", str(tmp_path / "ws"))
     monkeypatch.setenv("VESTIBULE_ROOTFS_DIR", str(tmp_path / "ws" / "rootfs"))
-    assert rootfs.setup_main() == 1
+    assert _setup() == 1
     assert "overlap" in capsys.readouterr().err
     assert not (tmp_path / "ws").exists()
 
@@ -229,7 +215,7 @@ def test_setup_makes_both_trees_with_their_mount_points(env, capsys):
     d, _, calls = env
     old_umask = os.umask(0)  # so the modes below come from setup, not from the umask
     try:
-        assert rootfs.setup_main() == 0
+        assert _setup() == 0
     finally:
         os.umask(old_umask)
     out = capsys.readouterr()
@@ -252,9 +238,9 @@ def test_setup_makes_both_trees_with_their_mount_points(env, capsys):
 @linux_only
 def test_already_present_makes_no_registry_call(env, capsys):
     d, _, calls = env
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     calls.clear()
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert calls == []
     assert capsys.readouterr().err.count("already present") == 2
 
@@ -271,12 +257,12 @@ def test_a_tree_without_its_marker_is_absent_and_replaced(env, monkeypatch, caps
         real(*args)
 
     monkeypatch.setattr(rootfs, "_write_marker", crash_once)
-    assert rootfs.setup_main() == 1  # python failed; node still installed
+    assert _setup() == 1  # python failed; node still installed
     assert "failed: crash between" in capsys.readouterr().err
     assert (d / f"{PY}-{_arch()}").is_dir() and not (d / f"{PY}-{_arch()}.json").exists()
     assert rootfs.find(d, f"python@sha256:{PY}") is None
     assert rootfs.find(d, f"node@sha256:{NODE}") is not None
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert rootfs.find(d, f"python@sha256:{PY}") is not None
 
 
@@ -291,7 +277,7 @@ def test_setup_removes_only_its_own_leftovers(env):
         p.mkdir()
         (p / "keep").write_text("keep")
     unrelated[3].write_text("{}")
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert not (d / ".vestibule-tmp-stale").exists()
     assert all(p.exists() for p in unrelated)
     assert (d / "keyrings" / "keep").read_text() == "keep"
@@ -301,10 +287,10 @@ def test_setup_removes_only_its_own_leftovers(env):
 @pytest.mark.parametrize("marker", ["not json", '{"format": 99}', "[]"])
 def test_an_invalid_marker_means_refetch(env, marker):
     d, _, calls = env
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     (d / f"{PY}-{_arch()}.json").write_text(marker)
     calls.clear()
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert calls == [f"sha256:{PY}"]
     assert rootfs.find(d, f"python@sha256:{PY}") is not None
 
@@ -317,12 +303,12 @@ def test_a_valid_but_mismatched_marker_means_refetch(env, field, value):
     # Such a marker survives the sweep (it is well-formed), so _install itself must clear the
     # old tree before the rename, or the rename fails on every run.
     d, _, calls = env
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     marker_path = d / f"{PY}-{_arch()}.json"
     marker = json.loads(marker_path.read_text())
     marker_path.write_text(json.dumps({**marker, field: value}))
     calls.clear()
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert calls == [f"sha256:{PY}"]
     assert rootfs.find(d, f"python@sha256:{PY}") is not None
 
@@ -353,7 +339,7 @@ def test_a_sweep_failure_is_a_message_not_a_traceback(env, capsys):
     (stuck / "f").write_text("x")
     stuck.chmod(0o555)  # stands in for a root-owned leftover
     try:
-        assert rootfs.setup_main() == 1
+        assert _setup() == 1
     finally:
         stuck.chmod(0o755)
     assert "could not remove setup's own leftovers" in capsys.readouterr().err
@@ -369,7 +355,7 @@ def test_a_held_lock_means_another_setup_is_running(env, capsys):
     fd = os.open(d / rootfs.LOCK_NAME, os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        assert rootfs.setup_main() == 1
+        assert _setup() == 1
     finally:
         os.close(fd)
     assert "another setup is running" in capsys.readouterr().err
@@ -379,7 +365,7 @@ def test_a_held_lock_means_another_setup_is_running(env, capsys):
 @linux_only
 def test_find_refuses_a_symlinked_tree(env, tmp_path):
     d, _, _ = env
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     tree = d / f"{PY}-{_arch()}"
     tree.rename(tmp_path / "elsewhere")
     tree.symlink_to(tmp_path / "elsewhere")
@@ -390,7 +376,7 @@ def test_find_refuses_a_symlinked_tree(env, tmp_path):
 def test_an_image_with_a_file_at_a_mount_point_is_refused(env, tmp_path, capsys):
     d, images, _ = env
     images[PY] = [_layer(tmp_path / "bad.tgz", [*BASE, ("workspace", tarfile.REGTYPE, b"")])]
-    assert rootfs.setup_main() == 1
+    assert _setup() == 1
     assert "/workspace as something other than a directory" in capsys.readouterr().err
     assert rootfs.find(d, f"python@sha256:{PY}") is None
     assert not list(d.glob(".vestibule-tmp-*"))  # the work dir went with the failure
@@ -400,7 +386,7 @@ def test_an_image_with_a_file_at_a_mount_point_is_refused(env, tmp_path, capsys)
 def test_an_arm64_tree_round_trips(env, monkeypatch):
     d, _, _ = env
     monkeypatch.setattr(registry.platform, "machine", lambda: "aarch64")
-    assert rootfs.setup_main() == 0
+    assert _setup() == 0
     assert (d / f"{PY}-arm64").is_dir()
     assert json.loads((d / f"{PY}-arm64.json").read_text())["platform"] == "linux/arm64"
     assert rootfs.find(d, f"python@sha256:{PY}") is not None

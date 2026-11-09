@@ -20,12 +20,14 @@ import asyncio
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
 from dockerutil import docker_required, ps_names, remove
+from nativeutil import SKIP_REASON as NATIVE_SKIP_REASON
 from stdioutil import (
     CLIENT_GRACE_S,
     SERVER_EXE,
@@ -268,6 +270,35 @@ async def test_stdio_real_sdk_client_hands_off_a_run_in_flight(tmp_path, trace_f
     finally:
         if name is not None:
             remove(name)
+
+
+@docker_required
+@pytest.mark.skipif(sys.platform == "linux" and NATIVE_SKIP_REASON is not None,
+                    reason=f"the real `setup` would download the trees: {NATIVE_SKIP_REASON}")
+async def test_setups_answer_is_what_the_first_call_gets(tmp_path):
+    """M4 P5, criterion 3 in the small: the real command says `ready … isolation X`, exits 0 with
+    nothing on stdout, leaves no run dir, and a client's first call gets exactly X."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    ws = tmp_path / "ws"
+    settings = {"VESTIBULE_WORKSPACE": str(ws), "VESTIBULE_AUDIT_DIR": str(tmp_path / "audit"),
+                "TMPDIR": str(temp), "TEMP": str(temp), "TMP": str(temp)}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("VESTIBULE_")} | settings
+    r = await asyncio.to_thread(subprocess.run, [str(SERVER_EXE), "setup"], capture_output=True,
+                                text=True, timeout=120, stdin=subprocess.DEVNULL, env=env)
+    assert (r.returncode, r.stdout) == (0, ""), r.stderr
+    ready = "ready in this terminal's environment: isolation "
+    isolation = next(line[len(ready):] for line in r.stderr.splitlines() if line.startswith(ready))
+    assert not _dated_run_dirs(temp)
+
+    server = await StdioServer.start(ws, settings)
+    try:
+        await server.initialize()
+        text = await server.call("run_code", {"language": "python", "code": "print(1)"})
+    finally:
+        await server.close_like_sdk()
+        await server.kill()
+    assert text.splitlines()[-1] == f"isolation: {isolation}", text
 
 
 def _dated_run_dirs(root: Path) -> list[Path]:

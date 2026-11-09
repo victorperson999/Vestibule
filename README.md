@@ -61,7 +61,7 @@ Vestibule is an open-source [Model Context Protocol](https://modelcontextprotoco
 
 ## One-time setup
 
-Not on PyPI yet, so install from a clone. You need Python ≥ 3.11. On Windows and macOS you also need Docker (Docker Desktop, running Linux containers). On Linux, Docker is optional: native isolation needs `vestibule-mcp setup`, run once, and the prerequisites in [Native isolation on Linux](#native-isolation-on-linux).
+Not on PyPI yet, so install from a clone. You need Python ≥ 3.11. On Windows and macOS you also need Docker (Docker Desktop, running Linux containers). On Linux, Docker is optional: native isolation needs the prerequisites in [Native isolation on Linux](#native-isolation-on-linux). On every platform, run `vestibule-mcp setup` once.
 
 ```bash
 git clone https://github.com/victorperson999/Vestibule.git && cd Vestibule
@@ -71,22 +71,22 @@ claude mcp add --scope user vestibule -- "$PWD/.venv/bin/vestibule-mcp"
 # Windows: claude mcp add --scope user vestibule -- C:\path\to\Vestibule\.venv\Scripts\vestibule-mcp.exe
 # (--scope user = available in every project; the default registers it for this folder only)
 
-# Linux: the native sandbox's root filesystems, unpacked from the same pinned images
-# (about 123 MB to download, no Docker needed):
+# Once, on every platform. It gets what this machine can use (about 123 MB either way: on Linux
+# the native sandbox's root filesystems, needing no Docker; otherwise the two sandbox images,
+# through Docker), then says what a client will get. Windows: .venv\Scripts\vestibule-mcp setup
 .venv/bin/vestibule-mcp setup
 
-# Windows and macOS (on Linux, only for the container fallback): the two sandbox images,
-# pinned to exact bytes (Vestibule never pulls images itself):
+# The same two images by hand, pinned to exact bytes (a tool call never pulls anything):
 docker pull docker.io/library/python@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
 docker pull docker.io/library/node@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
 ```
 
-Then ask your agent to run some code. The first `run_code` call checks your setup, and every result states the isolation that actually applied (normally `isolation: native` on Linux and `isolation: container` elsewhere).
+`setup` ends with the same check a first call makes, and prints `ready in this terminal's environment: isolation X` or the exact `Blocked:` fix. Then ask your agent to run some code. Every result states the isolation that actually applied (normally `isolation: native` on Linux and `isolation: container` elsewhere).
 
 - If a call is ever `Blocked:`, the message names the exact fix and says whether to retry or restart.
 - To see what your agents ran: `.venv/bin/vestibule-mcp audit` (Windows: `.venv\Scripts\vestibule-mcp audit`) prints the last 20 calls, one line each, with the time, language, outcome, isolation, exit code, usage, any denied syscalls and the code's first line. `audit 50` prints the last 50. Everything taken from a record is printed escaped, so code an agent ran can't drive your terminal. What the records keep, and who can read them: [Usage numbers and the audit log](#usage-numbers-and-the-audit-log).
 - Run Vestibule as your own user. It never needs root, and on Linux and macOS a server started as root refuses to run code, because the code would run as root too.
-- `setup` unpacks about 357 MB into `~/.vestibule/rootfs`, checking every byte against the pins; a second run doesn't touch the network. If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
+- On Linux, `setup` unpacks about 357 MB into `~/.vestibule/rootfs`, checking every byte against the pins; a second run doesn't touch the network. If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
 - The images are `python:3.12-slim` and `node:22-slim` as of 2026-10-10, pinned by digest so they can never change silently. The flip side: they get no upstream security fixes until Vestibule re-pins them.
 - Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
 - Custom images (`VESTIBULE_IMAGE_PYTHON` / `VESTIBULE_IMAGE_NODE`) must provide `bash`, coreutils `timeout` (every run is wrapped in it so a container ends itself at its deadline), and the language's interpreter on `PATH`, and work as an arbitrary non-root user on a read-only root filesystem. Pin them as `name@sha256:…`; an unpinned tag still works but logs a warning.

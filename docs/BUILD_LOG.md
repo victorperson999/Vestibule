@@ -57,7 +57,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 5 fix | A cancel during native placement, or a placement that finds the helper gone, no longer leaves an empty systemd scope: the run's finisher stops it by name | 2026-11-06 | `7a3c30f` | 818 Linux (0 skipped); 641 + 157 POSIX/Linux-only skips on Windows |
 | M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
 | M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, `f5b3659` | no test change |
-| M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | pending | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
+| M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | `7e977fb` | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
+| M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | pending | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -132,9 +133,55 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 1 — run dirs left behind by a hard kill (2026-11-08)
+## M4 step 2 — one `setup` on every platform, ending in a readiness check (2026-11-09)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step2-setup.md`](plans/M4/M4-step2-setup.md) (v2 after the `skeptic`
+  review, signed 2026-11-08). The review record and as-built are its §11 and §12. It adds a dated
+  amendment to P4 in [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **What:**
+  - **`setup_cli.py` (new):** the command. The native step (skipped off Linux, for a root user, for
+    `VESTIBULE_BACKEND=container` or `naive`, and where user namespaces are refused), then the
+    server's real selection from a fresh selector, then the images if the result isn't full native,
+    then a second check if anything was pulled. It prints `ready …: isolation X` or `Blocked:`, plus
+    the runtime's path and the `VESTIBULE_*` settings in this shell.
+  - **`select.py`:** `userns_problem()`, a child process making the helper's first calls.
+    `_try_native` asks it before telling the user to run `setup`. `Selection.why_not_native`.
+    The snap hint.
+  - **`container.py`:** `image_present` (three answers) and `pull_image` (its stdout goes to fd 2).
+  - **`registry.py`:** the `ca-certificates` hint, on the exact exception type.
+  - **`rootfs.py`:** `setup_main` became `install(limits)`. `_say` escapes control characters with
+    `audit_cli._clean`, and every `setup` line goes through it.
+- **Found:**
+  - Reading the uid after `unshare` gets the overflow id, and mapping that is refused: a false
+    refusal on a host where native works. The helper reads it first; a spike caught this in the
+    probe, and a test pins it.
+  - Stock Ubuntu lets `unshare` through and refuses the first write, so the writes are the test.
+  - `shutil.which` reads `sys.platform` too, so a test faking Windows on Linux has to stand it in.
+- **Review:** `skeptic` found 9 issues on v1 (3 medium, 6 low); `verifier` confirmed its 9 claims,
+  one in part. 8 were taken. One was declined: snap Docker still pulls before its real probe fails,
+  because a path check would refuse a later snap that works. `critic` found 6 low issues on the diff;
+  `verifier` confirmed all 6, and all are fixed.
+- **Mutants:** 53 of 53 caught on their named tests after a green control.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (376 s of 540): 3.14 full suite
+  935 passed, 0 skipped; 3.11 Docker-free 885; stdio 7. Windows: 747 passed, plus 168 POSIX/Linux-only
+  skips.
+- **Live check:** a wheel of this tree on the stock Ubuntu 24.04 VM: the real AppArmor refusal, no
+  trees, both images pulled, `ready …: isolation container`, a first tool call that matched, and
+  `Blocked:` with the right reason when no runtime is usable.
+- **Where to start if it breaks:**
+  - **Trees downloaded where native can't start, or a host told to run `setup` in a circle:**
+    `userns_problem` in `select.py`, and the probe's writes. Tests:
+    `test_the_probe_reports_a_refused_write`, `test_no_rootfs_where_namespaces_are_refused_names_that_not_setup`.
+  - **A false refusal on a working host:** the ids must be read before `unshare`. Test:
+    `test_the_namespace_check_passes_where_native_works`.
+  - **`setup` hangs at exit on Windows:** a task left alive. `_ready_steps`' hard exit. Test:
+    `test_a_task_left_alive_means_a_hard_exit_with_the_right_code`.
+  - **`setup` says ready and a call disagrees:** `test_setups_answer_is_what_the_first_call_gets`.
+
+## M4 step 1 — run dirs left behind by a hard kill (2026-11-08)
+
+- **Commit:** `7e977fb`.
 - **Plan:** [`docs/plans/M4/M4-step1-run-dir-sweep.md`](plans/M4/M4-step1-run-dir-sweep.md)
   (v2 after the `skeptic` review, signed 2026-11-08). The review record and as-built are its §8
   and §9. It adds a dated amendment note to F3 in

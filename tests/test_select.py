@@ -10,6 +10,8 @@ group, exactly as the MCP SDK delivers it, never only plain task.cancel().
 import asyncio
 import logging
 import re
+import shutil
+import subprocess
 import sys
 import time
 import types
@@ -64,6 +66,57 @@ def _probe_that(outcome_for_full, outcome_for_degraded="unused"):
         return outcome_for_degraded if backend._soft_disabled else outcome_for_full
 
     return probe, entered
+
+
+@pytest.mark.parametrize("path, named", [("/snap/bin/docker", True), ("/usr/bin/docker", False),
+                                         (None, False)])
+async def test_a_failed_probe_under_snap_docker_names_the_snap(monkeypatch, docker_ok, path, named):
+    """M4 step 0, B-5: Ubuntu's own suggestion can't run Vestibule, and nothing said so."""
+    failure = "probe exit 255, timed_out=False: exec /sbin/docker-init: operation not permitted"
+    monkeypatch.setattr(BackendSelector, "_probe", _probe_that(failure, failure)[0])
+    monkeypatch.setattr(shutil, "which", lambda name: path)
+    with pytest.raises(RunRefusedError) as ei:
+        await BackendSelector().get(_limits())
+    msg = str(ei.value)
+    assert f"{path} is the snap package" in msg if named else "snap" not in msg
+    assert ("https://docs.docker.com/engine/install/ubuntu/" in msg) == named
+
+
+def _child(monkeypatch, *, returncode=0, stderr=b"", raises=None):
+    """Stands in for the namespace check's child process."""
+    def run(argv, **kw):
+        assert (kw["stdin"], kw["stdout"]) == (subprocess.DEVNULL, subprocess.DEVNULL)  # rule 1
+        assert kw["timeout"] == select_mod._USERNS_WAIT_S
+        if raises is not None:
+            raise raises
+        return subprocess.CompletedProcess(argv, returncode, b"", stderr)
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+
+@pytest.mark.parametrize("kw", [
+    {"returncode": 0},
+    {"returncode": 1, "stderr": b"Traceback (most recent call last): ..."},
+    {"raises": subprocess.TimeoutExpired("python", 5)},
+    {"raises": OSError("no such interpreter")},
+])
+def test_an_unclear_namespace_check_refuses_nothing(monkeypatch, kw):
+    _child(monkeypatch, **kw)
+    assert select_mod.userns_problem() is None
+
+
+@pytest.mark.parametrize("sysctls, hint", [
+    ({"apparmor_restrict_unprivileged_userns": "1"}, "Ubuntu restricts"),
+    ({"max_user_namespaces": "0"}, "user.max_user_namespaces=0"),
+    ({}, None),
+])
+def test_a_refused_namespace_check_says_why(monkeypatch, sysctls, hint):
+    error = b"[Errno 13] Permission denied: '/proc/self/setgroups'"
+    _child(monkeypatch, returncode=select_mod._USERNS_REFUSED, stderr=error)
+    monkeypatch.setattr(select_mod, "_read_sysctls", lambda: sysctls)
+    msg = select_mod.userns_problem()
+    assert msg.startswith(f"native sandboxes can't start on this host ({error.decode()})")
+    assert hint in msg if hint else msg.endswith(")")
 
 
 async def test_naive_override_skips_probing(monkeypatch):
@@ -973,7 +1026,7 @@ def _on(monkeypatch, platform):
     monkeypatch.setattr(select_mod, "sys", types.SimpleNamespace(platform=platform))
 
 
-def _fake_backends(monkeypatch, native, container):
+def _fake_backends(monkeypatch, native, container, native_detail=None):
     """`native`/`container`: a verdict, or an exception to raise. Returns what was called."""
     calls = {"native": 0, "retry": []}
     nw, cw = _FakeWarden(), _FakeWarden()
@@ -982,7 +1035,7 @@ def _fake_backends(monkeypatch, native, container):
         calls["native"] += 1
         if isinstance(native, BaseException):
             raise native
-        return select_mod.Selection(nw, native, None)
+        return select_mod.Selection(nw, native, native_detail)
 
     async def select_container(self, limits, degraded_retry=True):
         calls["retry"].append(degraded_retry)
@@ -1025,6 +1078,27 @@ async def test_auto_on_linux_follows_n5s_order(monkeypatch, native, container, c
         assert calls["retry"] == []  # full native: the container is never probed
     else:  # the soft-off retry only when no native-degraded is in hand (S6-D3)
         assert calls["retry"] == [isinstance(native, BaseException)]
+
+
+@pytest.mark.parametrize("native, detail, container, why", [
+    (RunRefusedError("native sandboxes can't start"), None, "container",
+     "native sandboxes can't start"),
+    ("native-degraded", "no systemd user bus", "container", "no systemd user bus"),
+    ("native", None, "container", None),
+    ("native-degraded", "no systemd user bus", "container-degraded", None),  # native won
+])
+async def test_a_selection_says_why_native_was_passed_over(monkeypatch, native, detail, container,
+                                                           why):
+    """M4 P5: `setup`'s report uses selection's own words (§3's Ubuntu row)."""
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, native, container, detail)
+    assert (await BackendSelector().get(_limits(backend="auto"))).why_not_native == why
+
+
+async def test_a_forced_container_passes_nothing_over(monkeypatch):
+    _on(monkeypatch, "linux")
+    _fake_backends(monkeypatch, RunRefusedError("unused"), "container")
+    assert (await BackendSelector().get(_limits(backend="container"))).why_not_native is None
 
 
 async def test_auto_with_neither_names_both_and_retries(monkeypatch):

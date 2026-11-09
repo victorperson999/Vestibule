@@ -25,7 +25,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from vestibule import __version__, audit, cleanup, rootfs, stderr_log, workspace
+from vestibule import __version__, audit, cleanup, stderr_log, workspace
 from vestibule.backends.base import RunRefusedError, RunResult
 from vestibule.backends.container import ContainerBackend
 from vestibule.backends.naive import kill_guest
@@ -541,12 +541,14 @@ def _other_live_tasks() -> list[asyncio.Task]:
 
 
 def run() -> None:
-    """Console entry point: `vestibule-mcp` serves MCP on stdio; `vestibule-mcp setup`
-    fetches the native rootfs (docs/plans/M2/M2-step2-rootfs.md S2-D1); `vestibule-mcp audit
-    [N]` prints the last N calls (docs/plans/M3/M3-step3-audit-command.md)."""
+    """Console entry point: `vestibule-mcp` serves MCP on stdio; `vestibule-mcp setup` gets this
+    machine ready and says what a client will get (docs/plans/M4/M4-step2-setup.md);
+    `vestibule-mcp audit [N]` prints the last N calls (docs/plans/M3/M3-step3-audit-command.md)."""
     args = sys.argv[1:]
     if args == ["setup"]:
-        sys.exit(rootfs.setup_main())
+        from vestibule import setup_cli  # a terminal command: the server never needs it
+
+        sys.exit(setup_cli.main())
     if args[:1] == ["audit"]:
         from vestibule import audit_cli  # a terminal command: its stdout is the user's
 

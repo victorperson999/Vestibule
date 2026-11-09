@@ -815,11 +815,35 @@ class ContainerBackend(Warden):
             # check (M1 step 6 plan §2).
             raise RunRefusedError(
                 f"image {image} is not usable ({reason}). If it is missing, run "
-                f"`{self._runtime} pull {image}` once and retry; Vestibule never "
-                f"pulls images itself. If {self._runtime} itself is not responding, "
+                f"`{self._runtime} pull {image}` once and retry; a tool call never "
+                f"pulls images. If {self._runtime} itself is not responding, "
                 f"start it{START_HINTS.get(self._runtime, '')}, then retry."
             )
         self._image_ids[image] = out.strip() or None
+
+    async def image_present(self, image: str) -> bool | None:
+        """`setup`'s image step (M4 P4): True, False, or None when the runtime gave no answer."""
+        res = await self._cli_status("image", "inspect", "--format", "{{.Id}}", image)
+        return None if res is None else res[0] == 0
+
+    async def pull_image(self, image: str) -> int:
+        """`<runtime> pull`; its exit code. Only `setup` calls this, never a tool call (D2). The
+        runtime's progress goes to stderr, because stdout is never ours to write (golden rule 1).
+        A line-speed wait, so nothing bounds it: the user sees the progress and has Ctrl+C."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self._runtime, "pull", image,
+                stdin=asyncio.subprocess.DEVNULL, stdout=2, stderr=2,
+            )
+        except OSError as e:
+            log.error("%s pull: cannot spawn: %s", self._runtime, e)
+            return 127
+        try:
+            return await proc.wait()
+        except asyncio.CancelledError:  # Ctrl+C: never leave the CLI running unowned
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            raise
 
     async def _cli_status(
         self, *args: str, timeout: float = _CLEANUP_STEP_S

@@ -200,6 +200,15 @@ Today the README has three setup paths:
   `setup` exits 0 when the final check says ready, whatever an optional step skipped.
 - **(2) Keep the `docker pull` lines.** No code; the README stays per platform.
 
+> **Amendment 2026-11-08 (step 2, [`M4-step2-setup.md`](M4-step2-setup.md) §4, approved by Victor):**
+> - `setup` pulls only the images that are missing, so a second run needs no network.
+> - An image the machine needs that wasn't confirmed or pulled exits 1, even when the check
+>   says `container`. The probe uses only the python image, so otherwise every node run
+>   would be `Blocked:` after a `ready`. On a native or native-degraded result it changes
+>   nothing.
+> - `VESTIBULE_BACKEND` narrows what a machine needs: `container` skips the trees, `native`
+>   skips the images, `naive` skips both. A root user skips the trees too.
+
 ### P5 (Victor, 2026-11-07: (1)) — Does setup end with a readiness check?
 
 - **(1) Recommended: yes, run the server's real selection once and print what it returns.**

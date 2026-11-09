@@ -1335,7 +1335,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   sweep of run dirs a hard kill leaves. Victor kept F3's layout over `skeptic`'s
   `~/.vestibule/runs` alternative, and took T1–T3 as written: undated dirs are skipped
   silently, pre-M4 leftovers stay, and a host on full native never sweeps.
-- **Step 1 done 2026-11-08** ([plan](plans/M4/M4-step1-run-dir-sweep.md)), commit pending.
+- **Step 1 done 2026-11-08** ([plan](plans/M4/M4-step1-run-dir-sweep.md)), commit `7e977fb`.
   - **What changed:** a container run's script folder now has its deadline in its name, and
     on Linux and macOS its parent folder has the server's pid. Each reaper pass first removes
     folders more than 60 s past their deadline, and empty parents whose server is gone. So a
@@ -1345,3 +1345,22 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **What stays:** folders from before this step are never removed, a host on full native
     never sweeps, and one narrow Linux case can leave two empty root-owned folders until
     reboot (the plan's §5).
+- **Step 2's plan signed off 2026-11-08** ([plan](plans/M4/M4-step2-setup.md)): one `setup` on
+  every platform that ends in the real readiness check. Victor took T1–T4: an image the machine
+  needs that couldn't be pulled exits 1 even when the check says `container`; only missing images
+  are pulled; `setup` prints its own report, not the server's log lines; a `docker pull` has no
+  time limit once started. Victor also agreed to one live run on the Ubuntu VM after the gate.
+- **Step 2 done 2026-11-09** ([plan](plans/M4/M4-step2-setup.md)), commit pending.
+  - **What changed:** `vestibule-mcp setup` is now one command on every platform. It downloads
+    only what the machine can use: no native trees where user namespaces are refused or for a
+    root user, no images where native is full. It ends with the server's real selection and
+    prints `ready in this terminal's environment: isolation X`, or the exact `Blocked:` fix,
+    plus what can differ for a client started another way.
+  - **Messages:** a certificate failure names `ca-certificates`, a probe failure under snap
+    Docker names the snap and Docker's apt repo, and a host that refuses user namespaces is
+    no longer sent back to `setup`.
+  - **How it was checked:** 53 of 53 mutants caught, the gate is green on both platforms,
+    and a live run on the stock Ubuntu VM showed the real AppArmor refusal, the pulls, and a
+    first tool call matching `setup`'s answer.
+  - **What stays:** snap Docker still downloads the two images before its real probe fails,
+    and the README keeps its two `docker pull` lines until step 4.

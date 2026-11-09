@@ -11,6 +11,8 @@ import asyncio
 import os
 import platform
 import secrets
+import subprocess
+import sys
 import time
 
 import pytest
@@ -133,6 +135,53 @@ async def test_no_rootfs_gives_the_exact_setup_line(selector, lim, tmp_path):
     empty = tmp_path / "empty-rootfs"
     msg = await _blocked(selector, lim(backend="native", rootfs_dir=str(empty)))
     assert f"`VESTIBULE_ROOTFS_DIR={empty} " in msg and "vestibule-mcp setup`" in msg
+
+
+async def test_no_rootfs_where_namespaces_are_refused_names_that_not_setup(selector, lim, tmp_path,
+                                                                           monkeypatch):
+    """M4 P4: `setup` skips the trees on such a host, so sending the user back to it is a circle
+    (criterion 4)."""
+    monkeypatch.setattr(select_mod, "userns_problem", lambda: "native sandboxes can't start (x)")
+    msg = await _blocked(selector, lim(backend="native", rootfs_dir=str(tmp_path / "empty")))
+    assert "native sandboxes can't start (x)" in msg and "vestibule-mcp setup" not in msg
+
+
+def test_the_namespace_check_passes_where_native_works():
+    """The ids must be read before `unshare`: after it they read as the overflow id, and mapping
+    that is refused, a false refusal on a host where native works (found by this step's spike)."""
+    assert select_mod.userns_problem() is None
+
+
+def test_a_real_refusal_gets_its_reason_and_hint():
+    """A real refusal, in a user namespace of its own where the limit is 0."""
+    code = "from vestibule.backends.select import userns_problem as u; print(u())"
+    r = subprocess.run(
+        ["unshare", "-Ur", "sh", "-c",
+         'echo 0 > /proc/sys/user/max_user_namespaces && exec "$PY" -c "$CODE"'],
+        env={**os.environ, "PY": sys.executable, "CODE": code},
+        capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+    assert "native sandboxes can't start on this host" in r.stdout, r.stdout + r.stderr
+    assert "unshare: No space left" in r.stdout and "user.max_user_namespaces=0" in r.stdout
+
+
+@pytest.mark.parametrize("name", ["setgroups", "uid_map", "gid_map"])
+def test_the_probe_reports_a_refused_write(name):
+    """Stock Ubuntu lets `unshare` through and refuses `setgroups` (M4 step 0's log). This kernel
+    can't, so the real probe runs with one open refused the way AppArmor refuses it."""
+    path = f"/proc/self/{name}"
+    refuse = (
+        "import builtins\n"
+        "real = builtins.open\n"
+        "def fake(path, *a, **k):\n"
+        f"    if path == {path!r}:\n"
+        "        raise PermissionError(13, 'Permission denied', path)\n"
+        "    return real(path, *a, **k)\n"
+        "builtins.open = fake\n"
+    )
+    r = subprocess.run([sys.executable, "-I", "-B", "-c", refuse + select_mod._USERNS_PROBE],
+                       capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
+    assert r.returncode == select_mod._USERNS_REFUSED, r.stderr
+    assert r.stderr == f"[Errno 13] Permission denied: '{path}'"
 
 
 @docker_required
