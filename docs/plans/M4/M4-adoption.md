@@ -300,6 +300,10 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
   there, and the README says so.
 - **(2) No macOS run.** The README says "never run on macOS".
 
+> **Amendment 2026-11-09 (step 3, [`M4-step3-release.md`](M4-step3-release.md) §4, approved by Victor):**
+> `tests/test_stdio_e2e.py` is Docker-marked and these runners have no Docker, so on macOS "the
+> stdio end-to-end tests" means the smoke test's real stdio session, plus `test_signals.py`.
+
 ### Fixed decisions
 
 **F1 — The release.**
@@ -322,6 +326,12 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
   render check of the PyPI description (`twine check`).
 - **Victor uploads** (`uv publish` with his token). A release is outward-facing and can't be
   taken back, so Claude never runs it.
+
+> **Amendment 2026-11-09 (step 3, [`M4-step3-release.md`](M4-step3-release.md) §4, approved by Victor):**
+> - The re-freeze moves only what the release wheel pulls in. The dev tools and what only they
+>   need stay at their pins, so the gate's own checks don't change with the set they check.
+> - Before the upload, `release_smoke.py smoke` fails on any package a fresh install gets that
+>   neither gate ran.
 
 **F2 — The release checklist** (a new `RELEASE.md` under `docs/`, and a smoke script).
 - **Build from a clean export** (`git archive HEAD`), never the working tree, and give the

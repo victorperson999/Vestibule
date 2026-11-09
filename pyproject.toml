@@ -1,17 +1,32 @@
 [project]
 name = "vestibule-mcp"
-version = "0.0.1"
+version = "0.1.0"
 description = "A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Victor" }]
 keywords = ["mcp", "sandbox", "ai-agents", "code-execution", "security", "isolation"]
-dependencies = [
-    # <2: mcp 2.x replaced the low-level Server API this server is written against.
-    # Moving to 2.x is a planned task (docs/BUILD_LOG.md known issues).
-    "mcp>=1.28.1,<2",
+# Only what the gates and the release smoke actually ran (M4 F1).
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
+dependencies = [
+    # The minor both gates ran (M4 P2). Move it with requirements/constraints.txt. mcp 2.x
+    # replaced the low-level Server API, and that move is its own milestone (docs/BUILD_LOG.md).
+    "mcp>=1.30.0,<1.31",
+]
+
+[project.urls]
+Homepage = "https://github.com/victorperson999/Vestibule"
+Issues = "https://github.com/victorperson999/Vestibule/issues"
 
 [project.optional-dependencies]
 # M2 step 5 (N4): seccomp is now a required hard control for native isolation, via our own
@@ -28,6 +43,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vestibule"]
+
+[tool.hatch.build.targets.sdist]
+# Explicit: a build otherwise ships everything git doesn't ignore (M4 F2).
+include = ["/src/vestibule", "/README.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.ruff]
 line-length = 100

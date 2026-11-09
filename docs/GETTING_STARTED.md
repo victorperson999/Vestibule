@@ -167,6 +167,11 @@ a client started another way.
 - **Tests:** the ones that fetch the real images are marked `network`; the comparison with
   `docker export` is marked `docker` too. The Linux gate runs both.
 
+## Releasing
+
+The checklist is [`RELEASE.md`](RELEASE.md). `scripts/release_smoke.py build` makes the two files from
+a clean export of `HEAD`, and `smoke` tries an install on Python 3.11 through 3.15.
+
 ## Troubleshooting
 
 - **`Blocked: …`**: the message names the fix and says what to do next.

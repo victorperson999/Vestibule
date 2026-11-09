@@ -39,21 +39,22 @@ class ConfigError(ValueError):
 # does not verify a tag that sits next to a digest, so the tag lives here instead, and
 # tests/test_container.py checks the interpreter version inside each pinned image.
 #   python  <- python:3.12-slim    node  <- node:22-slim
-# Captured 2026-10-10 from a fresh `docker pull <tag>` on Docker 28.5.1: the pull's
+# Captured 2026-11-09 from a fresh `docker pull <tag>` on Docker 28.5.1: the pull's
 # "Digest:" line matched RepoDigests, and `docker buildx imagetools inspect` showed an OCI
-# index with linux/amd64 + linux/arm64/v8. Proven 2026-10-10 under BOTH Docker Desktop image
-# stores, containerd and classic (S6-D4): pull by this exact ref into an empty store, then
-# `image inspect` + `run --pull never` (python 3.12.15, node v22.23.3) + `pytest -m docker`.
+# index with linux/amd64 + linux/arm64. Proven that day in the containerd store: pull by this
+# exact ref into a store without it, then `image inspect` + `run --pull never` (python 3.12.16,
+# node v22.23.4) + `pytest -m docker`. This reference form was proven under BOTH Docker Desktop
+# image stores on 2026-10-10 (S6-D4), which a routine re-pin doesn't repeat.
 # To re-pin, follow the plan's "Re-pin cost" (one store mode suffices for the same form).
 # On Linux, also run `vestibule-mcp setup` and `pytest -m network`: native unpacks these
 # images itself and refuses entry kinds they don't use (docs/plans/M2/M2-step2-rootfs.md S2-D2).
 DEFAULT_IMAGE_PYTHON = (
     "docker.io/library/python"
-    "@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1"
+    "@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b"
 )
 DEFAULT_IMAGE_NODE = (
     "docker.io/library/node"
-    "@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392"
+    "@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d"
 )
 
 

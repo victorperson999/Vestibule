@@ -1350,7 +1350,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   needs that couldn't be pulled exits 1 even when the check says `container`; only missing images
   are pulled; `setup` prints its own report, not the server's log lines; a `docker pull` has no
   time limit once started. Victor also agreed to one live run on the Ubuntu VM after the gate.
-- **Step 2 done 2026-11-09** ([plan](plans/M4/M4-step2-setup.md)), commit pending.
+- **Step 2 done 2026-11-09** ([plan](plans/M4/M4-step2-setup.md)), commit `ff10e3c`.
   - **What changed:** `vestibule-mcp setup` is now one command on every platform. It downloads
     only what the machine can use: no native trees where user namespaces are refused or for a
     root user, no images where native is full. It ends with the server's real selection and
@@ -1364,3 +1364,19 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     first tool call matching `setup`'s answer.
   - **What stays:** snap Docker still downloads the two images before its real probe fails,
     and the README keeps its two `docker pull` lines until step 4.
+- **Step 3's plan signed off 2026-11-09** ([plan](plans/M4/M4-step3-release.md)): the release
+  packaging. Victor took U1–U5: only the packages users install move up, the dev tools stay; this
+  session's `vestibule` MCP server is stopped once for the Windows venv rebuild; Victor runs the
+  secret scan of the history at release time, because it hasn't been scanned yet; the macOS job runs
+  after the usual pull request; and on macOS the stdio end-to-end check is the smoke test's stdio run.
+- **Step 3 done 2026-11-09** ([plan](plans/M4/M4-step3-release.md)), commit pending. Nothing was
+  published.
+  - **What changed:** version 0.1.0 and its metadata. The sdist is 27 files, not 113. The
+    dependency set is what a fresh install gets today, `mcp` 1.30.0 included, and the published
+    range is that minor. Both images are re-pinned. New: the release checklist
+    ([`RELEASE.md`](RELEASE.md)), `scripts/release_smoke.py`, and a manual macOS job.
+  - **How it was checked:** the real smoke passed on Python 3.11 through 3.15, on Windows and in
+    WSL. Each stage was shown to fail on a bad wheel or a bad state. 41 of 41 mutants caught, and
+    the gate is green on both platforms.
+  - **What stays:** the history hasn't been scanned for secrets (Victor runs it from the
+    checklist), and the macOS job hasn't run: it needs the workflow on `main`.

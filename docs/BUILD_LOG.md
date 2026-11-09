@@ -58,7 +58,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M3 step 5b | Live checks (Linux and Windows Claude Code) + docs pass; **M3 accepted** (no `src/` change) | 2026-11-07 | `c615671` | 819 Linux (0 skipped); 641 + 158 POSIX/Linux-only skips on Windows |
 | M4 step 0 | Spike: install, first-run and client `PATH` facts on Windows, WSL, three Hyper-V VMs and two GUI clients (no repo code) | 2026-11-08 | `6798fe2`, `f5e8eb0`, `f5b3659` | no test change |
 | M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | `7e977fb` | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
-| M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | pending | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
+| M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
+| M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | pending | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -133,9 +134,51 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 2 — one `setup` on every platform, ending in a readiness check (2026-11-09)
+## M4 step 3 — the release packaging (2026-11-09)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step3-release.md`](plans/M4/M4-step3-release.md) (v2 after the
+  `skeptic` review, signed 2026-11-09). The review record and as-built are its §11 and §12. It adds
+  dated amendments to F1 and P9 in [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **What:**
+  - **`pyproject.toml`:** 0.1.0, the URLs, Alpha, classifiers for what ran, `mcp>=1.30.0,<1.31`, and an
+    sdist include list.
+  - **`requirements/constraints.txt`:** what the release wheel resolves to today (20 lines moved). The
+    dev tools and what only they need stayed.
+  - **`config.py`, `README.md`:** the images re-pinned by M1 S6's procedure.
+  - **`scripts/release_smoke.py` (new):** `build` (a clean export, the sdist's file list, V13's files, no
+    CRLF, `twine check`, and only then `dist/`) and `smoke` (an install on each Python, its location
+    and release level, drift against the constraints, `setup`, a real stdio session, `audit`, and
+    `test_stdio_e2e.py` against that install).
+  - **`docs/RELEASE.md` (new), `.github/workflows/macos.yml` (new).**
+  - **`tests/stdioutil.py`:** `StdioServer.start(exe=)` and `VESTIBULE_TEST_SERVER_EXE`, which
+    `check_env.py` refuses to see set. `tests/test_shutdown.py`'s `/proc` tests are Linux-only now.
+- **Found:**
+  - A plain `git archive` on this machine writes every Python source with CRLF
+    (`core.autocrlf=true`). Hatchling adds `.gitignore` and `PKG-INFO` to any sdist.
+  - `uv publish` with no files takes all of `dist/`, and `uv build` with no flags builds the wheel from
+    the sdist.
+  - An all-skipped pytest run exits 0, so the smoke's end-to-end step checks the skip reason first.
+- **Review:** `skeptic` found 19 issues on v1 (2 high, 7 medium, 10 low); `verifier` confirmed 12 of its
+  13 claims and refuted one. All were taken. The two high ones: the smoke could have driven the wrong
+  binary after the first Python, and a failed build could have left artifacts where the upload takes
+  them. `critic` found 1 medium and 3 low on the diff; `verifier` confirmed all 4, and all are fixed.
+- **Real smoke:** Python 3.11 through 3.15 on Windows (`container`) and WSL (`native`). Each stage was
+  shown to fail on a bad wheel or a bad state.
+- **Mutants:** 41 of 41 caught on their named tests after a green control.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (380 s of 540): 3.14 full suite
+  1014 passed, 0 skipped; 3.11 Docker-free 964; stdio 7. Windows: 826 passed, plus 168
+  POSIX/Linux-only skips, none of them for Docker.
+- **Where to start if it breaks:**
+  - **`build` fails on the sdist or the wheel:** `sdist_problems`, `wheel_problems` and the include
+    list in `pyproject.toml`.
+  - **`smoke` reports drift:** a package moved since the re-freeze. `docs/RELEASE.md`, step 2.
+  - **`check_env` fails on `VESTIBULE_TEST_SERVER_EXE`:** a shell still has it set from a smoke run.
+  - **The macOS job fails:** only real runs can show it. `tests/test_signals.py` has a 0.1 s window.
+
+## M4 step 2 — one `setup` on every platform, ending in a readiness check (2026-11-09)
+
+- **Commit:** `ff10e3c`.
 - **Plan:** [`docs/plans/M4/M4-step2-setup.md`](plans/M4/M4-step2-setup.md) (v2 after the `skeptic`
   review, signed 2026-11-08). The review record and as-built are its §11 and §12. It adds a dated
   amendment to P4 in [`M4-adoption.md`](plans/M4/M4-adoption.md).

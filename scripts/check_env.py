@@ -14,7 +14,9 @@ The rules:
 - this project must be installed, and `import vestibule` must resolve to THIS checkout's
   `src/`. The Linux venvs live outside the repo, so a gate run from a second clone would
   otherwise test the first clone's code;
-- with --expect-python X.Y, the interpreter must be that version.
+- with --expect-python X.Y, the interpreter must be that version;
+- VESTIBULE_TEST_SERVER_EXE must be unset: it points the stdio tests at another install, for
+  scripts/release_smoke.py, and a gate has to test this checkout.
 
 pip never uninstalls, so a stale package left by an earlier install fails here instead of
 quietly changing what the tests run against.
@@ -104,6 +106,8 @@ def main() -> int:
     have = "%d.%d" % sys.version_info[:2]
     if args.expect_python and have != args.expect_python:
         bad.append(f"this venv runs Python {have}, expected {args.expect_python}")
+    if os.environ.get("VESTIBULE_TEST_SERVER_EXE"):
+        bad.append("VESTIBULE_TEST_SERVER_EXE is set, so the stdio tests would drive that install")
     bad += binding_problems()
     bad += package_problems(read_constraints(args.constraints))
     where = f"{sys.executable} (Python {sys.version.split()[0]})"

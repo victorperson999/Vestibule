@@ -28,9 +28,10 @@ from pathlib import Path
 
 from mcp.types import LATEST_PROTOCOL_VERSION
 
-SERVER_EXE = Path(sys.executable).parent / (
+# VESTIBULE_TEST_SERVER_EXE: another install to test, for scripts/release_smoke.py.
+SERVER_EXE = Path(os.environ.get("VESTIBULE_TEST_SERVER_EXE") or Path(sys.executable).parent / (
     "vestibule-mcp.exe" if os.name == "nt" else "vestibule-mcp"
-)
+))
 # The MCP Python SDK's PROCESS_TERMINATION_TIMEOUT (S7-D1).
 CLIENT_GRACE_S = 2.0
 # A container run logs "spawning"; a native one "starting a native sandbox" (M2 step 6).
@@ -61,18 +62,18 @@ class StdioServer:
     @classmethod
     async def start(cls, workspace: Path, settings: dict[str, str] | None = None,
                     base_env: dict[str, str] | None = None,
-                    stderr: int | None = None) -> "StdioServer":
+                    stderr: int | None = None, exe: Path | None = None) -> "StdioServer":
         # The dev shell's own VESTIBULE_* settings must not leak into the server under test.
         # `base_env` replaces the inherited environment (criterion 17's minimal launch).
         # `stderr`: an fd the server writes its log to instead, which nobody here reads
-        # (M3 step 4's client that never reads stderr).
+        # (M3 step 4's client that never reads stderr). `exe`: an install other than SERVER_EXE.
         source = os.environ if base_env is None else base_env
         env = {k: v for k, v in source.items() if not k.startswith("VESTIBULE_")}
         env["VESTIBULE_WORKSPACE"] = str(workspace)
         env["VESTIBULE_AUDIT_DIR"] = str(workspace.parent / "audit")  # never the user's own
         env.update(settings or {})
         proc = await asyncio.create_subprocess_exec(
-            str(SERVER_EXE),
+            str(exe or SERVER_EXE),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE if stderr is None else stderr,
