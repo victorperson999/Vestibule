@@ -7,8 +7,12 @@ the exact case GitHub and Linux will need. Dated records are exempt and stay ver
 the CLAUDE.md changelog, docs/reviews/, and docs/archive/. So are git worktrees under
 .claude/worktrees/, which are other checkouts, not live docs.
 """
+import ast
 import os
 import re
+import shutil
+import subprocess
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -25,7 +29,7 @@ _NOT_YET_BUILT: frozenset[str] = frozenset()
 
 
 def _scanned() -> list[Path]:
-    files = [ROOT / "README.md", ROOT / "CLAUDE.md"]
+    files = [ROOT / "README.md", ROOT / "CLAUDE.md", ROOT / "SECURITY.md"]
     for folder, pattern in (
         ("docs", "*.md"), (".claude", "*.md"), ("src", "*.py"), ("tests", "*.py"),
     ):
@@ -95,7 +99,7 @@ def _broken(path: Path) -> list[str]:
 
 def test_scan_covers_the_live_docs_source_and_tests():
     rels = {f.relative_to(ROOT).as_posix() for f in _scanned()}
-    assert {"README.md", "CLAUDE.md", "docs/HISTORY.md", ".claude/WORKFLOW.md",
+    assert {"README.md", "CLAUDE.md", "SECURITY.md", "docs/HISTORY.md", ".claude/WORKFLOW.md",
             "src/vestibule/server.py", "tests/test_acceptance.py",
             "tests/test_docs.py"} <= rels
     assert not any(r.startswith(_EXEMPT) for r in rels)
@@ -136,3 +140,186 @@ def test_not_yet_built_entries_are_really_not_built():
 def test_every_docs_reference_points_at_an_existing_file():
     broken = [b for f in _scanned() for b in _broken(f)]
     assert broken == [], "stale references:\n" + "\n".join(broken)
+
+
+# M4 step 4 (docs/plans/M4/M4-step4-docs.md §2.9, §5): the README is also the PyPI page,
+# which breaks relative links and drops GitHub's heading ids. So every README link is an
+# https:// URL, and the checks the relative forms got above are made on the URLs instead.
+_README = ROOT / "README.md"
+_NOT_HTTPS = re.compile(r"\]\((?!https://)([^)\n]*)")  # any `](`, however it's written
+_RAW_LINK_HTML = re.compile(r"<(?:a|img)[\s/>]", re.I)
+_REF_DEFINITION = re.compile(r" {0,3}\[[^\]\n]+\]:")  # every reference-style link needs one
+_REPO = r"victorperson999/Vestibule"  # GitHub takes the owner and the repo in any case
+_HEADING_LINK = re.compile(rf"https://github\.com/{_REPO}/?#([^\s)\]>\"'`]*)", re.I)
+_FILE_ANCHOR = re.compile(  # groups: the file, the id
+    rf"https://github\.com/{_REPO}/blob/main/([^\s)\]>\"'`#?]+)(?:\?[^\s)\]>\"'`#]*)?"
+    r"#([^\s)\]>\"'`]*)",
+    re.I,
+)
+_HOME_QUERY = re.compile(rf"https://github\.com/{_REPO}/?\?", re.I)  # ?tab=readme-ov-file
+_GITHUB = re.compile(  # any GitHub URL; groups: the site, the owner/repo, the rest
+    r"(https?://(?:www\.)?github\.com|https?://raw\.githubusercontent\.com)"
+    r"/([^/\s)\]>\"'`#?]*/?[^/\s)\]>\"'`#?]*)([^\s)\]>\"'`]*)",
+    re.I,
+)
+_SITES = ("https://github.com", "https://raw.githubusercontent.com")  # as the README writes them
+_ON_MAIN = re.compile(r"(?:(blob|tree|raw)/)?main(?:/(.*))?")  # groups: the kind, the path
+_IMAGE = re.compile(r"!\[(?:[^\[\]\n]|\[[^\[\]\n]*\])*\]\(\s*<?([^)\s>]+)")  # group: its URL
+# Pages of this repo besides its own page, its files and its folders that the README may link,
+# such as "issues". It links none today.
+_REPO_PAGES: frozenset[str] = frozenset()
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_ATX_HEADING = re.compile(r" {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+
+
+def _github_slug(heading: str) -> str:
+    """github-slugger's rule, which GitHub's heading ids follow: lowercase, keep letters,
+    marks, digits, `_`, `-` and spaces, and make each space a hyphen."""
+    kept = [
+        c for c in heading.lower()
+        if c in " -" or unicodedata.category(c)[0] in "LM"
+        or unicodedata.category(c) in ("Nd", "Pc")
+    ]
+    return "".join(kept).replace(" ", "-")
+
+
+def _heading_ids(text: str) -> set[str]:
+    """The ids GitHub gives a page's ATX headings, a repeated one numbered -1, -2, ..."""
+    seen: dict[str, int] = {}
+    fence = None
+    for line in text.splitlines():
+        if m := _FENCE.match(line):
+            if fence is None:
+                fence = m.group(1)
+            elif m.group(1).startswith(fence):  # the same character, at least as many
+                fence = None
+        elif fence is None and (h := _ATX_HEADING.match(line)):
+            base = slug = _github_slug(h.group(1))
+            while slug in seen:
+                seen[base] += 1
+                slug = f"{base}-{seen[base]}"
+            seen[slug] = 0
+    return set(seen)
+
+
+def test_readme_links_are_absolute():
+    bad = []
+    for lineno, line in enumerate(_text(_README).splitlines(), 1):
+        prose = _CODE_SPAN.sub("", line)
+        bad += [f"README.md:{lineno}: ]({t})" for t in _NOT_HTTPS.findall(prose)]
+        if _RAW_LINK_HTML.search(prose) or _REF_DEFINITION.match(prose):
+            bad.append(f"README.md:{lineno}: {line.strip()}")
+    assert bad == [], "not an https:// link, which PyPI needs:\n" + "\n".join(bad)
+
+
+def _git_ignored(paths: list[str]) -> set[str]:
+    """Which of these paths git ignores: they are never pushed, so a link to one 404s. A tree
+    without .git (one exported from the repo) has no ignore rules to apply, so none."""
+    if not paths or not (ROOT / ".git").exists():
+        return set()
+    git = shutil.which("git")
+    assert git, "this is a git checkout, but git isn't on PATH to read its ignore rules"
+    done = subprocess.run(  # no shell; check-ignore only reads, and no optional index refresh
+        [git, "-C", str(ROOT), "check-ignore", "-z", "--stdin"],
+        input="\0".join(paths), capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}, timeout=60,
+    )
+    assert done.returncode in (0, 1), f"git check-ignore failed: {done.stderr}"  # 1: none
+    return set(done.stdout.split("\0")) - {""}
+
+
+def test_readme_links_into_this_repo_exist():
+    seen, bad, paths = 0, [], []
+    for lineno, line in enumerate(_text(_README).splitlines(), 1):
+        for url in _IMAGE.findall(_CODE_SPAN.sub("", line)):  # a blob/ URL is a page, not bytes
+            g = _GITHUB.match(url)
+            if g and g.group(1).lower() != _SITES[1] and not g.group(3).startswith("/raw/"):
+                bad.append(f"README.md:{lineno}: {url} (an image needs a raw URL)")
+        for m in _GITHUB.finditer(line):  # the README links no other GitHub repo
+            site, repo, rest = m.groups()
+            where = f"README.md:{lineno}: {m.group(0)}"
+            page = re.split(r"[?#]", rest, maxsplit=1)[0].strip("/")
+            on_main = _ON_MAIN.fullmatch(page)
+            raw = site.lower() == _SITES[1]
+            clone = not rest and repo.lower() == f"{_REPO}.git".lower()  # git clone's URL
+            if site.lower() not in _SITES:
+                bad.append(f"{where} (write it as {_SITES[0]}/... or {_SITES[1]}/...)")
+            elif repo.lower() != _REPO.lower() and not clone:
+                bad.append(f"{where} (not this repo)")
+            elif not raw and (page == "" or page in _REPO_PAGES):
+                continue  # the repo's own page: the heading test checks its #id
+            # github.com puts blob/, tree/ or raw/ before the branch; raw.githubusercontent none
+            elif not on_main or (on_main.group(1) is None) != raw:
+                bad.append(f"{where} (only blob/, tree/ and raw links on main)")
+            else:
+                seen += 1
+                path = (on_main.group(2) or "").rstrip("/")
+                kind = "raw" if raw else on_main.group(1)
+                if "#" in rest and kind != "blob":
+                    bad.append(f"{where} (an #id here can't be checked)")
+                elif not path and kind != "tree":  # tree/main alone is the root folder
+                    bad.append(f"{where} (names no file)")
+                elif ".." in path.split("/") or not _exists_exactly(ROOT / path):
+                    bad.append(f"{where} (no such path)")
+                elif kind == "raw" and not (ROOT / path).is_file():  # blob/tree: GitHub redirects
+                    bad.append(f"{where} (a raw URL names a file, not a folder)")
+                elif path:
+                    paths.append((where, path))
+    ignored = _git_ignored([path for _, path in paths])
+    bad += [f"{where} (git ignores it)" for where, path in paths if path in ignored]
+    assert bad == [], "links into GitHub that won't work there:\n" + "\n".join(bad)
+    assert seen, "found no link to a file or folder of this repo, so none was checked"
+
+
+def test_readme_heading_links_resolve():
+    """Permanent: step 5's fix loop is when the README's headings change. A link to a
+    heading of another file in the repo is held to that file's headings."""
+    text = _text(_README)
+    ids = {"README.md": _heading_ids(text)}
+    links, bad = 0, []
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if _HOME_QUERY.search(line):
+            bad.append(f"README.md:{lineno}: a query on the repo's page; link .../Vestibule#id")
+        own = [("README.md", slug) for slug in _HEADING_LINK.findall(line)]
+        links += len(own)
+        for path, slug in own + _FILE_ANCHOR.findall(line):
+            if path not in ids:
+                md = path.endswith(".md") and _exists_exactly(ROOT / path)
+                ids[path] = _heading_ids((ROOT / path).read_text(encoding="utf-8")) if md else set()
+            if slug not in ids[path]:
+                bad.append(f"README.md:{lineno}: {path}#{slug}")
+    assert links, "found no link to a heading, so nothing was checked"
+    assert bad == [], "heading links that don't resolve on GitHub:\n" + "\n".join(bad)
+
+
+# SECURITY.md ends each claim with its source; a test or test file it names must exist.
+_SECURITY = ROOT / "SECURITY.md"
+_CITATION = re.compile(r"(?<![\w/.-])([\w./-]+\.py)\b(?:::(\w+))?")  # groups: file, test
+
+
+def _test_names(path: Path) -> set[str]:
+    return {
+        node.name for node in ast.parse(path.read_text(encoding="utf-8")).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test")
+    }
+
+
+def test_security_md_cites_only_what_exists():
+    tests = files = 0
+    bad = []
+    for lineno, line in enumerate(_text(_SECURITY).splitlines(), 1):
+        for m in _CITATION.finditer(line):
+            path, test = m.groups()
+            if not path.startswith("tests/"):  # other .py files may be named in prose
+                if test or Path(path).name.startswith("test_"):
+                    bad.append(f"SECURITY.md:{lineno}: {m.group(0)} (cite it from tests/)")
+                continue
+            if test:
+                tests += 1
+            else:
+                files += 1
+            if not _exists_exactly(ROOT / path) or (test and test not in _test_names(ROOT / path)):
+                bad.append(f"SECURITY.md:{lineno}: {m.group(0)}")
+    assert tests and files, f"found {tests} test and {files} file citations; expected both"
+    assert bad == [], "no such test or file:\n" + "\n".join(bad)

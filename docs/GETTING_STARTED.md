@@ -1,6 +1,6 @@
 # Vestibule — developer guide
 
-For working on Vestibule itself. To just *use* it, follow **One-time setup** in the
+For working on Vestibule itself. To just *use* it, follow **Quick start** in the
 [README](../README.md). The original Milestone-0 scaffold walkthrough is archived at
 [`archive/M0-scaffold-walkthrough.md`](archive/M0-scaffold-walkthrough.md).
 
@@ -20,7 +20,7 @@ python -m venv .venv
 venv is identical on every platform. Without it, pip picks the newest versions allowed by
 `pyproject.toml`. Changing a pin is a deliberate commit; the file's header says how.
 
-Then run `vestibule-mcp setup` once (the README's **One-time setup**). It gets what this machine
+Then run `vestibule-mcp setup` once (the README's **Quick start**). It gets what this machine
 can use, and pulls the two pinned sandbox images where the container backend needs them. A tool
 call never pulls anything.
 

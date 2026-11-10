@@ -1369,7 +1369,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   session's `vestibule` MCP server is stopped once for the Windows venv rebuild; Victor runs the
   secret scan of the history at release time, because it hasn't been scanned yet; the macOS job runs
   after the usual pull request; and on macOS the stdio end-to-end check is the smoke test's stdio run.
-- **Step 3 done 2026-11-09** ([plan](plans/M4/M4-step3-release.md)), commit pending. Nothing was
+- **Step 3 done 2026-11-09** ([plan](plans/M4/M4-step3-release.md)), commit `cbf6424`. Nothing was
   published.
   - **What changed:** version 0.1.0 and its metadata. The sdist is 27 files, not 113. The
     dependency set is what a fresh install gets today, `mcp` 1.30.0 included, and the published
@@ -1380,3 +1380,63 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     the gate is green on both platforms.
   - **What stays:** the history hasn't been scanned for secrets (Victor runs it from the
     checklist), and the macOS job hasn't run: it needs the workflow on `main`.
+- **Step 4's plan signed off 2026-11-09** ([plan](plans/M4/M4-step4-docs.md)): the README,
+  `SECURITY.md` and the demo GIF. Victor took option (1) on V1–V4. The live client sessions and a dry
+  run on the two Linux VMs happen in this step, before the README is frozen. The headline is reworded,
+  because an agent on a hosted model does send its code and output to that model's provider. The GIF
+  is made with `asciinema` and `agg`. And `read_workspace`'s check-then-open race, which M1 accepted
+  as a residual, is fixed before the release, as a small step of its own: the review reproduced it
+  with a swap made from the host, and the tool returned a file from outside the workspace.
+- **The `read_workspace` race fix's plan signed off 2026-11-09**
+  ([plan](plans/M4/M4-step4-workspace-race.md)): V4's small step. Victor took option (1) on X1–X3.
+  The tool will open each part of a path once, from the folder it already holds open, and never
+  follow a link, on every platform. On Windows that is the same walk as on Linux, through the
+  native `NtOpenFile` call, which changes the Windows half of V4's sentence (a check of the opened
+  handle's path): that check stopped the leak but left a racing guest able to learn whether a host
+  path exists. The old by-name check is removed, because the review showed it gave that away on
+  Linux too. The FIFO hang goes in with it, and Windows lists a folder through its handle.
+- **The `read_workspace` race fix — done 2026-11-09** (commit `364f975`;
+  [plan](plans/M4/M4-step4-workspace-race.md), §10 as built).
+  - **What it does now:** the tool opens each part of a path once, from the folder it already
+    holds open, and never follows a link. A guest that swaps a folder for a link while the tool
+    runs gets a refusal, or the real folder.
+  - **How bad it was:** with a real sandboxed guest doing the swap in a loop, 8,003 of 226,507
+    reads on Linux returned a file from outside the workspace, and 5 of 23,513 on Windows. After
+    the fix: none in 589,063 and none in 51,562.
+  - **Three more things the same change closed:** a guest could hang a call for good with a
+    FIFO, stall it 45 s with a file lease, and learn whether a file exists on the host.
+  - **One bug found on the way, and fixed here by Victor's choice:** a file whose name isn't
+    valid text stopped the whole server at the next directory listing. It now shows with a
+    replacement character.
+  - **What it leaves, stated:** a Windows server whose workspace is on a network or WSL share
+    still walks by name, and a racing guest can hold one call for about 10 s there. A file name
+    can make a listing look like it has more entries on a Linux host, and a listing isn't cut to
+    the output cap. These are in BUILD_LOG's known issues.
+  - **How it was checked:** every test was red on the old code first. 34 of 35 mutants were
+    caught, and the last can't fail on a default Windows. `critic` reviewed the diff twice, and
+    the gate is green on both platforms. macOS hasn't run: Victor runs the manual job on the
+    branch after the push.
+- **Step 4a — done 2026-11-09** (commit pending; [plan](plans/M4/M4-step4-docs.md), §13 as
+  built): the README and `SECURITY.md`.
+  - **The README is written for a stranger now.** It says what is and isn't sandboxed (only code
+    sent to `run_code`), gives a quick start per platform that starts from `uv tool install
+    vestibule-mcp`, shows the config for each client with what tested it, and ends with how to
+    uninstall. Its headline no longer says nothing is sent to a cloud service: an agent on a
+    hosted model does send its code and output to that model's provider.
+  - **`SECURITY.md` exists.** It says what is out of a run's reach when the result says `native`
+    or `container`, what stays possible, how each verdict is reached, and 14 things it leaves
+    open, each with where the claim comes from.
+  - **Victor tested it by hand:** Claude Code on Windows and in WSL with the short name, Cursor
+    and Claude Desktop on Windows, and the quick start's lines up to `setup` on a fresh Debian VM
+    and a fresh Ubuntu VM, with a local build standing in for the PyPI name. All passed.
+  - **The macOS job ran for the first time and passed** (849 passed, 29 skipped). No sandboxed
+    run has been made on a Mac, and both documents say so.
+  - **Private vulnerability reporting is on,** so the link in `SECURITY.md` works.
+  - **What the sessions corrected:** the "sandbox-only" line removes Claude Code's own tools and
+    nothing else. Other MCP servers stay until a stricter line is used, and plugins' hooks run
+    either way. The README now says all three.
+  - **How it was checked:** three review rounds on the two documents, each finding sentences
+    that claimed a little more than the code does, twice in a sentence the previous round's fix
+    had added. All confirmed findings are fixed. The doc tests were written by the new `builder`
+    agent (Opus 5.5) and shown to fail 39 ways. The gate is green on both platforms.
+  - **What's left of step 4:** 4b, the demo GIF.
