@@ -1416,7 +1416,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     caught, and the last can't fail on a default Windows. `critic` reviewed the diff twice, and
     the gate is green on both platforms. macOS hasn't run: Victor runs the manual job on the
     branch after the push.
-- **Step 4a — done 2026-11-09** (commit pending; [plan](plans/M4/M4-step4-docs.md), §13 as
+- **Step 4a — done 2026-11-09** (commit `5a1bc23`; [plan](plans/M4/M4-step4-docs.md), §13 as
   built): the README and `SECURITY.md`.
   - **The README is written for a stranger now.** It says what is and isn't sandboxed (only code
     sent to `run_code`), gives a quick start per platform that starts from `uv tool install
@@ -1440,3 +1440,28 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     had added. All confirmed findings are fixed. The doc tests were written by the new `builder`
     agent (Opus 5.5) and shown to fail 39 ways. The gate is green on both platforms.
   - **What's left of step 4:** 4b, the demo GIF.
+- **Step 4b — done 2026-11-10** (commit pending; [plan](plans/M4/M4-step4-docs.md), §14 as
+  built): the demo GIF.
+  - **What it shows, in about 20 seconds:** a fake key file that is readable on the machine,
+    then an agent asked to read it and to send something out. Both fail inside the sandbox,
+    with `No such file or directory` and `Network is unreachable`, and both results say
+    `isolation: native`.
+  - **It's a real session,** recorded by Victor in WSL, where `run_code` was the agent's only
+    way to run code. Every edit is in time, and the caption lists them: the start-up banner,
+    the pasting of the prompt and the first 2.4 s of the agent's turn are cut, pauses are
+    capped at 2 s, it plays 1.3 times faster, it ends at the second result, and the last frame
+    is held.
+  - **It took six takes.**
+    - In the first three the prompt was given on the command line and went out before the
+      server had connected, so the agent had no tools.
+    - Fable 5.2's safeguard also stopped the first two. The demo names Opus 5.5; Fable 5.2
+      wasn't tried again once the agent had its tools.
+    - In the next two the model made both calls without showing the first result, so the demo
+      asks for the two calls in two messages.
+  - **How it was checked:** what the agent typed was compared with the tool's own results and
+    matches exactly. Every screen was checked for an email or account details; the only name on
+    screen is the Linux user name in the paths, which is the GitHub name. A new test keeps the
+    file a GIF under 3 MB. `critic` reviewed the caption and the records, and its findings are
+    fixed.
+  - **What it leaves for step 5:** whether the GIF shows on the PyPI page. It can't until the
+    branch is on `main`.

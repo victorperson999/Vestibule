@@ -323,3 +323,10 @@ def test_security_md_cites_only_what_exists():
                 bad.append(f"SECURITY.md:{lineno}: {m.group(0)}")
     assert tests and files, f"found {tests} test and {files} file citations; expected both"
     assert bad == [], "no such test or file:\n" + "\n".join(bad)
+
+
+# The README's demo (M4 step 4b): criterion 7's "under 3 MB", read as 3,000,000 bytes.
+def test_demo_gif_is_under_3_mb():
+    data = (ROOT / "docs" / "demo.gif").read_bytes()  # raises if it's missing
+    assert data[:6] in (b"GIF87a", b"GIF89a"), f"docs/demo.gif isn't a GIF: it starts {data[:6]!r}"
+    assert len(data) < 3_000_000, f"docs/demo.gif is {len(data):,} bytes, not under 3 MB"

@@ -61,7 +61,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | `364f975` | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
-| M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | pending | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | `5a1bc23` | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | pending | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
 
 ## Known open issues
 
@@ -143,12 +144,74 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 4a — the README, `SECURITY.md` and their tests (2026-11-09)
+## M4 step 4b — the demo GIF (2026-11-10)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) §6 and §10; §14 is the
+  as-built. It adds a dated amendment to P7 of [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **What:**
+  - **`docs/demo.gif` (new):** 719,281 bytes, 19.7 s, 983×560, 91 frames. A real Claude Code
+    session in WSL (2.1.322, Opus 5.5, Vestibule from the development venv at `5a1bc23`) whose
+    agent was offered only Vestibule's two tools and three of Claude Code's own. A fake key is shown readable on the host. Through
+    `run_code`, reading it fails with `No such file or directory` and a connection to
+    `203.0.113.10` fails with `Network is unreachable`, each with `isolation: native`.
+  - **`README.md`:** the image under the badges, by its raw URL on `main`, and a caption that
+    says what the recording is and what was edited.
+  - **`tests/test_docs.py`:** `test_demo_gif_is_under_3_mb`.
+- **How it was made:** recorded with asciinema 2.4.0 and rendered with agg 1.9.0. Every edit
+  is in time, and no output byte before the end cut is changed or removed:
+  - one stretch takes no time: Claude Code's banner, the pasting of the prompt and the first
+    2.4 s of the agent's turn;
+  - the end is dropped just after the second result (scrolling back, Claude Code's recap,
+    `/exit`);
+  - pauses are capped at 2 s, it plays 1.3× faster, and the last frame is held 4 s.
+  - This is more than P7's 2026-11-09 list allowed; a 2026-11-10 amendment and the caption
+    name each.
+- **Checked before it was kept:**
+  - What the agent typed after each call is the tool's own result from the session's
+    transcript, character for character. The audit log has both calls as `ran`, native.
+  - Every screen state after the key listing, replayed in a terminal emulator: nothing from the
+    banner, and no email, plan or account detail. The only name is the Linux user name in the
+    paths, the repo owner's GitHub name. All 91 frames were looked at on contact sheets.
+  - Run on the host, call 2's line times out after 3 s; in the sandbox it fails at once.
+- **Found, in six takes:**
+  - **A prompt passed to `claude` as an argument can be sent before an MCP server has
+    connected.** It was in all three takes that did it: the prompt was sent 0.4 to 0.7 s before
+    Vestibule answered its tool list, and the agent was offered no tools. The prompt is pasted once the session
+    is up.
+  - **Fable 5.2's safeguard stopped the reply** in the first two of those takes, and Claude
+    Code switched the session to Opus 4.8. The demo session names Opus 5.5. Fable 5.2 wasn't
+    tried in a session that had `run_code`.
+  - **With no tools, Opus 4.8 typed a Bash call as plain text, and once an output it made
+    up.** Opus 5.5 said it had no `run_code` and stopped. Text an agent types isn't a result:
+    the comparison with the transcript is what shows the GIF's results are the tool's.
+  - **Within one turn the model went from call to call without writing text,** with both
+    prompts tried, so a result it is asked to repeat shows only at the end of a turn. The demo
+    asks for the calls in two messages.
+- **Review:** `critic` on the caption and the records: nothing high, 3 medium, 8 low.
+  `verifier` confirmed all 9 it was given, three with corrections. All fixed: the caption's
+  list of edits was incomplete, the account of the failed takes was wrong, and the kept copy of
+  the take was cut short. A second, narrow pass on the changed sentences found 5 low, fixed by
+  the main session without `verifier`.
+- **Mutants:** 3 red of 3 on `test_demo_gif_is_under_3_mb`, each after a green control, on
+  Windows 3.11 and WSL 3.14: the file padded to 3,000,000 bytes, a PNG signature, the file
+  missing.
+- **Gate:** not re-run in full: no `src/` change, and the one new test needs no sandbox.
+  `tests/test_docs.py` and `tests/test_pins.py`: 16 passed on Windows 3.11 and on Linux 3.14 and
+  3.11; ruff and mypy clean.
+- **Where to start if it breaks:**
+  - **`test_demo_gif_is_under_3_mb` fails:** the file was replaced. `m4spike\demo\HOW.txt` has
+    the commands that made it, and the take.
+  - **A new recording:** the kit is WSL's `~/vestibule-live/demo/` (`take.sh`); the cut and the
+    checks are `cut.py`, `post.py` and `check.py` in `m4spike\demo\`.
+
+## M4 step 4a — the README, `SECURITY.md` and their tests (2026-11-09)
+
+- **Commit:** `5a1bc23`.
 - **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) (v2, signed 2026-11-09
   with V1–V4; §13 is the as-built for 4a). It adds dated amendments to P6, P7, F5, §3 and
-  criterion 2 of [`M4-adoption.md`](plans/M4/M4-adoption.md). 4b, the demo GIF, is not built.
+  criterion 2 of [`M4-adoption.md`](plans/M4/M4-adoption.md). 4b, the demo GIF, has its own
+  entry above.
 - **What:**
   - **`README.md`,** rewritten for someone who has never seen the project: what is and isn't
     sandboxed, a quick start per platform with `uv tool install vestibule-mcp`, the client
