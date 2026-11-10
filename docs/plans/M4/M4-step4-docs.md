@@ -365,6 +365,15 @@ Each gets exact "type this in that window" steps when its turn comes.
   hand, and its size is harder to predict.
 
 ### V4 (Victor, 2026-11-09: (1)) — `read_workspace`'s race
+
+> **Done 2026-11-09** in its own step: [`M4-step4-workspace-race.md`](M4-step4-workspace-race.md).
+> Victor took its X3 (1), which changes the Windows half of option (1) below: Windows doesn't
+> check the opened handle's path, it does the same walk as POSIX (each name opened from the
+> folder already open, a link never followed). §3's "`read_workspace`'s jail, and its race" and
+> its added residual take that plan's §8 as their text: what holds on a local drive, what a
+> Windows server with its workspace on a network or WSL share leaves, what a directory listing
+> leaves, and that a file's content can still change while it's read.
+
 The walk checks each path component, then opens the whole path, and `O_NOFOLLOW` guards only the last
 one. A guest running at the same time can swap a checked folder for a symlink in between, and on
 Windows it can swap the last component too. `verifier` reproduced it against the real `workspace.py`,

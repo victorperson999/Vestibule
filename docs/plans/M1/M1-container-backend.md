@@ -202,6 +202,18 @@ Schema: `{ "path": string, default "." }` — relative to the workspace root onl
 
 **Then resolve and verify:** join to the workspace root, walk each component refusing symlinks/reparse points anywhere in the chain (guest-planted symlinks are the headline attack — finding 8); final containment check with `os.path.commonpath` against the resolved workspace root, never string prefix. POSIX opens use `O_NOFOLLOW`; on Windows, reparse attributes are checked pre-open. Residual TOCTOU (check-then-open race against a concurrently running guest) is documented in the tool description and SECURITY.md later — not silently ignored.
 
+> **Amendment 2026-11-09 (M4 step 4 fix, [plan](../M4/M4-step4-workspace-race.md)):** the
+> residual is closed for a workspace on a local drive, and the paragraph above no longer
+> describes the code. The lexical checks are unchanged. After them the path is opened one
+> component at a time, each name relative to the folder already held open, and a symlink or
+> reparse point is refused, never followed: `dir_fd` with `O_NOFOLLOW` on POSIX, `NtOpenFile`
+> with `FILE_OPEN_REPARSE_POINT` on Windows. A directory is listed and a file is read through
+> the descriptor the walk ended on (on Windows, a handle reopened from it for reading). Nothing
+> is checked by name and then opened by name. The by-name walk and its `commonpath` check are
+> removed: a walk that can't leave has no path to compare, and the by-name `lstat` calls told a
+> racing caller about paths outside the workspace. What it leaves, for a Windows server with its
+> workspace on a network or WSL share and for directory listings, is that plan's §8.
+
 **Results:** directory ⇒ listing (name, type, size; capped at 200 entries); file ⇒ content decoded `errors="replace"`, capped at `max_output_bytes` with a truncation marker; missing path ⇒ `Not found: <relpath>` as content. Handler never raises.
 
 Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable without Docker.

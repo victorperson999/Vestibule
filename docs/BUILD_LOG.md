@@ -60,6 +60,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | `7e977fb` | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
+| M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | pending | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -78,6 +79,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching. Possibly the zombie attach that the M3 step 5 fix now stops (a helper that exits during placement); 0 of 460 runs reproduced it |
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
 | 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
+| 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace`, Windows server with the workspace on a network or WSL share | The far side looks every name up again, so the walk is by name there, as it was before the fix. No outside content came back in tests (Windows doesn't follow a WSL share's links; other shares weren't tried). A guest that swaps a file for a FIFO at the right moment holds one call for about 10 s and leaves a reader waiting in WSL; the old code did the same. During such a race two raw `OSError`s can leave `read_workspace_entry`; the handler returns them as "Error reading workspace". | Documented residual (M4 `SECURITY.md`); non-default `VESTIBULE_WORKSPACE` |
+| 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace` listings | A guest's file names go into a listing with line breaks and control characters intact, so on a Linux or macOS host one file can look like several entries (on a Windows host they arrive as other characters). A listing isn't cut to `max_output_bytes`: at most 200 entries, about 55 KB of long names, about 156 KB if every byte of every name is invalid. And every entry of a folder is read before the cut to 200, so a guest's million files make one call slow and large. All three were there before this step. | Open; Victor's call whether before the release |
 
 **Closed:**
 - The 2026-10-11 hard-kill issue (per-run script dirs left after a hard kill) is closed by M4
@@ -133,6 +136,59 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M4 step 4 fix — `read_workspace` could return a file from outside the workspace (2026-11-09)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step4-workspace-race.md`](plans/M4/M4-step4-workspace-race.md) (v2
+  after the `skeptic` review, signed 2026-11-09 with X1–X3). Its §9 is the plan review and its §10
+  the as-built. It is V4 of [`M4-step4-docs.md`](plans/M4/M4-step4-docs.md), and it adds a dated
+  amendment to §6 of [`M1-container-backend.md`](plans/M1/M1-container-backend.md).
+- **The bug:** the tool checked a path by name, then opened it by name. A guest running at the same
+  time could swap a folder for a link in between.
+  - Measured with a real native guest: 8,003 of 226,507 reads returned a file from outside the
+    workspace. With a container guest on Windows: 5 of 23,513.
+  - The same check-then-open let a guest hang a call for good with a FIFO, stall it 45 s with a
+    file lease, and learn whether a host file exists.
+- **What:**
+  - **`workspace.py`:** each name is opened once, relative to the folder already held open, and a
+    link is refused, never followed. POSIX uses `dir_fd` with `O_NOFOLLOW` and `O_NONBLOCK`.
+    Windows uses `NtOpenFile` through `ctypes`: attributes first, then the handle reopened for
+    reading. A folder is listed, and a file read, through the descriptor or handle. `resolve_in_workspace` is gone.
+  - **A listed name that isn't valid text** shows the replacement character. Before, a guest's
+    file named with invalid UTF-8 stopped the whole server at the next listing. That was already in
+    the code, `critic` found it, and Victor chose to fix it here.
+  - **`tests/test_workspace.py`:** a stand-in for the module's `os` and its two Windows libraries
+    runs a swap just before every filesystem call in turn, and checks the answer, the opens it
+    saw, and that everything opened was closed.
+- **Found:**
+  - On Windows, a `ctypes` length field of 16 bits keeps only the low bits without complaint: a
+    32,772-character name opened the 4-character file.
+  - Docker Desktop mounts a `\\wsl.localhost\…` path as the distro's real folder, so a Windows
+    server with its workspace there gives the guest real FIFOs. Names are looked up on the far
+    side there (known issues).
+  - A held handle stops Windows renaming the folders above it, not the entry itself.
+  - Windows forces case-insensitive lookups system-wide by default, so the call's own flag can't
+    be shown to matter.
+- **Review:** `skeptic` found 12 on plan v1 (4 medium, 8 low), and `verifier` ran 7 of its claims,
+  confirming 6 and half of the seventh. All were taken, and two reshaped the plan: the by-name
+  walk went, and Windows got the same walk as POSIX. On the diff, `critic` ran twice (7 findings, then 6), `verifier`
+  confirmed all 11 it was given, and what wasn't fixed is in the known issues.
+- **Mutants:** POSIX 13 of 13 and Windows 21 of 22 red on their named tests after a green control.
+  The one left is the case-insensitive flag.
+- **Evidence after the fix:** 0 of 589,063 calls leaked against a real native guest, and 0 of
+  51,562 against a real container guest on Windows.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (451 s of 540): 3.14
+  full suite 1037 passed, 0 skipped; 3.11 Docker-free 987; stdio 7. Windows: 845 passed, plus 172
+  POSIX/Linux-only skips, none of them for Docker.
+- **Not run:** macOS. The manual job on this branch covers it once Victor has pushed.
+- **Where to start if it breaks:**
+  - **A read refused that worked before:** a folder the server can search but not read is now
+    refused, and so is a path that goes through a regular file on Windows (the plan's §2.3).
+  - **Windows fails in `_open_child`:** the three structures and the `NtOpenFile` call are at the
+    top of the Windows half of `workspace.py`.
+  - **The sweep tests fail after a refactor:** they count calls made through the module's `os`,
+    `_k32` and `_nt`. A call that goes round those names isn't seen (`_watch` in the tests).
 
 ## M4 step 3 — the release packaging (2026-11-09)
 

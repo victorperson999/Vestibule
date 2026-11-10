@@ -1387,3 +1387,32 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   is made with `asciinema` and `agg`. And `read_workspace`'s check-then-open race, which M1 accepted
   as a residual, is fixed before the release, as a small step of its own: the review reproduced it
   with a swap made from the host, and the tool returned a file from outside the workspace.
+- **The `read_workspace` race fix's plan signed off 2026-11-09**
+  ([plan](plans/M4/M4-step4-workspace-race.md)): V4's small step. Victor took option (1) on X1–X3.
+  The tool will open each part of a path once, from the folder it already holds open, and never
+  follow a link, on every platform. On Windows that is the same walk as on Linux, through the
+  native `NtOpenFile` call, which changes the Windows half of V4's sentence (a check of the opened
+  handle's path): that check stopped the leak but left a racing guest able to learn whether a host
+  path exists. The old by-name check is removed, because the review showed it gave that away on
+  Linux too. The FIFO hang goes in with it, and Windows lists a folder through its handle.
+- **The `read_workspace` race fix — done 2026-11-09** (commit pending;
+  [plan](plans/M4/M4-step4-workspace-race.md), §10 as built).
+  - **What it does now:** the tool opens each part of a path once, from the folder it already
+    holds open, and never follows a link. A guest that swaps a folder for a link while the tool
+    runs gets a refusal, or the real folder.
+  - **How bad it was:** with a real sandboxed guest doing the swap in a loop, 8,003 of 226,507
+    reads on Linux returned a file from outside the workspace, and 5 of 23,513 on Windows. After
+    the fix: none in 589,063 and none in 51,562.
+  - **Three more things the same change closed:** a guest could hang a call for good with a
+    FIFO, stall it 45 s with a file lease, and learn whether a file exists on the host.
+  - **One bug found on the way, and fixed here by Victor's choice:** a file whose name isn't
+    valid text stopped the whole server at the next directory listing. It now shows with a
+    replacement character.
+  - **What it leaves, stated:** a Windows server whose workspace is on a network or WSL share
+    still walks by name, and a racing guest can hold one call for about 10 s there. A file name
+    can make a listing look like it has more entries on a Linux host, and a listing isn't cut to
+    the output cap. These are in BUILD_LOG's known issues.
+  - **How it was checked:** every test was red on the old code first. 34 of 35 mutants were
+    caught, and the last can't fail on a default Windows. `critic` reviewed the diff twice, and
+    the gate is green on both platforms. macOS hasn't run: Victor runs the manual job on the
+    branch after the push.
