@@ -1395,7 +1395,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   handle's path): that check stopped the leak but left a racing guest able to learn whether a host
   path exists. The old by-name check is removed, because the review showed it gave that away on
   Linux too. The FIFO hang goes in with it, and Windows lists a folder through its handle.
-- **The `read_workspace` race fix — done 2026-11-09** (commit pending;
+- **The `read_workspace` race fix — done 2026-11-09** (commit `364f975`;
   [plan](plans/M4/M4-step4-workspace-race.md), §10 as built).
   - **What it does now:** the tool opens each part of a path once, from the folder it already
     holds open, and never follows a link. A guest that swaps a folder for a link while the tool

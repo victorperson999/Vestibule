@@ -1,20 +1,22 @@
 # Vestibule — working loop
 
-How a task moves from idea to commit. Every step is done by Claude: the main Opus session does
-the thinking and building, read-only Opus subagents give independent review with a fresh
-context, Haiku handles mechanical work, and you (Victor) stay on standby for sign-off and the
-commit. Diagram: [`WORKFLOWDIAGRAM.md`](WORKFLOWDIAGRAM.md).
+How a task moves from idea to commit. Every step is done by Claude: the main Fable session does
+the planning and runs the loop, an Opus subagent writes the code from the signed plan, read-only
+Opus subagents give independent review with a fresh context, Haiku handles mechanical work, and
+you (Victor) stay on standby for sign-off and the commit. Diagram:
+[`WORKFLOWDIAGRAM.md`](WORKFLOWDIAGRAM.md).
 
 ```
 you
  │
  ▼
-MAIN SESSION — Opus 5.5 (architect + implementer)
+MAIN SESSION — Fable 5.2 (architect: plans, weighs every review, writes the docs)
  │  1. read context (CLAUDE.md, KARPATHY_EXAMPLES, docs/plans/, HISTORY, BUILD_LOG) ──► scout (Haiku): file:line lookups
  │  2. write plan → docs/plans/<milestone>/<step>.md
  │  3. [plan review] skeptic (Opus) on milestone/step plans → main session weighs findings
  │  4. you sign off → bullet in docs/HISTORY.md
- │  5. build the change; self-check the diff against KARPATHY_EXAMPLES before gate
+ │  5. builder (Opus): builds the change from the signed plan, tests first
+ │     → main session reads the diff against the plan and KARPATHY_EXAMPLES before gate
  │  6. gate (Haiku): check_env + ruff + mypy + pytest, Windows then Linux (WSL) ── FAIL → back to 5
  │  7. critic (Opus): adversarial diff review
  │  8. verifier (Opus): CONFIRMED / PLAUSIBLE / REFUTED per finding ── confirmed high/med → back to 5
@@ -29,45 +31,67 @@ stuck (same failure twice / hang / unclear cause) ──► diagnose (Opus) → 
 
 | Role | Model | Effort | Job | Why |
 |---|---|---|---|---|
-| Main session | Opus 5.5 | xhigh | Plans *and* writes the code | Vestibule's decisions (D1–D4, the S4/S5 sign-offs, budgets, honesty rules) live in this context. Handing implementation to a fresh agent loses them. |
+| Main session | Fable 5.2 | high | Plans, runs the loop, weighs every finding, writes the docs. Does not write `src/` or `tests/` | Vestibule's decisions (D1–D4, the sign-offs, budgets, honesty rules) live in this context, and so does every conversation with you. |
+| `builder` | Opus 5.5 | xhigh | Writes the code and tests from the signed plan, tests first; fixes the confirmed findings | The build is where a wrong line is expensive. It works from the plan file, which is the same thing the reviewers judge it against. |
 | `scout` | Haiku 5.5 | low | Lookups that return file:line only | Pure search, no judgment needed. Keeps noise out of the main context. |
 | `gate` | Haiku 5.5 | low | Runs check_env, ruff, mypy and pytest on Windows, then `scripts/gate-linux.sh` in WSL, and reports pass/fail | Runs commands only. Keeps long test output out of the main context. |
 | `skeptic` | Opus 5.5 | xhigh | Adversarial review of a **plan** | Challenges the design itself before code exists. That is where the step-4 and step-5 redesigns came from. |
 | `critic` | Opus 5.5 | high | Adversarial review of a **diff** | Finds how the change fails. |
 | `verifier` | Opus 5.5 | high | Confirms or refutes each finding with evidence | Separates finding from judging, so false positives don't become code churn and real bugs don't get waved away. |
-| `diagnose` | Opus 5.5 | xhigh | Root cause when stuck | Fresh eyes on a hang or repeated failure, without the main session's sunk-cost reasoning. |
+| `diagnose` | Opus 5.5 | xhigh | Root cause when stuck | Fresh eyes on a hang or repeated failure, without the builder's sunk-cost reasoning. |
 
 ### Models and effort, precisely
+- **The main session's model and effort** come from `~/.claude/settings.json`: `model` is
+  `fable`, and `modelSettings` gives `claude-fable-5-2` the effort `high`. `/model` changes the
+  model for a session.
 - Agent files use the **aliases** `opus` and `haiku`. On the Anthropic API these resolve to the
   latest release in each family: today Opus 5.5 (`claude-opus-5-5`) and Haiku 5.5
   (`claude-haiku-5-5`, which needs Claude Code ≥ v2.1.293). When a new version ships, the
   agents move up automatically. To freeze a version, replace the alias with the full ID.
 - **Effort** is set per agent with the `effort:` frontmatter field, which overrides the
-  session's level. The main session's `xhigh` comes from `effortLevel` in
-  `~/.claude/settings.json`.
-- The rule behind the levels: effort goes where wrong judgment is expensive. Plan design and
-  root-causing a hang get `xhigh`, diff review and verification get `high`, and search and
-  running checks get `low`.
+  session's level.
+- The rule behind the levels: effort goes where wrong judgment is expensive. Plan review, the
+  build and root-causing a hang get `xhigh`, diff review and verification get `high`, and search
+  and running checks get `low`.
 - Two ways the field can be overridden:
   - `CLAUDE_CODE_EFFORT_LEVEL` beats the `effort:` field. Don't set it, or every agent gets
     the same level.
-  - A spawn call can pass its own `effort`, which also wins. The main session never does this
-    unless you ask.
+  - A spawn call can pass its own `model` or `effort`, which also wins. The main session never
+    does this unless you ask.
 - If a level is ever unsupported, Claude Code falls back to the highest supported level at or
   below it. `max` is valid in agent frontmatter but not in settings files.
 
-All review agents (skeptic, critic, verifier, diagnose) are **read-only toward the repo**.
-verifier and diagnose may write throwaway repro scripts in a scratch directory only.
+The review agents (skeptic, critic, verifier, diagnose) are **read-only toward the repo**.
+verifier and diagnose may write throwaway repro scripts in a scratch directory only. `builder`
+is the one agent that edits the repo, and only `src/` and `tests/`.
 
-## Keeping Opus-on-Opus review honest
+## Handing the build over
 
-Every reviewer is the same model family as the author, so independence has to be built in:
+The builder starts with a fresh context, so what it isn't given, it doesn't know.
+- **The plan file is the hand-off.** Everything the builder needs is in the signed plan, or in
+  `CLAUDE.md`, `docs/HISTORY.md` and `docs/BUILD_LOG.md`. If the main session catches itself
+  explaining a decision only in the spawn prompt, that decision goes into the plan first.
+- **The spawn prompt names** the plan file, the scratch directory to use, and any measurement
+  kit the plan's spikes left behind. It doesn't restate the plan.
+- **One builder per step, kept.** Review findings go back to the same builder, so it keeps
+  what it learned. A new builder starts only if the first one is lost.
+- **The builder stops when the plan is wrong or silent.** It reports what it found and doesn't
+  redesign. A departure is the main session's call, and yours when it changes a signed decision.
+- **The main session reads the whole diff** against the plan and `KARPATHY_EXAMPLES` before the
+  gate, and checks the builder's report against the tree (files, red-first lines, mutant counts).
+- **Spikes for a plan are the main session's:** throwaway code outside the repo, to measure
+  before the plan states something as fact. So are docs-only steps, which have no builder.
+
+## Keeping the reviews honest
+
+The plan is written by Fable and reviewed by Opus. The code is written by Opus and reviewed by
+Opus, so there independence has to be built in:
 - **Fresh context, artifacts only.** Reviewers get the plan file or the diff plus file paths.
-  They never get the main session's reasoning or a summary of why it's right.
+  They never get the main session's or the builder's reasoning, or a summary of why it's right.
 - **Neutral briefs.** Spawn prompts say what to review, not what to conclude. No "I think this
   is fine, just double-check X."
 - **Separate roles.** The agent that finds a problem (skeptic/critic) is not the one that judges
-  it (verifier), and neither one fixes it (main session).
+  it (verifier), and neither one fixes it (the builder, on the main session's word).
 - **Evidence over assertion.** A finding only drives a code change once the verifier has marked
   it CONFIRMED or PLAUSIBLE with a `path:line` or a repro.
 - **Human backstop.** You see every finding the main session rejects, with the reason.
@@ -83,7 +107,7 @@ Every reviewer is the same model family as the author, so independence has to be
   plan, accepting, amending, or rejecting it with a reason, before asking you to sign off. Where
   a finding makes a checkable claim about existing code, send it to verifier.
 - **Diff findings** (critic) always go through verifier.
-  - CONFIRMED high/med: fix, then repeat from step 6.
+  - CONFIRMED high/med: the builder fixes it, then repeat from step 6.
   - PLAUSIBLE: fix it, or tell you why not.
   - REFUTED: listed in the summary to you.
 - **Re-review after fixes.** If a fix touched more than the finding's lines, run critic again on the new diff.
@@ -100,5 +124,5 @@ Every reviewer is the same model family as the author, so independence has to be
 
 ## Agent files
 
-All under `.claude/agents/` (project-scoped): `scout.md`, `gate.md`, `skeptic.md`, `critic.md`,
-`verifier.md`, `diagnose.md`.
+All under `.claude/agents/` (project-scoped): `scout.md`, `gate.md`, `skeptic.md`, `builder.md`,
+`critic.md`, `verifier.md`, `diagnose.md`.

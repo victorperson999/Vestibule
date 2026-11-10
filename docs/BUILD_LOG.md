@@ -60,7 +60,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 1 | F3: a run dir's name carries its deadline, and a sweep removes what a hard kill left | 2026-11-08 | `7e977fb` | 863 Linux (0 skipped); 681 + 162 POSIX/Linux-only skips on Windows |
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
-| M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | pending | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | `364f975` | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -139,7 +139,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ## M4 step 4 fix — `read_workspace` could return a file from outside the workspace (2026-11-09)
 
-- **Commit:** pending.
+- **Commit:** `364f975`.
 - **Plan:** [`docs/plans/M4/M4-step4-workspace-race.md`](plans/M4/M4-step4-workspace-race.md) (v2
   after the `skeptic` review, signed 2026-11-09 with X1–X3). Its §9 is the plan review and its §10
   the as-built. It is V4 of [`M4-step4-docs.md`](plans/M4/M4-step4-docs.md), and it adds a dated
