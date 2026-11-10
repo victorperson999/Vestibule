@@ -1,6 +1,7 @@
 # M4 step 4 — the README, `SECURITY.md` and the demo (F4, F5, P7, P8)
 
-Status: **v2, signed off 2026-11-09 with option (1) on each of V1–V4. Not built yet.** v1 was reviewed by `skeptic` (24 findings: 2 high, 13 medium, 9
+Status: **v2, signed off 2026-11-09 with option (1) on each of V1–V4. 4a built 2026-11-09 (§13 is
+its as-built); 4b, the demo, is not built.** v1 was reviewed by `skeptic` (24 findings: 2 high, 13 medium, 9
 low; verdict "sound with amendments"). `verifier` checked 19 claims about the code, tools and logs:
 all 19 confirmed, five with a correction (§12). Every finding is taken below except one part of
 finding 5, with the reason given.
@@ -459,3 +460,94 @@ Its corrections are noted.
 | 22 | low | Step 3 is already on `main` | §7, A |
 | 23 | low | Debian's conditions; "can't" should be "isn't designed or tested"; Podman's caveat | §2.1, §2.4 |
 | 24 | low | The README grows nearer 100 lines | §10 |
+
+## 13. As built: 4a (2026-11-09)
+
+**Built as §2–§5 say, with what the build and the reviews changed:**
+
+- **The sandbox-only session (§2.3) says what the live sessions showed.**
+  - The plain line left 69 tools in Windows Claude Code: Vestibule's two, plus the other MCP
+    servers and the account's connectors. §7 C's check, "it must have only the two
+    `mcp__vestibule__` tools", held only with the stricter line.
+  - With `--strict-mcp-config --mcp-config <file> --permission-mode dontAsk` the agent had
+    Vestibule's two tools and a few of Claude Code's own (`EndConversation`, `advisor`). The
+    README now shows that line in full, for bash and PowerShell.
+  - Neither line stops a plugin's hooks. The stricter one drops a plugin's MCP server, but a
+    plugin's Stop hook ran a script on the host after every turn in both sessions. The README
+    says so.
+- **The quick start (§2.4) puts uv's install inside each platform's steps,** after that
+  platform's prerequisites: `curl` is one of them, and the first draft used it before installing
+  it. `setup` "prints" its ready line: it doesn't end with it.
+- **The client table (§2.5): all three tested.** Claude Code on Windows and in WSL with the short
+  name, Cursor and Claude Desktop on Windows. Claude Desktop 4.23118.1 has no "Edit Config"
+  button, so the row gives the file's location.
+- **Troubleshooting (§2.6) quotes the messages as the code prints them.** No message says
+  "AppArmor", and none mentions the `docker` group: a user who isn't in it is told to start
+  Docker. The README gives the real fix. The message itself is a known issue.
+- **`SECURITY.md` (§3) grew to 315 lines** against about 190, and has 14 residuals:
+  - **§2 says how each verdict is reached,** which §3's table didn't ask for. A container run's
+    verdict comes from the selection check, and that check reads back only the resource caps,
+    `/tmp`'s size and the workspace's mode, and on cgroup v1 not even the caps.
+  - **Residual 14 is new:** the container backend trusts the runtime for the flags it can't read
+    back, and doesn't set Docker's seccomp profile.
+  - **§3.9 says exactly when `auto` ends on `native-degraded`,** and keeps the old README's line
+    about Linux before 5.14.
+  - **`none` is spelled out:** it means no isolation was confirmed, not that nothing ran.
+  - **Residual 12 is the race fix's leftovers** (a workspace on a share, and listings), from
+    [`M4-step4-workspace-race.md`](M4-step4-workspace-race.md) §8.
+  - **The header says what the tests check:** that each test and file named exists, not what a
+    section or row says.
+- **macOS (§7 A):** run #1 of the manual job passed on `b8565cf`, with 849 passed, 29 skipped and
+  159 deselected. The skips are Linux-only tests and one `read_workspace` test whose file name
+  macOS's filesystem refuses. Both documents say the Docker-free tests pass there and that no
+  sandboxed run has been made on a Mac. This is criterion 10's record.
+- **Private vulnerability reporting (§7 B) is on.**
+- **The dry run (§7 D) passed on both VMs,** restored to `fresh-install` first. Every
+  quick-start line worked as written, with the wheel in place of the PyPI name, up to `setup`'s ready line, which is where §7 D stops. `claude mcp add` and the `print(1)` run weren't made on the VMs, which have no Claude Code; the live sessions made them on Windows and in WSL.
+  Debian's `setup` printed `isolation native` and Ubuntu's `isolation container`, with its
+  reason for not using native. On Debian, `sudo reboot` prints a bus warning and still reboots.
+- **The package count (§3) was re-measured** with `uv pip compile` for both platforms: 30 and 31.
+- **"The demo used both"** (§2.3) waits for 4b.
+
+**Tests, where they differ from §5.** `builder` wrote them over five rounds:
+- **Tests 2 and 3 couldn't be red on the old README:** it had no absolute link for them to
+  check. Each now asserts that it looked at something.
+- **Test 2 checks more than §5 asked,** all from review findings:
+  - a GitHub URL must be on `https://github.com` or `raw.githubusercontent.com`, and in this
+    repo;
+  - only the repo page, `blob/main`, `tree/main` and raw `main` forms pass;
+  - a raw URL names a file, and an image into this repo uses a raw URL;
+  - a path git ignores fails. A file that is untracked and not ignored passes, because Claude
+    doesn't stage files and the gate runs before the commit.
+- **Test 3 also checks anchors into other files of the repo,** and forbids a query on the repo
+  page.
+- **Test 4 flags a test citation written without `tests/`.**
+- **Mutants:** 39 red on their named tests, plus the 7 controls that must stay green: all on
+  Windows 3.11, and each round's new ones on WSL 3.14.
+- **Size:** `tests/test_docs.py` grew by 187 lines against about 70.
+
+**Review of the two documents:** `critic` three times, `verifier` on each round's checkable
+findings.
+- **Round 1:** 20 findings (6 medium). `verifier` confirmed 12 of 15 and refuted 3.
+- **Round 2:** 14 findings (1 high). `verifier` confirmed all 10 it was given. The high one was
+  a sentence a round-1 fix had added: it said a container's protections were read back from
+  inside.
+- **Round 3:** 11 findings (1 high). `verifier` confirmed all 8 it was given. The high one was
+  another added sentence: "none of them ran a shell command", when a plugin's hook had.
+- Every confirmed finding is fixed.
+- **Round 4,** narrow, on the sentences round 3 changed and on these records: 1 medium and 4 low,
+  no high. The medium one was in the records, which said every quick-start line ran on the VMs.
+  The main session checked each against the logs and fixed all five; `verifier` wasn't run on
+  them.
+
+**Not changed, and recorded as known issues:** `setup`'s message for a user outside the `docker`
+group; the README and `SECURITY.md` state some facts twice (§2.1 keeps the README's reference
+sections, and §3 has `SECURITY.md` cover the same layers), so one can drift from the other.
+
+**Size:** the README is 361 lines, 145 more than before, against "about 100 longer".
+
+**Gate:** green on the final tree.
+- **Linux (466 s of 540):** 3.14 full suite 1042 passed, 0 skipped; 3.11 Docker-free 992;
+  stdio 7.
+- **Windows:** 850 passed, plus 172 POSIX/Linux-only skips, none of them for Docker.
+- The README renders with PyPI's Markdown renderer: 15 code blocks, 6 tables, no relative link.

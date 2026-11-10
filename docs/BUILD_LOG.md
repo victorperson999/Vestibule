@@ -61,6 +61,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | `364f975` | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | pending | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -74,13 +75,17 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-10-14 (M1 live check; a row since M3 step 5b) | MCP SDK and Claude Code | Claude Code opens a session with a `server/discover` request, then falls back to `initialize` (its MCP log: `protocolEra: legacy`, protocol 2025-11-25). Seen at M1's live check (HISTORY), in M2 7b's session (2.1.316) and in M3 5b's (2.1.319). The MCP Python SDK 1.28.1 doesn't know the method: it answers `INVALID_PARAMS` and logs a WARNING with 31 pydantic validation errors on the server's stderr, once per session; Windows Claude Code shows it in its MCP log as an "error". The session then works. Not in Vestibule's code. Documented in GETTING_STARTED's troubleshooting. | Upstream; look again with the `mcp<2` move |
 | 2026-10-14 (M2 step 1) | dependencies | `pyproject.toml` pins `mcp<2`. mcp 2.x (2.3.0 on 2026-10-14) replaced the low-level `Server` API this server uses (`list_tools`, `Tool(inputSchema=)`), so an unpinned install could not start. Moving to 2.x needs its own plan: it touches the protocol layer and the shutdown rules. **M4's P2 (Victor, 2026-11-07)** releases 0.1.0 on 1.x instead, with the range narrowed to the minor the gates ran, amending M2's S1-D1. | Its own milestone after M4 |
 | 2026-11-01 (M3 step 1 plan, finding 4) | native timeout path | At a very low `VESTIBULE_CPU_PCT` a timed-out fork bomb's sandbox drains slowly, because throttled tasks can't run their exit path until the next period. Measured from the stop to the end of the helper's report: 0.44–0.47 s at 10 %, 1.2–2.0 s at 5 %, 1.6–2.0 s at 1–2 %. Twice at 1–2 %, the finisher's 5 s SIGKILL of the helper fired (`_finish`, S3-D7). The result is the honest "didn't report its counters" note, never a wrong number. The default is 75 %. | Noted; no change planned |
-| 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README's "Know the limits". | Documented; quotas declined in M3 (contract §1): a disk cap needs filesystem quotas or a loop-mounted image, and both need root |
+| 2026-10-14 (7b docs) | workspace | The workspace has no size cap. The rootfs is read-only and `/tmp` is capped, but a run can fill the host disk through `/workspace`. By design for M1 (D1). Documented in the README ("What it protects, and what it doesn't") and `SECURITY.md` §3.2. | Documented; quotas declined in M3 (contract §1): a disk cap needs filesystem quotas or a loop-mounted image, and both need root |
 | 2026-11-03 (M3 step 2, critic round 2) | config at startup | `Limits.from_env` resolves the workspace, rootfs and audit dirs with `realpath` to check that they don't overlap (A8), and it runs at the server's import. On a dead hard-mounted NFS export that call can block with no limit, so the server never answers `initialize` and the client shows "failed to connect". An error is handled (the path is compared as written); a hang is not. A lexical-only check would let a symlink hide an overlap, and a timed thread at import costs more than the case. Such a dir is unusable anyway | open, accepted |
 | 2026-11-04 (M3 step 3, gate) | native test | `test_native.py::test_a_helper_that_reports_nothing_claims_nothing` failed its `no_scope_left` teardown once, on a full Linux 3.14 run: a scope was left behind. The test's stand-in helper exits before placement, and systemd took longer than the fixture's 1 s to collect the scope. It passed 20 of 20 alone and on both full runs since; not reproduced. If it comes back, the fixture's window or the placement race is where to look | open, watching. Possibly the zombie attach that the M3 step 5 fix now stops (a helper that exits during placement); 0 of 460 runs reproduced it |
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
 | 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
 | 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace`, Windows server with the workspace on a network or WSL share | The far side looks every name up again, so the walk is by name there, as it was before the fix. No outside content came back in tests (Windows doesn't follow a WSL share's links; other shares weren't tried). A guest that swaps a file for a FIFO at the right moment holds one call for about 10 s and leaves a reader waiting in WSL; the old code did the same. During such a race two raw `OSError`s can leave `read_workspace_entry`; the handler returns them as "Error reading workspace". | Documented residual (M4 `SECURITY.md`); non-default `VESTIBULE_WORKSPACE` |
 | 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace` listings | A guest's file names go into a listing with line breaks and control characters intact, so on a Linux or macOS host one file can look like several entries (on a Windows host they arrive as other characters). A listing isn't cut to `max_output_bytes`: at most 200 entries, about 55 KB of long names, about 156 KB if every byte of every name is invalid. And every entry of a folder is read before the cut to 200, so a guest's million files make one call slow and large. All three were there before this step. | Open; Victor's call whether before the release |
+| 2026-11-09 (M4 step 4a, critic round 1) | `setup` and selection messages | A Linux user who isn't in the `docker` group (or hasn't logged in again since joining it) is told "daemon not reachable (permission denied …). Start docker (Docker Desktop on Windows/macOS), then retry." Docker's own "permission denied" gets through, but no message names the group or `usermod`. The README's first-run troubleshooting gives the fix. | Open; a one-line hint in `select.py`, its own small step |
+| 2026-11-09 (M4 step 4a, critic round 2) | container backend | The selection check reads back the resource caps and `/tmp`'s size (cgroup v2 only) and the workspace's mode. `--network none`, `--cap-drop ALL`, `no-new-privileges`, `--read-only` and `--user` are passed to the runtime and never read back on the user's machine, and Vestibule doesn't set the container's seccomp profile (the daemon's default applies). The Docker-marked acceptance tests check all of these from inside a container, on the machines the gate runs on. | Documented residual (`SECURITY.md` §3.14) |
+| 2026-11-09 (M4 step 4a, critic round 3) | Claude Code, not Vestibule | A sandbox-only session (`--tools ""`, with or without `--strict-mcp-config`) still runs the hooks of the user's plugins on the host (the stricter line drops a plugin's MCP server, not its hooks): the Codex plugin's Stop hook ran `node` after every turn in both live sessions. The README says so and names `/plugin`. | Documented (README); upstream behaviour |
+| 2026-11-09 (M4 step 4a, critic rounds 1–3) | README and `SECURITY.md` | The two state some facts twice: native's layers, the audit log's permissions, the re-pin tradeoff. The README is frozen at each upload and `SECURITY.md` isn't, so they can drift. The step 4 plan asked for both copies. | Open; `critic` compares the two at each release |
 
 **Closed:**
 - The 2026-10-11 hard-kill issue (per-run script dirs left after a hard kill) is closed by M4
@@ -115,7 +120,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   passed with 40 extra sleeping tasks that made the old version fail.
 - The 2026-10-26 S4-D1 issue (sandboxes run in the user manager's `app.slice`, outside the
   client's own cgroup, so a `MemoryMax=` on the agent doesn't count them) is documented in the
-  README's "Know the limits" (M2 step 7b), as Victor accepted. Each sandbox has its own limits.
+  README's "Know the limits" (M2 step 7b), as Victor accepted, and since M4 step 4a in
+  `SECURITY.md` §3.3. Each sandbox has its own limits.
 - The 2026-10-26 placement-time issue (a host where systemd accepts the scope job and then
   fails it makes every run wait the full 5 s bound) is visible now: the selection probe's log
   line carries its time (105 ms in the 7b live session), and a run that waits out the bound
@@ -136,6 +142,68 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M4 step 4a — the README, `SECURITY.md` and their tests (2026-11-09)
+
+- **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) (v2, signed 2026-11-09
+  with V1–V4; §13 is the as-built for 4a). It adds dated amendments to P6, P7, F5, §3 and
+  criterion 2 of [`M4-adoption.md`](plans/M4/M4-adoption.md). 4b, the demo GIF, is not built.
+- **What:**
+  - **`README.md`,** rewritten for someone who has never seen the project: what is and isn't
+    sandboxed, a quick start per platform with `uv tool install vestibule-mcp`, the client
+    configs with what tested each, first-run troubleshooting, what it protects, and uninstall.
+    Every link is an absolute URL, because the README is also the PyPI page.
+  - **`SECURITY.md` (new):** what holds for a `native` or `container` run and what stays
+    possible, how each verdict is reached, 14 known residuals, the supply chain, the audit log,
+    and how to report a vulnerability. Each claim names its source.
+  - **`tests/test_docs.py`, `tests/test_pins.py`:** the README's links are absolute, point into
+    this repo on `main` at paths git doesn't ignore, and name headings that exist; every test
+    `SECURITY.md` cites exists; a re-pin reaches the uninstall line.
+  - **`docs/ARCHITECTURE.md`, `docs/GETTING_STARTED.md`, `docs/RELEASE.md`:** the lines the plan's
+    §4 names. No `src/` change.
+- **Checked on real machines** (Victor, 2026-11-09, with a wheel of this tree):
+  - **Claude Code with the short name:** Windows (`isolation: container`) and WSL (`isolation:
+    native`), each from an empty folder with a user-scope entry.
+  - **Cursor and Claude Desktop on Windows:** `isolation: container`. The audit log names the
+    clients `cursor-vscode` and `local-agent-mode-vestibule`.
+  - **The quick start on two fresh VMs** (`m4spike\logs\vm-step4-debian.txt`,
+    `vm-step4-ubuntu.txt`), with the wheel in place of the PyPI name: every line worked as
+    written up to `setup`'s ready line, which is where §7 D stops. `claude mcp add` and the `print(1)` run weren't made on the VMs, which have no Claude Code; the live sessions made them on Windows and in WSL. On Debian 13 minimal `setup` printed `isolation native`, and on stock Ubuntu
+    24.04 with Docker Engine `isolation container`.
+  - **macOS:** run #1 of the manual job passed on `b8565cf`: 849 passed, 29 skipped, 159
+    deselected. The skips are Linux-only tests and one `read_workspace` test whose file name
+    macOS's filesystem refuses. No sandboxed run has been made on a Mac: that runner has no
+    Docker. This is criterion 10's record, and it covers the `read_workspace` fix (`364f975`).
+  - **Private vulnerability reporting** is on for the repo.
+- **Found:**
+  - `--tools ""` removes Claude Code's built-in tools and nothing else. Other MCP servers and the
+    account's connectors stay (69 tools in one session) until `--strict-mcp-config` is added, and
+    plugins' hooks run either way.
+  - Claude Desktop 4.23118.1 has no "Edit Config" button; its config is
+    `%APPDATA%\Claude\claude_desktop_config.json`.
+  - `uv tool uninstall` fails on Windows while a client still has the server running, as the
+    README's uninstall section warns.
+  - On a minimal Debian, `sudo reboot` prints a bus warning right after `dbus-user-session` is
+    installed, and still reboots.
+- **Review:** `skeptic` found 24 on plan v1, and `verifier` confirmed its 19 checkable claims (the
+  plan's §12). On the documents `critic` ran three times (20, 14 and 11 findings) and `verifier`
+  confirmed 30 of the 33 it was given. Two of the worst were sentences that an earlier fix had
+  added, so a fourth, narrow pass covered what round 3 changed and these records: 1 medium and 4 low, no
+  high, all fixed. The main session checked those five against the logs itself.
+- **Mutants:** 39 red on their named tests, with the 7 controls that must stay green: all on
+  Windows 3.11, and each round's new ones on WSL 3.14.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (466 s of 540): 3.14
+  full suite 1042 passed, 0 skipped; 3.11 Docker-free 992; stdio 7. Windows: 850 passed, plus 172
+  POSIX/Linux-only skips, none of them for Docker.
+- **Where to start if it breaks:**
+  - **A doc test fails after a README edit:** its message names the line and the rule. The rules
+    are in the comment above `_README` in `tests/test_docs.py`.
+  - **A link test fails on a new file:** the file is ignored by git, or the link isn't a
+    `blob/main`, `tree/main` or raw `main` form.
+  - **`test_security_md_cites_only_what_exists` fails:** a cited test was renamed. `SECURITY.md`
+    names it as `tests/<file>.py::<test>`.
+  - **A re-pin:** `docs/RELEASE.md` step 2 lists every line that quotes the digests.
 
 ## M4 step 4 fix — `read_workspace` could return a file from outside the workspace (2026-11-09)
 
@@ -181,7 +249,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 - **Gate:** check_env, ruff and mypy clean on both platforms. Linux (451 s of 540): 3.14
   full suite 1037 passed, 0 skipped; 3.11 Docker-free 987; stdio 7. Windows: 845 passed, plus 172
   POSIX/Linux-only skips, none of them for Docker.
-- **Not run:** macOS. The manual job on this branch covers it once Victor has pushed.
+- **macOS:** not run when this was written. Run #1 of the manual job has since passed on
+  `b8565cf`, which includes this change (the M4 step 4a entry has the counts).
 - **Where to start if it breaks:**
   - **A read refused that worked before:** a folder the server can search but not read is now
     refused, and so is a path that goes through a regular file on Windows (the plan's §2.3).

@@ -1416,3 +1416,27 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     caught, and the last can't fail on a default Windows. `critic` reviewed the diff twice, and
     the gate is green on both platforms. macOS hasn't run: Victor runs the manual job on the
     branch after the push.
+- **Step 4a — done 2026-11-09** (commit pending; [plan](plans/M4/M4-step4-docs.md), §13 as
+  built): the README and `SECURITY.md`.
+  - **The README is written for a stranger now.** It says what is and isn't sandboxed (only code
+    sent to `run_code`), gives a quick start per platform that starts from `uv tool install
+    vestibule-mcp`, shows the config for each client with what tested it, and ends with how to
+    uninstall. Its headline no longer says nothing is sent to a cloud service: an agent on a
+    hosted model does send its code and output to that model's provider.
+  - **`SECURITY.md` exists.** It says what is out of a run's reach when the result says `native`
+    or `container`, what stays possible, how each verdict is reached, and 14 things it leaves
+    open, each with where the claim comes from.
+  - **Victor tested it by hand:** Claude Code on Windows and in WSL with the short name, Cursor
+    and Claude Desktop on Windows, and the quick start's lines up to `setup` on a fresh Debian VM
+    and a fresh Ubuntu VM, with a local build standing in for the PyPI name. All passed.
+  - **The macOS job ran for the first time and passed** (849 passed, 29 skipped). No sandboxed
+    run has been made on a Mac, and both documents say so.
+  - **Private vulnerability reporting is on,** so the link in `SECURITY.md` works.
+  - **What the sessions corrected:** the "sandbox-only" line removes Claude Code's own tools and
+    nothing else. Other MCP servers stay until a stricter line is used, and plugins' hooks run
+    either way. The README now says all three.
+  - **How it was checked:** three review rounds on the two documents, each finding sentences
+    that claimed a little more than the code does, twice in a sentence the previous round's fix
+    had added. All confirmed findings are fixed. The doc tests were written by the new `builder`
+    agent (Opus 5.5) and shown to fail 39 ways. The gate is green on both platforms.
+  - **What's left of step 4:** 4b, the demo GIF.

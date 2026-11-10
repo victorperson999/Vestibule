@@ -49,7 +49,8 @@ upstream fixes until they're re-pinned. For `python:3.12-slim` and `node:22-slim
 4. `docker pull docker.io/library/<name>@sha256:<digest>`, exactly the README's command, and
    `docker run --rm --pull never <that ref> python -c "print(1)"` (node: `node -e "console.log(1)"`).
 5. Paste the digests into `src/vestibule/config.py`, with the date in its comment, and into the
-   README's two `docker pull` lines and its "as of" date.
+   README's two `docker pull` lines, its `docker image rm` line (under Uninstall) and its "as of"
+   date.
 6. `pytest -m docker`. On Linux, also `vestibule-mcp setup` and `pytest -m network`.
 
 ## 3. The release commit
@@ -59,6 +60,10 @@ being released, and the commit is pushed and merged to `main`.
 
 The README is PyPI's description. A published description can't be changed, and its links are
 absolute URLs into `main`, so open a few of them and check that they resolve.
+
+Two more things are true before this commit: private vulnerability reporting is turned on for the
+repo (`SECURITY.md` links to it), and each "tested" or "untested" mark in the README's client table
+says what really happened.
 
 Record the commit's hash in `docs/BUILD_LOG.md`. There's no git tag: that entry is what ties a
 version to a commit.

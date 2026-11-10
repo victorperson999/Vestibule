@@ -228,6 +228,8 @@ Ordering: the filter is compiled in the helper before the fork, so every ctypes 
 
 ---
 
-## Honest scope (put this in SECURITY.md)
+## Honest scope
 
-Vestibule gives strong isolation comparable in *mechanism* to rootless containers. It is **not** a hardened VM boundary — it shares the host kernel, so a kernel privilege-escalation exploit could in principle escape (VMs like gVisor/Firecracker defend that layer). State this plainly. The goal: make the *common, realistic* agent risks — prompt-injected exfiltration, destructive commands, resource exhaustion — structurally impossible. Stating the limits honestly is a trust-builder and exactly the threat-model maturity that impresses in interviews. Never claim "unescapable."
+The full account, with what stays possible and what each claim rests on, is [`SECURITY.md`](../SECURITY.md).
+
+Vestibule gives strong isolation comparable in *mechanism* to rootless containers. It is **not** a hardened VM boundary — it shares the host kernel, so a kernel privilege-escalation exploit could in principle escape (VMs like gVisor/Firecracker defend that layer). State this plainly. For a run that reports `native` or `container`, the host's other files, the network, and the host's memory, CPU and processes past the caps are out of the run's reach, short of a kernel or runtime bug. Stating the limits honestly is a trust-builder and exactly the threat-model maturity that impresses in interviews. Never claim "unescapable."

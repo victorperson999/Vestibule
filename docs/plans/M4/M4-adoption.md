@@ -262,6 +262,14 @@ short confirmation from PyPI after the upload (§6, step 5).
 - **(2) A real stranger is required.** This is closest to PLAN.md's words, but it depends on
   finding one, and on watching them without helping.
 
+> **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) V1 and §4, approved by Victor):**
+> - The live sessions (Claude Code on Windows and in WSL with the short name, Cursor, Claude
+>   Desktop) and a dry run of the quick start on the two Linux VMs happen in step 4, before the
+>   README is frozen. Step 5 still runs the full first runs, and one GUI client on the release
+>   candidate.
+> - On a minimal Debian, the three packages and the reboot they need are prerequisites outside
+>   the clock, like Docker.
+
 ### P7 (Victor, 2026-11-07: (1)) — The demo GIF
 
 - **(1) Recommended: a real recorded session, trimmed to about 20 s.**
@@ -278,6 +286,15 @@ short confirmation from PyPI after the upload (§6, step 5).
   - Not `rm -rf /`: the workspace is writable, so that demo would really delete it.
 - **(2) A scripted terminal recording** (a VHS tape, say) replaying a session. It's
   reproducible, but it's a reenactment, and golden rule 5 makes a staged result a poor fit.
+
+> **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) V3 and §6, approved by Victor):**
+> - Both calls are fixed code in the prompt. The second posts to an address from the range
+>   reserved for documentation (`203.0.113.10`), not to a hostname: a hostname would fail at DNS,
+>   not with `Network is unreachable`.
+> - It is recorded with `asciinema` and rendered with `agg`. The only edits are cutting the
+>   opening banner, shortening pauses and one uniform speed-up, and the caption says so.
+> - What the agent echoes on screen is compared with the tool's own results in the session's
+>   transcript before the GIF is kept, and every frame is checked for anything private.
 
 ### P8 (Victor, 2026-11-07: (1)) — How vulnerabilities are reported
 
@@ -430,6 +447,16 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
 
 Every claim in it points to a test, a plan decision, or a stated residual.
 
+> **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) §3 and V4, approved by Victor):**
+> - `SECURITY.md` doesn't say "structurally impossible". It says what is out of a run's reach for
+>   a run reported as `native` or `container`, short of a kernel or runtime bug, and then lists
+>   what stays possible.
+> - "About 25 transitive packages" is the measured count: 30 on Linux and 31 on Windows,
+>   counting Vestibule and `mcp`.
+> - Two additions: what hasn't been tested, and that no one independent has reviewed the code.
+> - `read_workspace`'s check-then-open race is fixed, not listed
+>   ([`M4-step4-workspace-race.md`](M4-step4-workspace-race.md)). What that fix leaves is listed.
+
 ---
 
 ## 3. The first-run path, as the README will show it (P1, P4, P5)
@@ -450,6 +477,11 @@ Then: "ask your agent to run `print(1)`".
 > - On a clean Windows 11, Docker Desktop's recommended install needs the Virtual Machine
 >   Platform feature turned on in an admin PowerShell, then a restart. That is part of
 >   installing Docker, so it's outside P6's clock.
+
+> **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) §2.4, approved by
+> Victor):** the README words the Virtual Machine Platform line as the fix for the failure that
+> was measured ("if the recommended install stops and asks for it"), not as a first step. It was
+> one sample, and nothing re-runs it.
 
 ---
 
@@ -508,6 +540,10 @@ Then: "ask your agent to run `print(1)`".
 10. **macOS** (P9): the manual job passes, and its run is recorded.
 11. **The gate,** green on both platforms on the re-frozen dependency set, and
     `tests/test_docs.py`.
+
+> **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) §4, approved by
+> Victor):** in criterion 2, "every command typed is one the README shows" counts a page the
+> README sends you to, for Docker's install alone.
 
 ---
 
