@@ -232,11 +232,19 @@ The second tool reads a file or lists a folder in the workspace, from outside th
       name there. No outside content came back in tests, because Windows doesn't follow that
       share's links. A guest that swaps a file for a FIFO at the right moment can hold one call
       for about 10 s. Other kinds of share weren't tried.
-    - **A directory listing shows a guest's file names as they are.** On a Linux or macOS host a
-      name can hold a line break and so look like more entries. A listing isn't cut to the
-      output cap: 200 entries at most, which can come to about 150 KB. Every entry of a folder
-      is read before the cut, so a folder of a million files makes one call slow.
-    - Source: BUILD_LOG's two 2026-11-09 rows.
+    - **A directory listing is of the first 10,000 entries read.** A folder that holds more is
+      listed from those, in the filesystem's order and not by name, and the listing says so. It
+      shows 200 entries at most and stops at the output cap, which is counted in characters:
+      names made of invalid bytes can still come to about 55 KB.
+    - **A guest's file names can't add lines to a listing.** Control and format characters in a
+      name are shown as escapes. A name that isn't valid text shows a replacement character, so
+      two such names can look alike. If a guest deletes entries while a listing runs, its count
+      of entries not shown can include some that are gone. A file's content is returned as it
+      is.
+      `tests/test_workspace.py::test_a_line_break_in_a_name_cant_forge_an_entry`,
+      `tests/test_workspace.py::test_a_folder_is_read_up_to_the_scan_cap`
+    - Source: BUILD_LOG's 2026-11-09 row on shares;
+      [`docs/plans/M4/M4-step4-followups.md`](docs/plans/M4/M4-step4-followups.md).
 13. **Two machines sharing one remote Docker daemon, with clocks more than 60 s apart, could
     remove each other's containers early.** Vestibule is built for a local daemon.
     Source: [`docs/plans/M1/M1-step4-lifecycle.md`](docs/plans/M1/M1-step4-lifecycle.md) S4-D3.

@@ -62,7 +62,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | `364f975` | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
 | M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | `5a1bc23` | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
-| M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | pending | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
+| M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | `bc79e75` | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
+| M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | pending | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -82,13 +83,19 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
 | 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
 | 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace`, Windows server with the workspace on a network or WSL share | The far side looks every name up again, so the walk is by name there, as it was before the fix. No outside content came back in tests (Windows doesn't follow a WSL share's links; other shares weren't tried). A guest that swaps a file for a FIFO at the right moment holds one call for about 10 s and leaves a reader waiting in WSL; the old code did the same. During such a race two raw `OSError`s can leave `read_workspace_entry`; the handler returns them as "Error reading workspace". | Documented residual (M4 `SECURITY.md`); non-default `VESTIBULE_WORKSPACE` |
-| 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace` listings | A guest's file names go into a listing with line breaks and control characters intact, so on a Linux or macOS host one file can look like several entries (on a Windows host they arrive as other characters). A listing isn't cut to `max_output_bytes`: at most 200 entries, about 55 KB of long names, about 156 KB if every byte of every name is invalid. And every entry of a folder is read before the cut to 200, so a guest's million files make one call slow and large. All three were there before this step. | Open; Victor's call whether before the release |
-| 2026-11-09 (M4 step 4a, critic round 1) | `setup` and selection messages | A Linux user who isn't in the `docker` group (or hasn't logged in again since joining it) is told "daemon not reachable (permission denied …). Start docker (Docker Desktop on Windows/macOS), then retry." Docker's own "permission denied" gets through, but no message names the group or `usermod`. The README's first-run troubleshooting gives the fix. | Open; a one-line hint in `select.py`, its own small step |
 | 2026-11-09 (M4 step 4a, critic round 2) | container backend | The selection check reads back the resource caps and `/tmp`'s size (cgroup v2 only) and the workspace's mode. `--network none`, `--cap-drop ALL`, `no-new-privileges`, `--read-only` and `--user` are passed to the runtime and never read back on the user's machine, and Vestibule doesn't set the container's seccomp profile (the daemon's default applies). The Docker-marked acceptance tests check all of these from inside a container, on the machines the gate runs on. | Documented residual (`SECURITY.md` §3.14) |
 | 2026-11-09 (M4 step 4a, critic round 3) | Claude Code, not Vestibule | A sandbox-only session (`--tools ""`, with or without `--strict-mcp-config`) still runs the hooks of the user's plugins on the host (the stricter line drops a plugin's MCP server, not its hooks): the Codex plugin's Stop hook ran `node` after every turn in both live sessions. The README says so and names `/plugin`. | Documented (README); upstream behaviour |
 | 2026-11-09 (M4 step 4a, critic rounds 1–3) | README and `SECURITY.md` | The two state some facts twice: native's layers, the audit log's permissions, the re-pin tradeoff. The README is frozen at each upload and `SECURITY.md` isn't, so they can drift. The step 4 plan asked for both copies. | Open; `critic` compares the two at each release |
 
 **Closed:**
+- The 2026-11-09 `read_workspace` listings issue is closed in the M4 step 4 follow-ups. It was
+  three things: a file name with a line break could add a forged entry to a listing, a listing
+  wasn't cut to the output cap, and every entry of a folder was read before the cut to 200. Now
+  names are shown with escapes, the listing stops at the cap, and at most 10,000 entries are
+  read. What it leaves is in `SECURITY.md` §3.12.
+- The 2026-11-09 `setup` message issue (a Linux user outside the `docker` group was told to
+  start Docker) is closed in the same step. Docker's own line for a socket the user may not
+  open now gets a hint that names the group, `usermod` and the restart it needs.
 - The 2026-10-11 hard-kill issue (per-run script dirs left after a hard kill) is closed by M4
   step 1. A run dir's name carries its deadline, a POSIX parent's its owner's pid, and each
   reaper pass sweeps what's overdue. Stated, not fixed:
@@ -144,9 +151,97 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 4b — the demo GIF (2026-11-10)
+## M4 step 4 follow-ups — directory listings and the `docker`-group hint (2026-11-10)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-step4-followups.md`](plans/M4/M4-step4-followups.md) (v2 after the
+  `skeptic` review, signed 2026-11-10 with K1 and K2; §12 is the diff review's fixes and §13 the
+  as-built). It adds a dated amendment to §6 of
+  [`M1-container-backend.md`](plans/M1/M1-container-backend.md). Victor asked for the open
+  issues to be fixed before step 5 is planned.
+- **The problems,** all older than M4, measured before the change:
+  - A file name with a line break put a forged entry into a listing on a Linux host.
+  - A listing of long names came back as up to 156 KB against a cap of 20,000.
+  - A folder of 1,000,000 files took 7.1 to 7.5 s and 133 MB to list on Linux, and 200,000
+    took 3.1 s on Windows. With the workspace on WSL's `/mnt/c`, 10,000 entries took over 4 s.
+  - A Linux user outside the `docker` group was told to start Docker.
+- **What:**
+  - **`src/vestibule/workspace.py`:**
+    - A name's control and format characters are shown as backslash escapes and a backslash
+      is doubled, so one entry is always one line. A last line says so when a shown name was
+      changed.
+    - The listing stops at `max_output_bytes`, counted in characters as a run's output is.
+    - At most 10,000 entries of a folder are read (`_MAX_SCAN`), and past that the footer says
+      the listing is of the first 10,000 read.
+    - On POSIX the scan reads names only. The kind and size come from one `lstat` for each of
+      the first 200 names, never more. An entry gone since the scan is left out, and one that
+      can't be looked up is shown as `unknown`.
+  - **`src/vestibule/backends/select.py`:** `_group_hint`. For `docker`, on Linux, when the
+    status holds Docker's phrase "permission denied while trying to connect", the refusal names
+    the `docker` group in place of "Start docker". It is still an ordinary refusal, re-checked
+    after 30 s.
+  - **`tests/test_workspace.py`, `tests/test_select.py`:** eight new tests. The stand-in now counts
+    the entries a listing takes from the folder and the lookups it makes.
+  - **Docs:** `SECURITY.md` §3.12, the README's troubleshooting line, the M1 amendment.
+  - **Outside the plan, with Victor's OK:** `CLAUDE.md`'s "Security posture" sentence no longer
+    says "structurally impossible", and `docs/HISTORY.md`'s M2 step 2 bullet names the commit of
+    its review fixes.
+- **Measured after,** through the server with a real sandboxed guest making the files:
+
+  | Case | Before | After |
+  |---|---|---|
+  | A name with a line break and a fake entry (Linux, native) | two lines, one of them forged | one line, and the note |
+  | 20,000 files, workspace on ext4 | not measured at this size | 0.010 s |
+  | 20,000 files, workspace on `/mnt/c` (9p) | over 4 s | 0.108 s |
+  | 10,500 files, Windows, container guest | not measured at this size | 0.187 s |
+
+  - On Windows the guest's line break arrives as a private-use character, so the name is one
+    line and needs no escape.
+  - `vestibule-mcp setup` with `DOCKER_HOST` naming a socket this user may not open prints the
+    hint, exits 1 and writes nothing to stdout.
+- **What it leaves,** stated in `SECURITY.md` §3.12 or here:
+  - A folder past 10,000 entries is listed from the first 10,000 read, in the filesystem's
+    order.
+  - The cap counts characters, so its size in bytes can be about three times that: 55 KB for
+    200 names made of bytes that aren't valid text.
+  - Names that aren't valid text show the replacement character, and two of them can look
+    alike.
+  - A footer's count is of what the scan saw. If a guest deletes entries during a listing, the
+    count can name entries that are gone.
+  - A socket file left behind with no daemon gets the group hint too. The hint doesn't say
+    Docker is running, and the refusal is re-checked.
+  - The Windows listing of the big folder took 0.17 to 0.19 s, over the plan's "within 0.1 s".
+    The plan's number was set too low for Windows; the old code took 3.1 s for 200,000.
+- **Review:**
+  - **Plan:** `skeptic` found 4 medium and 6 low on v1, all taken. `verifier` checked its nine
+    claims about the code: none refuted. Among them: the size lookup per entry was the slow
+    part on a slow disk, the `audit` command's escape function would have loaded a module that
+    prints to stdout into the server, and "permission denied" alone also matches an unreadable
+    Docker config file.
+  - **Diff:** `critic` found 2 medium and 2 low, and `verifier` confirmed all four. The builder
+    fixed them: a guest that deleted its files during a listing could force 10,000 lookups, no
+    test reached an entry gone since the scan, a claim in a comment was too wide, and a folder
+    the guest made unsearchable listed as empty. A second pass by `critic` found all four
+    closed and nothing new.
+- **Mutants:** every one red in its named test after a green control, except one that can't
+  fail on Windows.
+  - Round 1: 21 of 21 on WSL 3.14 and 3.11, 18 of 19 on Windows. The nineteenth removes the
+    doubling of backslashes, and an NTFS name can't hold one.
+  - Round 2: 6 new and 10 re-run, 16 of 16 on both WSL Pythons, 4 of 4 on Windows.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (409 s of 540): 3.14 full
+  suite 1059 passed, 0 skipped; 3.11 Docker-free 1009; stdio 7. Windows: 863 passed, plus 176
+  POSIX/Linux-only skips, none of them for Docker.
+- **Where to start if it breaks:**
+  - **A listing shows an odd name or a missing one:** `_render` in `workspace.py` builds every
+    line; `_shown` is the escape.
+  - **A listing is slow again:** `test_a_folder_is_read_up_to_the_scan_cap` and
+    `test_sizes_are_asked_only_for_entries_shown` count what a listing reads.
+  - **The group hint is missing:** Docker changed its wording. `_SOCKET_DENIED` in `select.py`
+    is the phrase it looks for.
+
+## M4 step 4b — the demo GIF (2026-11-10)
+
+- **Commit:** `bc79e75`.
 - **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) §6 and §10; §14 is the
   as-built. It adds a dated amendment to P7 of [`M4-adoption.md`](plans/M4/M4-adoption.md).
 - **What:**

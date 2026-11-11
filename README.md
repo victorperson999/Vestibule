@@ -74,7 +74,7 @@ Only code sent to `run_code` goes through the chamber: see [What is and isn't sa
 
 You need an MCP client (these steps use [Claude Code](https://claude.com/claude-code)) and [uv](https://docs.astral.sh/uv/), which installs Vestibule in its own environment.
 
-Follow your platform. Each installs uv with uv's own installer ([other ways](https://docs.astral.sh/uv/getting-started/installation/)), and **you need a new terminal after that** so `uv` is found. Each ends the same way: ask your agent to run `print(1)`, and check the `isolation:` line at the end of the result.
+Follow your platform. Each installs uv with uv's own installer ([other ways](https://docs.astral.sh/uv/getting-started/installation/)), and **you need a new terminal after that** so `uv` is found. Each ends the same way: ask your agent to run `print(1)` with Vestibule's `run_code` tool, and check the `isolation:` line at the end of the result.
 
 ### Linux with systemd (Debian, Fedora, Arch, WSL2)
 
@@ -177,7 +177,7 @@ On macOS a GUI client doesn't see your terminal's `PATH`, so give it the program
 - **`setup` fails with `CERTIFICATE_VERIFY_FAILED`:** install `ca-certificates` (a minimal Debian doesn't have it).
 - **`isolation: native-degraded (… no systemd user bus)`:** install `dbus-user-session` and reboot.
 - **`Blocked:` saying Ubuntu restricts unprivileged user namespaces, or naming the snap:** see [Ubuntu 23.10 and later](https://github.com/victorperson999/Vestibule#ubuntu-2310-and-later).
-- **`daemon not reachable`:** start Docker. If the message also says `permission denied`, Docker is running and you aren't in the `docker` group yet: run `sudo usermod -aG docker $USER`, then log out and back in. (The message itself only says to start Docker.)
+- **`daemon not reachable`:** start Docker. If the message says this user may not open docker's socket, you aren't in the `docker` group yet: run `sudo usermod -aG docker $USER`, log out and back in, then restart your agent.
 - **A warning about `server/discover` with 31 validation errors,** once per session in the server's log: harmless. Claude Code first sends a request this version of the MCP SDK doesn't know, then falls back, and the session works.
 - **Anything else:** every `Blocked:` message names its fix, and [`docs/GETTING_STARTED.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/GETTING_STARTED.md#troubleshooting) has the longer list.
 
@@ -343,7 +343,7 @@ Two backends are accepted, and every result states the isolation that actually a
 | M1 | Container backend (Docker/Podman) — the cross-platform isolation floor, + `read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M1/M1-container-backend.md) |
 | M2 | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required) | ✅ accepted 2026-10-31 (all 17 acceptance criteria + live-agent check) — see [`docs/plans/M2/M2-native-warden.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M2/M2-native-warden.md) |
 | M3 | Audit log + resource reporting | ✅ accepted 2026-11-07 (all 10 acceptance criteria + live-agent checks) — see [`docs/plans/M3/M3-audit-usage.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M3/M3-audit-usage.md) |
-| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | in progress — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
+| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | first release, 0.1.0 — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
 
 ## Documentation
 

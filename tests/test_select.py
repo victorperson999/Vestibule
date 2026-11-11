@@ -420,6 +420,57 @@ async def test_daemon_down_hint_is_runtime_specific(monkeypatch):
     assert "Docker Desktop" not in msg
 
 
+# M4 step 4 follow-ups §3. Docker 28's words for a socket this user may not open (215 characters
+# with the default path, cut to 200 by `_version_check`), an older Docker's, and the other lines.
+_SOCKET = ("permission denied while trying to connect to the Docker daemon socket at "
+           'unix:///var/run/docker.sock: Get "http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version": '
+           "dial unix /var/run/docker.sock: connect: permission denied")
+_CONFIG = ("WARNING: Error loading config file: /home/u/.docker/config.json: open "
+           "/home/u/.docker/config.json: permission denied")
+_DOWN = ("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker "
+         "daemon running?")
+_GROUP = ("This user may not open docker's socket. Add the user to the `docker` group "
+          "(`sudo usermod -aG docker $USER`), log out and back in, then restart your agent. "
+          "Members of that group can become root on this machine.")
+_START = {"docker": "Start docker (Docker Desktop on Windows/macOS), then retry.",
+          "podman": "Start podman (`podman machine start` on Windows/macOS), then retry."}
+
+
+@pytest.mark.parametrize("platform, runtime, lines, hint, start", [
+    ("linux", "auto", {"docker": _SOCKET}, True, None),
+    ("linux", "auto", {"docker": "Got " + _SOCKET}, True, None),
+    ("linux", "auto", {"docker": _SOCKET.upper()}, True, None),
+    ("linux", "auto", {"docker": _SOCKET, "podman": "cannot connect to Podman"}, True, "podman"),
+    ("darwin", "auto", {"docker": _SOCKET}, False, "docker"),
+    ("win32", "auto", {"docker": _SOCKET}, False, "docker"),
+    ("linux", "podman", {"podman": _SOCKET}, False, "podman"),
+    ("linux", "auto", {"docker": _DOWN}, False, "docker"),
+    ("linux", "auto", {"docker": _CONFIG}, False, "docker"),
+], ids=["socket", "older-docker", "any-case", "podman-down-too", "macos", "windows", "podman",
+        "daemon-down", "config-warning"])
+async def test_dockers_socket_line_gets_the_group_hint(monkeypatch, platform, runtime, lines,
+                                                       hint, start):
+    _on(monkeypatch, platform)
+
+    async def vc(rt):  # worded as `_version_check` words it; a runtime not named isn't installed
+        line = lines.get(rt)
+        return "not installed" if line is None else f"daemon not reachable ({line[:200]})"
+
+    monkeypatch.setattr(select_mod, "_version_check", vc)
+    selector = BackendSelector()
+    with pytest.raises(RunRefusedError) as ei:
+        await selector.get(_limits(runtime=runtime))
+    msg = str(ei.value)
+    assert (_GROUP in msg) == hint, msg
+    for rt, sentence in _START.items():
+        assert (sentence in msg) == (rt == start), msg
+        assert (f"Start {rt}" in msg) == (rt == start), msg
+    # An ordinary refusal: served from the cache with when it is checked again, never final.
+    assert not isinstance(ei.value, select_mod._RestartRequired)
+    with pytest.raises(RunRefusedError, match="re-checked at most every"):
+        await selector.get(_limits(runtime=runtime))
+
+
 @pytest.mark.parametrize("case", ["backend", "runtime", "not-installed"])
 async def test_cached_restart_refusal_never_suggests_waiting(case, monkeypatch):
     """Critic fix: a refusal only a restart can fix keeps saying restart when served

@@ -148,6 +148,48 @@ class _Calls:
         self.at = 0
         self.swap = None
         self.fired = False
+        self.taken = 0  # entries taken from a listing's `scandir` (POSIX)
+        self.entry_stats = 0  # `stat` asked of those entries themselves
+        self.after_scan = None  # run when the listing is done with its `scandir`
+
+
+class _Taken:
+    """Stands in for the iterator `os.scandir` returns: counts the entries taken from it."""
+
+    def __init__(self, calls, it):
+        self._calls = calls
+        self._it = it
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._it.close()
+        if self._calls.after_scan is not None:
+            self._calls.after_scan()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        entry = next(self._it)
+        self._calls.taken += 1
+        return _Entry(self._calls, entry)
+
+
+class _Entry:
+    """One entry taken from a `_Taken`; counts the `stat` asked of it."""
+
+    def __init__(self, calls, entry):
+        self._calls = calls
+        self._entry = entry
+
+    def stat(self, **kwargs):
+        self._calls.entry_stats += 1
+        return self._entry.stat(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._entry, name)
 
 
 class _Watched:
@@ -174,7 +216,7 @@ class _Watched:
             except Exception as e:
                 entry[3] = e
                 raise
-            return entry[3]
+            return _Taken(calls, entry[3]) if name == "scandir" else entry[3]
 
         return counted
 
@@ -492,8 +534,9 @@ def test_listing_lines_keep_their_format(ws):
 def test_a_big_directory_is_counted_exactly(ws):
     big = ws / "big"
     big.mkdir()
-    odd = "0-naïve-日本-" + "n" * 88
-    for name in [odd] + [f"{i:03}-" + "n" * 96 for i in range(399)]:
+    # 60 characters: 200 lines fit the 20,000 cap, and 400 names still span two Windows buffers.
+    odd = "0-naïve-日本-" + "n" * 49
+    for name in [odd] + [f"{i:03}-" + "n" * 56 for i in range(399)]:
         (big / name).write_text("x", encoding="utf-8")
     lines = read_workspace_entry(ws, "big", 20_000).split("\n")
     assert len(lines) == 201
@@ -516,3 +559,169 @@ def test_a_name_too_long_to_exist_gives_no_content(ws):
     (ws / "aaaa").write_text("short name", encoding="utf-8")
     outcome = _read(ws, "a" * (32768 + 4))
     assert isinstance(outcome, WorkspacePathError) or outcome.startswith("Not found:")
+
+
+# --- What a listing shows, and how much of a folder it reads (M4 step 4 follow-ups) ----------
+
+BS = "\\"
+NOTE = "...[names are shown with backslash escapes for control characters]"
+
+
+def _line(name, size=1):
+    return f"{'file':<8}{size:>12}  {name}"
+
+
+def _files(folder, names):
+    folder.mkdir()
+    for name in names:
+        (folder / name).write_text("x", encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="NTFS can't hold a line break in a name")
+def test_a_line_break_in_a_name_cant_forge_an_entry(ws):
+    forged = _line("secrets.txt", 42)
+    _files(ws / "forge", ["a.txt\n" + forged, "b.txt"])
+    lines = read_workspace_entry(ws, "forge", 20_000).split("\n")
+    assert lines == [_line(f"a.txt{BS}x0a{forged}"), _line("b.txt"), NOTE]
+
+
+def test_escapes_are_exact(ws):
+    shown = {
+        f"rlo{chr(0x202E)}txt.exe": f"rlo{BS}u202etxt.exe",  # a right-to-left override
+        f"ls{chr(0x2028)}x": f"ls{BS}u2028x",  # a line separator
+        f"nel{chr(0x85)}x": f"nel{BS}x85x",  # a control character
+        f"tag{chr(0xE0001)}": f"tag{BS}U000e0001",  # a format character past 0xFFFF
+    }
+    _files(ws / "odd", shown)
+    lines = read_workspace_entry(ws, "odd", 20_000).split("\n")
+    assert lines == [_line(shown[name]) for name in sorted(shown)] + [NOTE]
+
+    plain = ["a.txt", "b c.txt", "naïve-日本.md"]
+    _files(ws / "plain", plain)
+    assert read_workspace_entry(ws, "plain", 20_000) == "\n".join(_line(n) for n in plain)
+
+    if sys.platform != "win32":  # a backslash is a separator in a Windows name
+        # Doubled, so a name that reads like an escape can't pass for the name it imitates.
+        _files(ws / "slash", [f"a.txt{BS}x0ab"])
+        listing = read_workspace_entry(ws, "slash", 20_000)
+        assert listing.split("\n") == [_line(f"a.txt{BS}{BS}x0ab"), NOTE]
+
+
+def test_a_listing_fits_the_cap(ws):
+    names = [f"a{i:02}" + "é" * (i * 7 % 40) for i in range(12)]  # é: one character, two bytes
+    names += ["b" + "y" * 150] + [f"c{i}" for i in range(8)]
+    _files(ws / "mixed", names)
+    lines = [_line(name) for name in sorted(names)]
+    cap = 600
+    k = max(k for k in range(len(lines) + 1) if len("\n".join(lines[:k])) <= cap)
+    # The first line that doesn't fit is the long one, and the line after it would.
+    assert lines[k] == _line(names[12])
+    assert len("\n".join(lines[:k] + lines[k + 1 : k + 2])) <= cap
+    listing = read_workspace_entry(ws, "mixed", cap).split("\n")
+    assert listing[:-1] == lines[:k] and len("\n".join(listing[:-1])) <= cap
+    assert listing[-1] == f"...[{len(names) - k} more entries not shown]"
+    # So small a cap that no line fits: the footer alone.
+    assert read_workspace_entry(ws, "mixed", 10) == f"...[{len(names)} more entries not shown]"
+
+
+def _reads(calls):
+    """How much of a folder a listing read: on POSIX, the entries taken from `scandir`; on Windows,
+    where one call fills a buffer with many records, the calls."""
+    if sys.platform != "win32":
+        return calls.taken
+    classes = (workspace._FILE_FULL_DIR_INFO, workspace._FILE_FULL_DIR_RESTART_INFO)
+    return sum(1 for name, args, _, _ in calls.log
+               if name == "GetFileInformationByHandleEx" and args[1] in classes)
+
+
+def test_a_folder_is_read_up_to_the_scan_cap(monkeypatch, ws):
+    cap, huge = 300, 1_000_000  # `huge`: no character cap, this test is about the scan
+    # raising=False: a lister without the cap must fail on what it reads, not on this line.
+    monkeypatch.setattr(workspace, "_MAX_SCAN", cap, raising=False)
+    # 120 characters: a Windows buffer holds about 210 of these names, not 740.
+    names = [f"{i:04}-" + "n" * 115 for i in range(1500)]
+
+    # Exactly at the cap: the listing is today's. On Windows `.` and `..` must not count.
+    _files(ws / "edge", names[:cap])
+    footer = read_workspace_entry(ws, "edge", huge).split("\n")[-1]
+    assert footer == f"...[{cap - 200} more entries not shown]"
+    (ws / "edge" / names[cap]).write_text("x", encoding="utf-8")
+    footer = read_workspace_entry(ws, "edge", huge).split("\n")[-1]
+    assert footer == (f"...[{cap + 1 - 200}+ more entries not shown: the folder holds over {cap}, "
+                      f"and only the first {cap} read were sorted]")
+
+    _files(ws / "big", names)
+    calls = _watch(monkeypatch)
+    read_workspace_entry(ws, "big", huge)
+    capped = _reads(calls)
+    monkeypatch.setattr(workspace, "_MAX_SCAN", 10**9)
+    calls.log.clear()
+    calls.taken = 0
+    read_workspace_entry(ws, "big", huge)
+    whole = _reads(calls)
+    if sys.platform == "win32":  # several buffers, and the cap stops in the second
+        assert whole >= 6 and 2 * capped < whole, (capped, whole)
+    else:
+        assert (capped, whole) == (cap + 1, len(names))
+
+
+def _lookups(calls):
+    """The `stat` calls a POSIX listing made: the walk's, and the entries'."""
+    return calls.entry_stats + sum(1 for entry in calls.log if entry[0] in ("stat", "lstat"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows record carries its entry's size")
+def test_sizes_are_asked_only_for_entries_shown(monkeypatch, ws):
+    _files(ws / "many", [f"{i:04}.txt" for i in range(1000)])
+    calls = _watch(monkeypatch)
+    lines = read_workspace_entry(ws, "many", 20_000).split("\n")
+    assert len(lines) == 201 and calls.taken == 1000  # the stand-in saw the listing
+    stats = _lookups(calls)
+    assert stats == 200 + 1, stats  # the entries shown, and the walk's one name
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a Windows record carries its entry's size")
+def test_entries_gone_since_the_scan(monkeypatch, ws):
+    names = [f"{i:04}.txt" for i in range(1000)]
+    for folder in ("some", "all", "few"):
+        _files(ws / folder, names[:3] if folder == "few" else names)
+    calls = _watch(monkeypatch)
+
+    def listing(folder, going):
+        def remove():
+            for name in going:
+                os.unlink(ws / folder / name)
+
+        calls.log.clear()
+        calls.entry_stats = 0
+        calls.after_scan = remove
+        return read_workspace_entry(ws, folder, 20_000)
+
+    # All of them go between the scan and the lookups: no more than 200 lookups all the same.
+    text = listing("all", names)
+    assert _lookups(calls) == 200 + 1  # the first 200 names, and the walk's one
+    assert text == "...[800 more entries not shown]"
+    # A tenth of the first 200 go: their places stay empty, and the rest is counted.
+    gone = names[:200:10]
+    kept = [_line(name) for name in names[:200] if name not in gone]
+    assert listing("some", gone).split("\n") == kept + ["...[800 more entries not shown]"]
+    assert _lookups(calls) == 200 + 1
+    # A folder with no entry left is empty.
+    assert listing("few", names[:3]) == "(empty directory)"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="chmod doesn't take access away on Windows")
+def test_an_entry_that_cant_be_looked_up_is_shown(monkeypatch, ws):
+    if os.geteuid() == 0:
+        pytest.skip("root can read anything")
+    names = [f"{i:04}.txt" for i in range(300)]
+    _files(ws / "unsearchable", names)
+    os.chmod(ws / "unsearchable", 0o444)  # its names can be read, nothing in it looked up
+    try:
+        calls = _watch(monkeypatch)
+        lines = read_workspace_entry(ws, "unsearchable", 20_000).split("\n")
+    finally:
+        os.chmod(ws / "unsearchable", 0o755)
+    unknown = [f"{'unknown':<8}{'?':>12}  {name}" for name in names[:200]]
+    assert lines == unknown + ["...[100 more entries not shown]"]
+    assert _lookups(calls) == 200 + 1

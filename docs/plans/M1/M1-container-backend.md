@@ -216,6 +216,14 @@ Schema: `{ "path": string, default "." }` — relative to the workspace root onl
 
 **Results:** directory ⇒ listing (name, type, size; capped at 200 entries); file ⇒ content decoded `errors="replace"`, capped at `max_output_bytes` with a truncation marker; missing path ⇒ `Not found: <relpath>` as content. Handler never raises.
 
+> **Amendment 2026-11-10 (M4 step 4 follow-ups, [`M4-step4-followups.md`](../M4/M4-step4-followups.md), signed by Victor):**
+> a listing is still capped at 200 entries, and now also:
+> - a name's control and format characters are shown as backslash escapes, and a backslash is
+>   doubled, so one entry is always one line;
+> - the listing stops at `max_output_bytes`, counted in characters as a run's output is;
+> - at most 10,000 entries of a folder are read, and past that the listing says so;
+> - on POSIX an entry's type and size are asked for only if its line is shown.
+
 Jail logic lives in a new `src/vestibule/workspace.py` so it is unit-testable without Docker.
 
 ## 7. Server changes

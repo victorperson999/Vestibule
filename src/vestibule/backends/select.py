@@ -74,6 +74,15 @@ _PINNED_REF = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 # `_version_check`'s status for a missing CLI binary (vs. a daemon that won't answer).
 _NOT_INSTALLED = "not installed"
+# M4 step 4 follow-ups §3: Docker's words for a socket this user may not open, at the start of
+# its line, so `_version_check`'s cut to 200 characters keeps them; and the fix. The last
+# sentence is SECURITY.md §3.11.
+_SOCKET_DENIED = "permission denied while trying to connect"
+_GROUP_HINT = (
+    "This user may not open docker's socket. Add the user to the `docker` group "
+    "(`sudo usermod -aG docker $USER`), log out and back in, then restart your agent. "
+    "Members of that group can become root on this machine."
+)
 
 # Config is read once at server start (server.py LIMITS) and the process environment is
 # fixed when the agent launches the server, so config mistakes need a restart, not a retry.
@@ -621,9 +630,18 @@ class BackendSelector:
                 "VESTIBULE_RUNTIME. Then restart your agent."
             )
         # Runtime-specific start hints: a Podman user is never pointed at Docker Desktop.
-        down = [rt for rt, s in zip(order, statuses) if s != _NOT_INSTALLED]
-        start = " or ".join(f"{rt}{START_HINTS.get(rt, '')}" for rt in down)
-        raise RunRefusedError(msg + f"Start {start}, then retry.")
+        fixes: list[str] = []
+        down: list[str] = []
+        for rt, s in zip(order, statuses):
+            hint = _group_hint(rt, s)
+            if hint:
+                fixes.append(hint)
+            elif s != _NOT_INSTALLED:
+                down.append(rt)
+        if down:
+            start = " or ".join(f"{rt}{START_HINTS.get(rt, '')}" for rt in down)
+            fixes.append(f"Start {start}, then retry.")
+        raise RunRefusedError(msg + " ".join(fixes))
 
     async def _probe(self, backend: ContainerBackend, limits: Limits) -> str | None:
         """Run the workspace round-trip probe; None on success, else a short reason.
@@ -749,6 +767,17 @@ def _snap_hint(runtime: str) -> str:
     return (f". {path} is the snap package. A snap can't start a container with "
             "no-new-privileges, which every Vestibule run sets. Install Docker Engine from "
             "Docker's apt repository: https://docs.docker.com/engine/install/ubuntu/")
+
+
+def _group_hint(runtime: str, status: str) -> str | None:
+    """M4 step 4 follow-ups §3: a Linux user outside the `docker` group is told to join it, not to
+    start Docker. Docker's own phrase, not "permission denied" alone: an unreadable
+    ~/.docker/config.json puts those two words in a WARNING on the first line instead. It doesn't
+    say Docker is running: a socket left behind with no daemon gives the same line. Only docker,
+    only Linux: Podman says "permission denied" for other reasons, and `usermod` isn't macOS's."""
+    if runtime != "docker" or sys.platform != "linux" or _SOCKET_DENIED not in status.lower():
+        return None
+    return _GROUP_HINT
 
 
 def _read_sysctls() -> dict[str, str]:

@@ -22,9 +22,21 @@ from __future__ import annotations
 import os
 import stat
 import sys
+import unicodedata
+from collections.abc import Callable
 from pathlib import Path
+from typing import TypeVar
 
 _MAX_DIR_ENTRIES = 200
+# docs/plans/M4/M4-step4-followups.md §2.3: a guest can make a folder as large as the disk
+# allows, so a listing reads this many entries of it at most.
+_MAX_SCAN = 10_000
+# §2.1: the audit command's set (M3 R1): controls, format characters, surrogates, line and
+# paragraph separators. Its own copy: the server must not import audit_cli, which prints.
+# No surrogate reaches it today, since both listers decode with "replace"; Cs keeps a listing
+# valid if that ever changes (§12 D3).
+_ESCAPED = ("Cc", "Cf", "Cs", "Zl", "Zp")
+_ESCAPE_NOTE = "...[names are shown with backslash escapes for control characters]"
 _LINK_REFUSED = "path traverses a symlink or reparse point; refused"
 
 _WINDOWS_RESERVED = frozenset(
@@ -99,15 +111,60 @@ def read_workspace_entry(root: Path, user_path: str, max_bytes: int) -> str:
     return f"Not found: {user_path or '.'}" if found is None else found
 
 
-def _render(entries: list[tuple[str, str, int]]) -> str:
+_K = TypeVar("_K")
+
+
+def _render(
+    entries: list[tuple[str, _K]], describe: Callable[[_K], tuple[str, int | str] | None],
+    max_chars: int, over: bool,
+) -> str:
+    """Name order, a line for each of the first 200 entries while the text fits `max_chars`
+    (counted in characters, as a run's output is), then what was left out. `describe` gives an
+    entry's kind and size, or None for one gone since the scan, whose place stays empty (§12 D1:
+    no other entry is looked up). `over`: the folder holds more than was read."""
     if not entries:
         return "(empty directory)"
     entries.sort()
-    shown = entries[:_MAX_DIR_ENTRIES]
-    lines = [f"{kind:<8}{size:>12}  {name}" for name, kind, size in shown]
-    if len(entries) > len(shown):
-        lines.append(f"...[{len(entries) - len(shown)} more entries not shown]")
-    return "\n".join(lines)
+    lines: list[str] = []
+    length = -1  # of the lines joined: the first has no line break before it
+    gone = 0
+    escaped = False
+    for name, key in entries[:_MAX_DIR_ENTRIES]:
+        found = describe(key)
+        if found is None:
+            gone += 1
+            continue
+        shown = _shown(name)
+        line = f"{found[0]:<8}{found[1]:>12}  {shown}"
+        length += 1 + len(line)
+        if length > max_chars:
+            break
+        lines.append(line)
+        escaped |= shown != name
+    hidden = len(entries) + over - len(lines) - gone  # `over`: the one read to learn it
+    if over:
+        lines.append(f"...[{hidden}+ more entries not shown: the folder holds over {_MAX_SCAN}, "
+                     f"and only the first {_MAX_SCAN} read were sorted]")
+    elif hidden:
+        lines.append(f"...[{hidden} more entries not shown]")
+    if escaped:
+        lines.append(_ESCAPE_NOTE)
+    return "\n".join(lines) or "(empty directory)"
+
+
+def _shown(name: str) -> str:
+    """A name as one line (§2.1). Unlike the audit command's text, which is code full of `\\n`,
+    a backslash is doubled: one in a listing always starts an escape, so a name of valid text
+    can't imitate an escaped one (§12 D3)."""
+    return "".join(
+        "\\\\" if c == "\\" else _escape(c) if unicodedata.category(c) in _ESCAPED else c
+        for c in name
+    )
+
+
+def _escape(c: str) -> str:
+    n = ord(c)
+    return f"\\x{n:02x}" if n < 0x100 else f"\\u{n:04x}" if n < 0x10000 else f"\\U{n:08x}"
 
 
 def _read_file(fd: int, max_bytes: int) -> str:
@@ -143,33 +200,44 @@ if sys.platform != "win32":
                 fd = nxt
             mode = os.fstat(fd).st_mode
             if stat.S_ISDIR(mode):
-                return _list_dir(fd)
+                return _list_dir(fd, max_bytes)
             if stat.S_ISREG(mode):
                 return _read_file(fd, max_bytes)
             raise WorkspacePathError("path is neither a regular file nor a directory")
         finally:
             os.close(fd)
 
-    def _list_dir(fd: int) -> str:
-        entries: list[tuple[str, str, int]] = []
+    def _list_dir(fd: int, max_chars: int) -> str:
+        """Names only: a size is asked for, by name in this folder, only for a line shown."""
+        names: list[str] = []
+        over = False
         with os.scandir(fd) as it:
             for entry in it:
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                except OSError:
-                    continue
-                if _is_symlink_or_reparse(st):
-                    kind = "symlink"
-                elif stat.S_ISDIR(st.st_mode):
-                    kind = "dir"
-                elif stat.S_ISREG(st.st_mode):
-                    kind = "file"
-                else:
-                    kind = "other"
-                # A name that isn't valid text can't go to the model as JSON.
-                name = os.fsencode(entry.name).decode("utf-8", "replace")
-                entries.append((name, kind, st.st_size))
-        return _render(entries)
+                if len(names) == _MAX_SCAN:
+                    over = True
+                    break
+                names.append(entry.name)
+
+        def describe(name: str) -> tuple[str, int | str] | None:
+            try:  # never follows a link
+                st = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:  # gone since the scan: left out
+                return None
+            except OSError:  # there, but can't be looked up: a folder that isn't searchable
+                return "unknown", "?"
+            if _is_symlink_or_reparse(st):
+                kind = "symlink"
+            elif stat.S_ISDIR(st.st_mode):
+                kind = "dir"
+            elif stat.S_ISREG(st.st_mode):
+                kind = "file"
+            else:
+                kind = "other"
+            return kind, st.st_size
+
+        # A name that isn't valid text can't go to the model as JSON.
+        entries = [(os.fsencode(name).decode("utf-8", "replace"), name) for name in names]
+        return _render(entries, describe, max_chars, over)
 
 else:
     import ctypes
@@ -303,7 +371,7 @@ else:
             _k32.CloseHandle(handle)
             handle = nxt
             if directory:
-                return _list_dir(handle)
+                return _list_dir(handle, max_bytes)
             fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
             handle = _INVALID_HANDLE  # the descriptor owns it now
             try:
@@ -314,9 +382,12 @@ else:
             if handle != _INVALID_HANDLE:
                 _k32.CloseHandle(handle)
 
-    def _list_dir(handle: int) -> str:
+    def _known(found: tuple[str, int]) -> tuple[str, int]:
+        return found
+
+    def _list_dir(handle: int, max_chars: int) -> str:
         """List through the handle: FILE_FULL_DIR_INFO records, one buffer at a time."""
-        entries: list[tuple[str, str, int]] = []
+        entries: list[tuple[str, tuple[str, int]]] = []
         buf = ctypes.create_string_buffer(64 * 1024)
         info_class = _FILE_FULL_DIR_RESTART_INFO
         while True:
@@ -325,7 +396,7 @@ else:
                 # A drive's root has no "." entry, so an empty one fails its first call.
                 first = info_class == _FILE_FULL_DIR_RESTART_INFO
                 if error == _ERROR_NO_MORE_FILES or (first and error == _ERROR_FILE_NOT_FOUND):
-                    return _render(entries)
+                    return _render(entries, _known, max_chars, False)
                 raise ctypes.WinError(error)
             info_class = _FILE_FULL_DIR_INFO
             data = buf.raw  # one copy per buffer, not one per entry
@@ -339,13 +410,15 @@ else:
                 # "replace": a name that isn't valid text can't go to the model as JSON.
                 name = data[offset + 68 : offset + 68 + name_bytes].decode("utf-16-le", "replace")
                 if name not in (".", ".."):
+                    if len(entries) == _MAX_SCAN:
+                        return _render(entries, _known, max_chars, True)
                     if attributes & _ATTR_REPARSE_POINT:
                         kind = "symlink"
                     elif attributes & _ATTR_DIRECTORY:
                         kind = "dir"
                     else:
                         kind = "file"
-                    entries.append((name, kind, size))
+                    entries.append((name, (kind, size)))
                 if next_offset == 0:
                     break
                 offset += next_offset

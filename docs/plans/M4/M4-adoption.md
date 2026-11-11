@@ -296,7 +296,8 @@ short confirmation from PyPI after the upload (§6, step 5).
 > - What the agent echoes on screen is compared with the tool's own results in the session's
 >   transcript before the GIF is kept, and every frame is checked for anything private.
 
-> **Amendment 2026-11-10 (step 4b as built, [`M4-step4-docs.md`](M4-step4-docs.md) §14):**
+> **Amendment 2026-11-10 (step 4b as built, [`M4-step4-docs.md`](M4-step4-docs.md) §14; reported
+> to Victor, who raised no objection and committed the step as `bc79e75`):**
 > - The two calls are asked for in two messages. Both calls' code is in the first, and the
 >   second is "now call 2". In one turn the model made both calls without showing the first
 >   result.
