@@ -1,7 +1,7 @@
 # M4 step 4 — the README, `SECURITY.md` and the demo (F4, F5, P7, P8)
 
 Status: **v2, signed off 2026-11-09 with option (1) on each of V1–V4. 4a built 2026-11-09 (§13 is
-its as-built); 4b, the demo, is not built.** v1 was reviewed by `skeptic` (24 findings: 2 high, 13 medium, 9
+its as-built); 4b, the demo, built 2026-11-10 (§14).** v1 was reviewed by `skeptic` (24 findings: 2 high, 13 medium, 9
 low; verdict "sound with amendments"). `verifier` checked 19 claims about the code, tools and logs:
 all 19 confirmed, five with a correction (§12). Every finding is taken below except one part of
 finding 5, with the reason given.
@@ -507,7 +507,7 @@ Its corrections are noted.
   Debian's `setup` printed `isolation native` and Ubuntu's `isolation container`, with its
   reason for not using native. On Debian, `sudo reboot` prints a bus warning and still reboots.
 - **The package count (§3) was re-measured** with `uv pip compile` for both platforms: 30 and 31.
-- **"The demo used both"** (§2.3) waits for 4b.
+- **"The demo used both"** (§2.3) waits for 4b (§14: it did).
 
 **Tests, where they differ from §5.** `builder` wrote them over five rounds:
 - **Tests 2 and 3 couldn't be red on the old README:** it had no absolute link for them to
@@ -551,3 +551,115 @@ sections, and §3 has `SECURITY.md` cover the same layers), so one can drift fro
   stdio 7.
 - **Windows:** 850 passed, plus 172 POSIX/Linux-only skips, none of them for Docker.
 - The README renders with PyPI's Markdown renderer: 15 code blocks, 6 tables, no relative link.
+
+## 14. As built: 4b (2026-11-10)
+
+**The GIF** is `docs/demo.gif`: 719,281 bytes, 19.7 s, 983×560, 91 frames. The README shows it
+under the badges, with its caption.
+
+**How the take was made, where it differs from §6.** Six takes; the sixth is the GIF.
+- **The kit** is `~/vestibule-live/demo/` in WSL: `plant.sh`, `prompt.txt`, `session.sh` and
+  `take.sh` (§6's `record.sh`). `session.sh` shows the key file on the host, then starts Claude
+  Code with `start.sh`'s flags and `--model claude-opus-5-5`.
+  - The flags are the README's stricter line's. The config file is the kit's `mcp.json`, not
+    the README's JSON: it starts the development venv's `vestibule-mcp` through `sh -c`, with
+    the server's stderr appended to a log.
+- **The prompt is pasted once the session is up.** Takes 1 to 3 passed it as a start-up
+  argument. In all three it was sent 0.4 to 0.7 s before the server answered its tool list
+  (and submitted 0.86, 0.58 and 0.72 s before), so the agent was offered no tools at all, and
+  no call was made.
+- **The model is Opus 5.5.** Takes 1 and 2 ran on that machine's default, Fable 5.2. Its
+  safeguard stopped the reply both times and Claude Code switched to Opus 4.8 (§8's classifier
+  case). Take 3 named Opus 5.5 and reworded the prompt's first lines.
+  - **Not tried:** Fable 5.2 in a session that had `run_code`. Both of its takes had no tools
+    and the first wording of the prompt.
+  - **What Opus 4.8 did with no tools:** it typed a Bash call as plain text in both takes. In
+    take 1 it also typed an output it made up, a key that isn't what the planted file holds.
+    This is the case the transcript comparison below is for. Opus 5.5, in take 3, said it had
+    no `run_code` and wouldn't substitute a tool or invent a result.
+- **Two messages, one call each.** In takes 4 and 5, with two different prompts, the model
+  made both calls in one turn with no text between them, so call 1's result never showed. The
+  first message now holds both calls' code and asks for call 1 only. The second is
+  "now call 2".
+- **Call 2 opens a raw socket** to `203.0.113.10`, port 80, with a 3 s timeout, and would then
+  send the placeholder string. §6 had `urllib`, whose uncaught error is a 35-line traceback.
+  The address and the error (`Network is unreachable`) are the same.
+  - **On the host the same line behaves differently:** run outside the sandbox in WSL, it
+    times out after 3.03 s. In the sandbox it fails at once (the whole run took 124 ms). The
+    GIF doesn't show that comparison.
+- **Recorded at 100×24** with asciinema 2.4.0 and rendered by agg 1.9.0, whose binary was
+  checked against the release's sha256.
+
+**The session:** Claude Code 2.1.322 with `claude-opus-5-5`, and Vestibule from the WSL
+development venv, an editable install of this working tree (`5a1bc23`; no `src/` change since).
+- **The tools the agent was offered:** Vestibule's two, and Claude Code's own `EndConversation`,
+  `advisor` and `DeferredToolPlaceholder`. So §2.3's "The demo used both" holds: it used the
+  stricter line's flags.
+- **The audit log has both calls** as `ran`, `isolation=native`, exit 1.
+
+**The edits are all in time. No byte of the terminal's output before the end cut is changed.**
+They go past §6's list (the banner cut, shorter pauses, one speed-up) in three ways, marked
+below, and the caption names each.
+- **One stretch takes no time:** from the end of the key listing (3.4 s on the take's clock)
+  to the moment the last line of Claude Code's banner left the screen (20.94 s). Its events
+  are moved to one instant and none is dropped, so the terminal's state stays exact. It holds:
+  - the banner and one notice;
+  - **past §6:** the pasting of the prompt, and the first 2.4 s of the agent's turn. The first
+    frame after the key listing shows call 1 already under way.
+- **Past §6: the end is dropped** after 48.9 s, just after the second result. The take runs to
+  550 s. The dropped part holds scrolling back to the banner, a "copied to clipboard" line,
+  Claude Code's recap and `/exit`.
+- **Pauses are capped at 2 s** (`agg --idle-time-limit 2`), which removes 10.5 s: most of it is
+  the wait while "now call 2" was typed.
+- **One speed-up, 1.3×** (`--speed 1.3`).
+- **Past §6: the last frame is held 4 s** (`--last-frame-duration 4`).
+- **Not an edit, and in the GIF:** the view was scrolled during the take. In frames 29 to 37
+  it jumps up to the prompt and back, and in frame 89 it is scrolled up a few lines, so call
+  2's `isolation:` line is out of view for 0.4 s. The last frame shows it.
+
+**Checked before it was kept:**
+- **Against the transcript:** the text the agent typed after each call is the tool's own
+  result inside a code block, character for character, for both calls.
+- **Every screen state:** the cut recording was replayed in a terminal emulator. Its 128 states
+  after the key listing hold 120 distinct lines: none from the banner, and no email, plan or
+  account detail. The only name on screen is the Linux user name in the paths, which is the
+  repo owner's GitHub name.
+- **Every frame:** Claude looked at all 91 on contact sheets at one-third size, which shows a
+  banner or a notice but can't be relied on for reading text, and at five frames full size.
+  The replay above is the check of the text. Victor looks at the GIF before the commit.
+- **On screen, not Vestibule's:** Claude Code's spinner words, "Cooked for 5s · done 4:12 PM"
+  after call 1 and "Brewed for 5s · done 4:12 PM" on the last frame, a `/voice` tip, "don't
+  ask on (shift+tab to cycle)", "paste again to expand" and "Jump to bottom".
+
+**Test 7,** by `builder`: `test_demo_gif_is_under_3_mb` reads the file, checks its first six
+bytes are a GIF signature, and checks it is under 3,000,000 bytes (the stricter reading of
+criterion 7's "3 MB").
+- **It couldn't be red first:** the GIF existed before the test. The mutant that deletes the
+  file stands in for that.
+- **Mutants, 3 red of 3,** each after a green control, on Windows 3.11 and WSL 3.14: the file
+  padded to exactly 3,000,000 bytes, the file with a PNG signature, and the file missing. One
+  byte under the limit stays green. With the file missing, 4a's test 2 fails too, on the
+  README's image line.
+- **`test_docs.py` and `test_pins.py`:** 16 passed on Windows 3.11 and on WSL 3.14 and 3.11.
+  ruff and mypy are clean. The full gate wasn't re-run: this step changes no `src/`, and adds
+  one test that needs no sandbox.
+
+**Review:** `critic` on the caption and these records found nothing high, 3 medium and 8 low.
+`verifier` confirmed all 9 it was given, three with corrections. All are fixed.
+- **The caption's list of edits was incomplete** (the 2.4 s, the end, the held frame), and it
+  said Windows and stock Ubuntu get `container` without "with Docker".
+- **This section's account of the failed takes was wrong:** it had one take with no tools, not
+  three, and gave the safeguard as the reason for Opus 5.5 without saying what wasn't tried.
+- **The kept copy of the take was cut short,** copied while the session was still open. It is
+  the whole take now, and the cut recording rebuilds from it byte for byte.
+- **A second, narrow pass** by `critic` on the changed sentences found 5 low and nothing
+  higher: the caption's "with Docker" was too broad for Ubuntu (the snap can't run Vestibule),
+  the timings measured submission where they said sending, one frame was described wrongly,
+  and a rule was drawn from three takes. The main session fixed those five and re-ran the doc
+  tests and the README render; `verifier` wasn't run on them.
+
+**Kept outside the repo,** in `m4spike\demo\`: the take, the cut recording, the kit's scripts,
+the checking scripts and the exact commands (`HOW.txt`).
+
+**Left for step 5:** criterion 7's "renders on the PyPI page". The image's URL is on `main`, so
+it shows nothing until this branch is merged.

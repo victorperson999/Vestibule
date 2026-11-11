@@ -296,6 +296,20 @@ short confirmation from PyPI after the upload (§6, step 5).
 > - What the agent echoes on screen is compared with the tool's own results in the session's
 >   transcript before the GIF is kept, and every frame is checked for anything private.
 
+> **Amendment 2026-11-10 (step 4b as built, [`M4-step4-docs.md`](M4-step4-docs.md) §14; reported
+> to Victor, who raised no objection and committed the step as `bc79e75`):**
+> - The two calls are asked for in two messages. Both calls' code is in the first, and the
+>   second is "now call 2". In one turn the model made both calls without showing the first
+>   result.
+> - The second call opens a raw socket to that address, not `urllib`, whose error is a 35-line
+>   traceback.
+> - The caption says macOS is *expected* to get `container`. No sandboxed run has been made on
+>   a Mac (step 4a).
+> - The edits go past the 2026-11-09 list. The stretch that takes no time also holds the
+>   pasting of the prompt and the first 2.4 s of the agent's turn, everything after the second
+>   result is dropped, and the last frame is held 4 s. All are edits in time, no output is
+>   changed, and the caption lists them.
+
 ### P8 (Victor, 2026-11-07: (1)) — How vulnerabilities are reported
 
 - **(1) Recommended: GitHub's private vulnerability reporting** on the public repo. Victor turns

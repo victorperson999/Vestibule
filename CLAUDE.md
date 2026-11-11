@@ -93,7 +93,7 @@ The `andrej-karpathy-skills` plugin is installed user-wide; these are its four r
 
 ## Security posture (summary; full version → `SECURITY.md`)
 
-Vestibule provides strong isolation comparable in *mechanism* to rootless containers: no host filesystem visibility (only a bind-mounted workspace + tmpfs), no network egress (empty network namespace), resource caps (cgroups), and a syscall allowlist (seccomp). It is **not** a VM boundary — it shares the host kernel, so a kernel privilege-escalation exploit could in principle escape. State this plainly. The goal is to make the *common, realistic* agent risks (prompt-injected exfiltration, destructive commands, resource exhaustion) structurally impossible, not to defend against a nation-state kernel 0-day.
+Vestibule provides strong isolation comparable in *mechanism* to rootless containers: no host filesystem visibility (only a bind-mounted workspace + tmpfs), no network egress (empty network namespace), resource caps (cgroups), and a syscall allowlist (seccomp). It is **not** a VM boundary — it shares the host kernel, so a kernel privilege-escalation exploit could in principle escape. State this plainly. The goal is to put the *common, realistic* agent risks (prompt-injected exfiltration, destructive commands outside the workspace, resource exhaustion) out of a sandboxed run's reach, short of a bug in the kernel or the container runtime (`SECURITY.md` §1 lists what stays possible), not to defend against a nation-state kernel 0-day.
 
 ## Workflow Rules
 

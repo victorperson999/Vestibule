@@ -61,7 +61,9 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 2 | P4 and P5: one `setup` on every platform, downloading only what the machine can use and ending in the real readiness check | 2026-11-09 | `ff10e3c` | 935 Linux (0 skipped); 747 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 3 | F1, F2, P2, P9: 0.1.0 and its metadata, the sdist include list, the re-frozen set, the re-pin, `release_smoke.py`, the checklist and the macOS job (nothing published) | 2026-11-09 | `cbf6424` | 1014 Linux (0 skipped); 826 + 168 POSIX/Linux-only skips on Windows |
 | M4 step 4 fix | `read_workspace` opens each name once from the folder it holds open and never follows a link, on every platform (the check-then-open race, a host-path oracle and a FIFO hang closed); a file name that isn't valid text no longer stops the server | 2026-11-09 | `364f975` | 1037 Linux (0 skipped); 845 + 172 POSIX/Linux-only skips on Windows |
-| M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | pending | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | `5a1bc23` | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
+| M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | `bc79e75` | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
+| M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | `4bd503c` | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -81,13 +83,19 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-05 (M3 step 4, critic round 2) | server shutdown, Windows | `_main`'s Windows branch has no `except`, so an exception that escapes `server.run` (with nothing left to clean up) leaves `asyncio.run`, and the interpreter writes its traceback straight to `sys.stderr`. On a stuck pipe that write blocks, and the exit waits for the client's kill (300 ms to 2 s). Older than step 4; POSIX catches it and exits through the hand-off. | Documented residual (ARCHITECTURE, contract A11 amendment) |
 | 2026-11-06 (M3 step 5a, critic) | naive backend | `NaiveBackend.run` never removes its `mkdtemp` (`vestibule-*` in the system temp dir), so each naive run leaves one. Naive is the dev-only backend with no isolation; the tests that use it add a few dirs per gate | Documented; low |
 | 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace`, Windows server with the workspace on a network or WSL share | The far side looks every name up again, so the walk is by name there, as it was before the fix. No outside content came back in tests (Windows doesn't follow a WSL share's links; other shares weren't tried). A guest that swaps a file for a FIFO at the right moment holds one call for about 10 s and leaves a reader waiting in WSL; the old code did the same. During such a race two raw `OSError`s can leave `read_workspace_entry`; the handler returns them as "Error reading workspace". | Documented residual (M4 `SECURITY.md`); non-default `VESTIBULE_WORKSPACE` |
-| 2026-11-09 (M4 step 4 fix, critic round 2) | `read_workspace` listings | A guest's file names go into a listing with line breaks and control characters intact, so on a Linux or macOS host one file can look like several entries (on a Windows host they arrive as other characters). A listing isn't cut to `max_output_bytes`: at most 200 entries, about 55 KB of long names, about 156 KB if every byte of every name is invalid. And every entry of a folder is read before the cut to 200, so a guest's million files make one call slow and large. All three were there before this step. | Open; Victor's call whether before the release |
-| 2026-11-09 (M4 step 4a, critic round 1) | `setup` and selection messages | A Linux user who isn't in the `docker` group (or hasn't logged in again since joining it) is told "daemon not reachable (permission denied …). Start docker (Docker Desktop on Windows/macOS), then retry." Docker's own "permission denied" gets through, but no message names the group or `usermod`. The README's first-run troubleshooting gives the fix. | Open; a one-line hint in `select.py`, its own small step |
 | 2026-11-09 (M4 step 4a, critic round 2) | container backend | The selection check reads back the resource caps and `/tmp`'s size (cgroup v2 only) and the workspace's mode. `--network none`, `--cap-drop ALL`, `no-new-privileges`, `--read-only` and `--user` are passed to the runtime and never read back on the user's machine, and Vestibule doesn't set the container's seccomp profile (the daemon's default applies). The Docker-marked acceptance tests check all of these from inside a container, on the machines the gate runs on. | Documented residual (`SECURITY.md` §3.14) |
 | 2026-11-09 (M4 step 4a, critic round 3) | Claude Code, not Vestibule | A sandbox-only session (`--tools ""`, with or without `--strict-mcp-config`) still runs the hooks of the user's plugins on the host (the stricter line drops a plugin's MCP server, not its hooks): the Codex plugin's Stop hook ran `node` after every turn in both live sessions. The README says so and names `/plugin`. | Documented (README); upstream behaviour |
 | 2026-11-09 (M4 step 4a, critic rounds 1–3) | README and `SECURITY.md` | The two state some facts twice: native's layers, the audit log's permissions, the re-pin tradeoff. The README is frozen at each upload and `SECURITY.md` isn't, so they can drift. The step 4 plan asked for both copies. | Open; `critic` compares the two at each release |
 
 **Closed:**
+- The 2026-11-09 `read_workspace` listings issue is closed in the M4 step 4 follow-ups. It was
+  three things: a file name with a line break could add a forged entry to a listing, a listing
+  wasn't cut to the output cap, and every entry of a folder was read before the cut to 200. Now
+  names are shown with escapes, the listing stops at the cap, and at most 10,000 entries are
+  read. What it leaves is in `SECURITY.md` §3.12.
+- The 2026-11-09 `setup` message issue (a Linux user outside the `docker` group was told to
+  start Docker) is closed in the same step. Docker's own line for a socket the user may not
+  open now gets a hint that names the group, `usermod` and the restart it needs.
 - The 2026-10-11 hard-kill issue (per-run script dirs left after a hard kill) is closed by M4
   step 1. A run dir's name carries its deadline, a POSIX parent's its owner's pid, and each
   reaper pass sweeps what's overdue. Stated, not fixed:
@@ -143,12 +151,342 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M4 step 5a — the 0.1.0 release candidate (in progress, 2026-11-10)
+
+- **Plan:** [`docs/plans/M4/M4-step5-release.md`](plans/M4/M4-step5-release.md) (v2 after the
+  `skeptic` review, signed 2026-11-10 with S5-D1 to S5-D5). The sign-off covers 5a, which
+  publishes nothing. The checklist is [`docs/RELEASE.md`](RELEASE.md), in its new order.
+- **The candidate commit:** `4bd503c` on `pcbranch` (`4bd503cb04c9a0602780d98fa87024e1e2ee2e45`).
+- **The two files, built once and put aside** in `m4spike\release\0.1.0\` (RELEASE step 6).
+  These are the files the test machines get and, if 5a passes, the files uploaded:
+  - `vestibule_mcp-0.1.0-py3-none-any.whl`, 128,604 bytes, sha256
+    `5fb2e61d2928ad0e131d68e9cd309fc1c3487bfad8e4896843a1bca839501525`;
+  - `vestibule_mcp-0.1.0.tar.gz`, 127,371 bytes, 27 files, sha256
+    `e374d334d6472514bdd769ed164eecaf157a6c8d75eb46c2bde7e53af8c8d850`.
+  - Built with uv 0.13.7 and hatchling 1.33.0. The `uv` on the dev machine's `PATH` is 0.11.15,
+    so the scripts were given the newer one by path.
+- **Gate on the candidate** (RELEASE step 4): check_env, ruff and mypy clean on both platforms.
+  Linux (480 s of 540): 3.14 full suite 1059 passed, 0 skipped; 3.11 Docker-free 1009; stdio 7.
+  Windows: 863 passed, plus 176 POSIX/Linux-only skips, none of them for Docker.
+- **Smoke on the candidate wheel** (RELEASE step 7), with no drift reported:
+  - Windows, expecting `container`: OK on Python 3.11.9, 3.12.3, 3.13.1, 3.14.10 and 3.15.2.
+  - Linux (WSL), expecting `native`: OK on Python 3.11.18, 3.12.16, 3.13.18, 3.14.4 and 3.15.2.
+- **Found when the step started:**
+  - GitHub's `main` already holds step 4a: pull request #30 was merged on 2026-11-10. So `main`'s
+    README has named `uv tool install vestibule-mcp` since then, not only from the release
+    merge on, as S5-D1 assumed. The name was still free on PyPI on 2026-11-10.
+- **The candidate is on GitHub:** `pcbranch` there is `4bd503c` (pushed 2026-11-11).
+- **Secrets scan** (RELEASE step 5), gitleaks v8.30.1 on the repo's history, 2026-11-11:
+  70 commits scanned, `no leaks found`, exit 0.
+- **macOS job** (RELEASE step 8): run #2 of `macos.yml`, started by hand on `pcbranch` at
+  `4bd503c`, 2026-11-11: success. Its steps: the dev venv from the constraints, the venv check,
+  the Docker-free tests, the build from a clean export, and the wheel installed and tried.
+- **The line's cap, measured before anything was timed** (plan §3.3), on the Debian VM:
+  - **Hyper-V's cap on the VM's adapter doesn't limit downloads.** With it set to 25 Mbit/s,
+    three 25 MB downloads ran at 344 to 406 Mbit/s. It limits only what the VM sends.
+  - **Shaping inside the guest holds:** incoming packets redirected to an `ifb` device with a
+    25 Mbit/s token bucket gave 23.6 to 23.7 Mbit/s three times (inside the 20 to 27 band).
+    It was removed again afterwards (441 Mbit/s). It can't be used in the Windows VM.
+- **Seen while preparing the Debian VM:** right after the README's three packages are
+  installed on a minimal Debian 13.7, `sudo reboot` prints "Failed to connect to system scope
+  bus via local transport: No such file or directory", and then reboots anyway. The bus is
+  one of the packages just installed, so it isn't running yet.
+  - **The host's adapter on the switch can't be capped:** Hyper-V refuses with "The automatic
+    Internet Connection Sharing switch cannot be modified."
+  - **A Windows QoS policy on the host doesn't limit them either:** with a 25 Mbit/s throttle
+    on traffic to the VMs' subnet, the Debian VM downloaded at 349 and 442 Mbit/s.
+  - **So both Linux VMs carry the in-guest shaping,** as a systemd unit of the test kit
+    (`m4cap.service`) that goes into their checkpoints. Measured after a reboot: Debian 23.6,
+    23.6 and 23.7 Mbit/s; Ubuntu 23.7, 23.1 and 23.7.
+  - **The Windows VM has no cap that works.** Plan §9 leaves that to Victor.
+- **Checkpoints** (Hyper-V "Standard", so with the running state), 2026-11-11: `prereq` on
+  `m4-debian` and `m4-ubuntu` (Claude Code 2.1.322 installed and logged in, apt's timers off,
+  the shaping unit, no uv, no Vestibule, no Docker), and `prereq-docker` on `m4-ubuntu` (plus
+  Docker Engine 29.9.3 from Docker's apt repository, the user in the `docker` group, no images).
+  - **`~/.local/bin` is already on `PATH` in all three,** because Claude Code's installer made
+    that folder. So these machines can't show whether a new terminal is needed after uv's
+    installer.
+- **The dry pass** (plan §2 step 6; Claude over SSH, from the checkpoints, the line at 23.6 to
+  23.7 Mbit/s before and after). It stops before Claude Code, so it isn't the whole clock:
+
+  | VM | uv's installer | the wheel | `setup` | together | `setup` ended with |
+  |---|---|---|---|---|---|
+  | Debian (D1) | 6.5 s | 18.7 s | 48.0 s | 73.2 s | `isolation native` |
+  | Ubuntu with Docker (U2) | 6.5 s | 5.2 s | 49.8 s | 61.5 s | `isolation container`, with the reason native isn't used |
+
+  - On Debian the wheel's step also downloads a Python (158 MB under `~/.local/share/uv`);
+    Ubuntu has one. `setup` left 356 MB under `~/.vestibule` on Debian, and the two pinned
+    images on Ubuntu.
+  - That leaves about 47 s (Debian) and 58 s (Ubuntu) of the two minutes for typing, a new
+    terminal, `claude mcp add`, starting Claude Code and the agent's turn.
+  - U1 (Ubuntu without Docker) had no dry pass: nothing in it is timed.
+- **D1, a start that was abandoned** (2026-11-11, 06:48:27 UTC): the clock was started before
+  the README was open, and Victor asked Claude what came next. No command of the README's had
+  been typed. It tests nothing, so it isn't counted as a run; the checkpoint is restored and
+  D1 starts again.
+- **D1, a second start that was abandoned** (06:55:54 UTC): uv's installer ran in the VM;
+  after `exit` (the README's new terminal, over SSH) the next command was pasted into the
+  host's PowerShell, not into a new SSH session, and failed there. Claude's steps hadn't said
+  at which prompt each line goes. Not counted; the checkpoint is restored. From here on the
+  steps were listed for Victor in advance, prompt by prompt, so D1 shows that the README's
+  commands work and how long they take, not that a newcomer finds them unaided.
+- **D1, the run** (Debian 13.7, 2026-11-11, clock started 06:59:37 UTC, line 23.6 Mbit/s):
+  - **Right:** one audit record, `ran`, `isolation: native`, exit 0, client `claude-code`
+    2.1.322; no `blocked` record and no other run before it. The shell's history holds only
+    the README's commands, with the wheel's path in place of the package name. uv 0.13.7 chose
+    CPython 3.15.2. `~/.vestibule/rootfs` is 356 MB, and there is no Docker on the machine.
+  - **The clock: 150.5 s. Over the two minutes by 30.5 s** (criterion 2 isn't met on this run).
+  - **The split** (file times, sshd's log, Claude Code's session log; logs in
+    `m4spike\logs\step5\run-debian-d1\`):
+
+    | Part | Time | From |
+    |---|---|---|
+    | uv's installer | about 6.5 s | uv's file at +13.2 s |
+    | the wheel, with a Python download | about 22 s | done at +49.6 s; the Python took 13.2 s of it |
+    | `setup` | about 48 s | +62.4 s to about +110 s; 123 MB at 23.6 Mbit/s is 42 s of it |
+    | the agent's turn | 6.7 s | +143.8 s to +150.5 s: one model call to load the tool, one to call it |
+    | Victor: pasting, the new SSH session, starting Claude Code, the sentence | about 67 s | the rest |
+
+  - **So the machine and the model take about 84 s** at this line speed, nearly all of it
+    downloading. Vestibule's own work in it is about 6 s of `setup` and 53 ms for the run.
+    Two minutes leaves a person 36 s for five pasted commands, a new terminal, starting the
+    agent and typing a sentence.
+  - **Seen in the run:** Claude Code showed the call as "Called vestibule" and the agent wrote
+    "output 1, exit code 0". The `isolation:` line the README says to check wasn't on screen.
+  - **Bytes the VM received** from the meter's reset to after the run: 220 MB (Hyper-V's
+    metering). That includes the kit's 25 MB speed test before the clock and Claude Code's own
+    traffic, so the first run's downloads are about 195 MB: 62 s at 25 Mbit/s.
+- **U1, the run** (stock Ubuntu 24.04.5, no Docker, 2026-11-11, line 23.5 Mbit/s; not timed):
+  **as expected.**
+  - `setup` didn't download the native trees ("not downloading the native trees (about
+    123 MB)"), gave the user-namespace reason, and ended with `Blocked:` and the Docker fix.
+  - The agent's call wrote one audit record, `blocked`, `refused`, with the same reason, 87 s
+    after the start. The agent reported the refusal and didn't use its own shell.
+  - `~/.vestibule` holds only the audit folder. uv chose the system's
+    CPython 3.12.3. The history holds only the README's commands.
+- **U2, the run** (Ubuntu 24.04.5 with Docker Engine 29.9.3, 2026-11-11, clock started
+  07:13:03 UTC, line 23.6 Mbit/s): **pass.**
+  - **The clock: 117.7 s,** within the two minutes.
+  - One audit record, `ran`, `isolation: container`, exit 0, client `claude-code`; nothing
+    blocked or refused before it.
+  - `setup` didn't download the native trees and said why, pulled the two pinned images, and
+    ended with `ready in this terminal's environment: isolation container`. There is no
+    `~/.vestibule/rootfs`.
+  - uv chose the system's CPython 3.12.3, so there was no Python download. The history holds
+    only the README's commands.
+  - The agent's turn was 7.0 s, again with one model call to load the tool first. Claude Code
+    again showed "Called vestibule" and no `isolation:` line.
+  - **Bytes the VM received:** 186 MB by the meter, so about 161 MB without the kit's speed
+    test: 52 s at 25 Mbit/s.
+- **The Windows VM's checkpoint** (`m4-win11`, 2026-11-11), which had never been tried:
+  - Step 0's leftovers were removed by the kit's `clean` (its kit folder and the two old
+    images). After it: no uv, no Vestibule, no `~\.vestibule`, no images, and a user `PATH` of
+    WindowsApps and Docker Desktop's folder only.
+  - Claude Code was installed and logged in. Its installer put `claude.exe` in
+    `%USERPROFILE%\.local\bin` and left `PATH` alone, so that folder was added to the user
+    `PATH` by hand. **It is the folder uv installs into, so W1 can't show whether uv needs a
+    new terminal** (step 0's open question A-1 stays not measured). Windows Update is paused.
+  - `prereq` was made with the VM running (Hyper-V "Standard"), and restored: running again
+    after 31 s, and Docker Desktop inside it answered (`docker image ls` printed its empty
+    table). So W1 runs in the VM, not in P6's fallback account.
+- **W1, the run** (Windows 11 VM, Docker Desktop, uncapped line, 2026-11-11, clock started
+  07:52:34 UTC):
+  - **Right:** one audit record, `ran`, `isolation: container`, exit 0, client `claude-code`;
+    nothing blocked or refused before it. `setup` pulled the two pinned images and nothing
+    else: `~\.vestibule` holds the audit folder and the workspace. uv 0.13.7 chose CPython
+    3.15.2. `uv tool update-shell` said the folder was already on `PATH`.
+  - **The clock, 362.1 s, doesn't measure the README.** The `uv tool install` line was skipped
+    at first, so `vestibule-mcp setup` wasn't found; Victor asked Claude, then typed the
+    lines in the README's order. Every command in the history is one of the README's.
+  - **A bug in the kit, not in Vestibule:** `kit.ps1 stop` overwrote its own folder variable
+    (`$k` and `$K` are one name in PowerShell), so it didn't read the speed file or write its
+    result file. The audit records and the rest were printed and are kept as pasted.
+  - **The machine's own times, from the dry pass** (the same checkpoint, uncapped): uv's
+    installer 3.8 s, the wheel with a Python download 10.5 s, `setup` 68.9 s, together 83.2 s.
+    `setup` ended with `ready in this terminal's environment: isolation container`. It is
+    slower than on Ubuntu at 25 Mbit/s (49.8 s); where Docker Desktop spends that time inside
+    the VM wasn't measured.
+  - **Two more kit failures, so W1's line and bytes aren't measured:**
+    - the kit's speed test printed 1.2 to 1.8 Mbit/s, which is the test's own slowness
+      (Windows PowerShell's `Invoke-WebRequest`), not the line: the wheel's step, with a Python
+      download, took 10.5 s;
+    - Hyper-V's metering was off after the checkpoint was restored, so no bytes were counted.
+  - **An estimate in place of the computed worst case Victor chose:** the Windows run
+    downloads what U2 did (about 161 MB) plus a Python (about 34 MB, the difference between
+    Debian and Ubuntu), so about 195 MB, 62 s at 25 Mbit/s. Added to the uncapped 83.2 s, the
+    machine's part at 25 Mbit/s is at most about 145 s. It can't be less than 83 s. This is an
+    estimate from other machines' bytes, not a measurement.
+- **Victor's two decisions, 2026-11-11** (plan §3.6 and §9 leave both to him):
+  - **The two-minute criterion: record what was measured.** The candidate stays as built. The
+    criterion's wording is amended in the docs pass to the measured figures; `setup`'s download
+    isn't cut in 0.1.0.
+  - **The Windows VM's line: W1 runs uncapped,** and the record gives the measured clock and a
+    worst case computed from the metered bytes at 25 Mbit/s, marked as computed.
+- **Where the VMs were left, 2026-11-11:** `m4-debian` saved in its state after D1 and
+  `m4-win11` in its state after W1, both for the uninstall test; `m4-ubuntu` off.
+- **To raise with the first-run findings** (none changes a shipped path yet):
+  - Claude Code doesn't show the `isolation:` line the README tells the user to check;
+  - the README's two minutes: the criterion's wording, by Victor's decision above;
+  - `sudo reboot` on a minimal Debian prints a bus error before it reboots.
+- **Still to do in 5a:** uninstall on two machines, and Cursor on the candidate.
+- **The kit** is outside the repo, in `m4spike\vm\step5\`.
+
+## M4 step 4 follow-ups — directory listings and the `docker`-group hint (2026-11-10)
+
+- **Commit:** `4bd503c`. It is also the 0.1.0 release candidate's commit (step 5).
+- **Plan:** [`docs/plans/M4/M4-step4-followups.md`](plans/M4/M4-step4-followups.md) (v2 after the
+  `skeptic` review, signed 2026-11-10 with K1 and K2; §12 is the diff review's fixes and §13 the
+  as-built). It adds a dated amendment to §6 of
+  [`M1-container-backend.md`](plans/M1/M1-container-backend.md). Victor asked for the open
+  issues to be fixed before step 5 is planned.
+- **The problems,** all older than M4, measured before the change:
+  - A file name with a line break put a forged entry into a listing on a Linux host.
+  - A listing of long names came back as up to 156 KB against a cap of 20,000.
+  - A folder of 1,000,000 files took 7.1 to 7.5 s and 133 MB to list on Linux, and 200,000
+    took 3.1 s on Windows. With the workspace on WSL's `/mnt/c`, 10,000 entries took over 4 s.
+  - A Linux user outside the `docker` group was told to start Docker.
+- **What:**
+  - **`src/vestibule/workspace.py`:**
+    - A name's control and format characters are shown as backslash escapes and a backslash
+      is doubled, so one entry is always one line. A last line says so when a shown name was
+      changed.
+    - The listing stops at `max_output_bytes`, counted in characters as a run's output is.
+    - At most 10,000 entries of a folder are read (`_MAX_SCAN`), and past that the footer says
+      the listing is of the first 10,000 read.
+    - On POSIX the scan reads names only. The kind and size come from one `lstat` for each of
+      the first 200 names, never more. An entry gone since the scan is left out, and one that
+      can't be looked up is shown as `unknown`.
+  - **`src/vestibule/backends/select.py`:** `_group_hint`. For `docker`, on Linux, when the
+    status holds Docker's phrase "permission denied while trying to connect", the refusal names
+    the `docker` group in place of "Start docker". It is still an ordinary refusal, re-checked
+    after 30 s.
+  - **`tests/test_workspace.py`, `tests/test_select.py`:** eight new tests. The stand-in now counts
+    the entries a listing takes from the folder and the lookups it makes.
+  - **Docs:** `SECURITY.md` §3.12, the README's troubleshooting line, the M1 amendment.
+  - **Outside the plan, with Victor's OK:** `CLAUDE.md`'s "Security posture" sentence no longer
+    says "structurally impossible", and `docs/HISTORY.md`'s M2 step 2 bullet names the commit of
+    its review fixes.
+- **Measured after,** through the server with a real sandboxed guest making the files:
+
+  | Case | Before | After |
+  |---|---|---|
+  | A name with a line break and a fake entry (Linux, native) | two lines, one of them forged | one line, and the note |
+  | 20,000 files, workspace on ext4 | not measured at this size | 0.010 s |
+  | 20,000 files, workspace on `/mnt/c` (9p) | over 4 s | 0.108 s |
+  | 10,500 files, Windows, container guest | not measured at this size | 0.187 s |
+
+  - On Windows the guest's line break arrives as a private-use character, so the name is one
+    line and needs no escape.
+  - `vestibule-mcp setup` with `DOCKER_HOST` naming a socket this user may not open prints the
+    hint, exits 1 and writes nothing to stdout.
+- **What it leaves,** stated in `SECURITY.md` §3.12 or here:
+  - A folder past 10,000 entries is listed from the first 10,000 read, in the filesystem's
+    order.
+  - The cap counts characters, so its size in bytes can be about three times that: 55 KB for
+    200 names made of bytes that aren't valid text.
+  - Names that aren't valid text show the replacement character, and two of them can look
+    alike.
+  - A footer's count is of what the scan saw. If a guest deletes entries during a listing, the
+    count can name entries that are gone.
+  - A socket file left behind with no daemon gets the group hint too. The hint doesn't say
+    Docker is running, and the refusal is re-checked.
+  - The Windows listing of the big folder took 0.17 to 0.19 s, over the plan's "within 0.1 s".
+    The plan's number was set too low for Windows; the old code took 3.1 s for 200,000.
+- **Review:**
+  - **Plan:** `skeptic` found 4 medium and 6 low on v1, all taken. `verifier` checked its nine
+    claims about the code: none refuted. Among them: the size lookup per entry was the slow
+    part on a slow disk, the `audit` command's escape function would have loaded a module that
+    prints to stdout into the server, and "permission denied" alone also matches an unreadable
+    Docker config file.
+  - **Diff:** `critic` found 2 medium and 2 low, and `verifier` confirmed all four. The builder
+    fixed them: a guest that deleted its files during a listing could force 10,000 lookups, no
+    test reached an entry gone since the scan, a claim in a comment was too wide, and a folder
+    the guest made unsearchable listed as empty. A second pass by `critic` found all four
+    closed and nothing new.
+- **Mutants:** every one red in its named test after a green control, except one that can't
+  fail on Windows.
+  - Round 1: 21 of 21 on WSL 3.14 and 3.11, 18 of 19 on Windows. The nineteenth removes the
+    doubling of backslashes, and an NTFS name can't hold one.
+  - Round 2: 6 new and 10 re-run, 16 of 16 on both WSL Pythons, 4 of 4 on Windows.
+- **Gate:** check_env, ruff and mypy clean on both platforms. Linux (409 s of 540): 3.14 full
+  suite 1059 passed, 0 skipped; 3.11 Docker-free 1009; stdio 7. Windows: 863 passed, plus 176
+  POSIX/Linux-only skips, none of them for Docker.
+- **Where to start if it breaks:**
+  - **A listing shows an odd name or a missing one:** `_render` in `workspace.py` builds every
+    line; `_shown` is the escape.
+  - **A listing is slow again:** `test_a_folder_is_read_up_to_the_scan_cap` and
+    `test_sizes_are_asked_only_for_entries_shown` count what a listing reads.
+  - **The group hint is missing:** Docker changed its wording. `_SOCKET_DENIED` in `select.py`
+    is the phrase it looks for.
+
+## M4 step 4b — the demo GIF (2026-11-10)
+
+- **Commit:** `bc79e75`.
+- **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) §6 and §10; §14 is the
+  as-built. It adds a dated amendment to P7 of [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **What:**
+  - **`docs/demo.gif` (new):** 719,281 bytes, 19.7 s, 983×560, 91 frames. A real Claude Code
+    session in WSL (2.1.322, Opus 5.5, Vestibule from the development venv at `5a1bc23`) whose
+    agent was offered only Vestibule's two tools and three of Claude Code's own. A fake key is shown readable on the host. Through
+    `run_code`, reading it fails with `No such file or directory` and a connection to
+    `203.0.113.10` fails with `Network is unreachable`, each with `isolation: native`.
+  - **`README.md`:** the image under the badges, by its raw URL on `main`, and a caption that
+    says what the recording is and what was edited.
+  - **`tests/test_docs.py`:** `test_demo_gif_is_under_3_mb`.
+- **How it was made:** recorded with asciinema 2.4.0 and rendered with agg 1.9.0. Every edit
+  is in time, and no output byte before the end cut is changed or removed:
+  - one stretch takes no time: Claude Code's banner, the pasting of the prompt and the first
+    2.4 s of the agent's turn;
+  - the end is dropped just after the second result (scrolling back, Claude Code's recap,
+    `/exit`);
+  - pauses are capped at 2 s, it plays 1.3× faster, and the last frame is held 4 s.
+  - This is more than P7's 2026-11-09 list allowed; a 2026-11-10 amendment and the caption
+    name each.
+- **Checked before it was kept:**
+  - What the agent typed after each call is the tool's own result from the session's
+    transcript, character for character. The audit log has both calls as `ran`, native.
+  - Every screen state after the key listing, replayed in a terminal emulator: nothing from the
+    banner, and no email, plan or account detail. The only name is the Linux user name in the
+    paths, the repo owner's GitHub name. All 91 frames were looked at on contact sheets.
+  - Run on the host, call 2's line times out after 3 s; in the sandbox it fails at once.
+- **Found, in six takes:**
+  - **A prompt passed to `claude` as an argument can be sent before an MCP server has
+    connected.** It was in all three takes that did it: the prompt was sent 0.4 to 0.7 s before
+    Vestibule answered its tool list, and the agent was offered no tools. The prompt is pasted once the session
+    is up.
+  - **Fable 5.2's safeguard stopped the reply** in the first two of those takes, and Claude
+    Code switched the session to Opus 4.8. The demo session names Opus 5.5. Fable 5.2 wasn't
+    tried in a session that had `run_code`.
+  - **With no tools, Opus 4.8 typed a Bash call as plain text, and once an output it made
+    up.** Opus 5.5 said it had no `run_code` and stopped. Text an agent types isn't a result:
+    the comparison with the transcript is what shows the GIF's results are the tool's.
+  - **Within one turn the model went from call to call without writing text,** with both
+    prompts tried, so a result it is asked to repeat shows only at the end of a turn. The demo
+    asks for the calls in two messages.
+- **Review:** `critic` on the caption and the records: nothing high, 3 medium, 8 low.
+  `verifier` confirmed all 9 it was given, three with corrections. All fixed: the caption's
+  list of edits was incomplete, the account of the failed takes was wrong, and the kept copy of
+  the take was cut short. A second, narrow pass on the changed sentences found 5 low, fixed by
+  the main session without `verifier`.
+- **Mutants:** 3 red of 3 on `test_demo_gif_is_under_3_mb`, each after a green control, on
+  Windows 3.11 and WSL 3.14: the file padded to 3,000,000 bytes, a PNG signature, the file
+  missing.
+- **Gate:** not re-run in full: no `src/` change, and the one new test needs no sandbox.
+  `tests/test_docs.py` and `tests/test_pins.py`: 16 passed on Windows 3.11 and on Linux 3.14 and
+  3.11; ruff and mypy clean.
+- **Where to start if it breaks:**
+  - **`test_demo_gif_is_under_3_mb` fails:** the file was replaced. `m4spike\demo\HOW.txt` has
+    the commands that made it, and the take.
+  - **A new recording:** the kit is WSL's `~/vestibule-live/demo/` (`take.sh`); the cut and the
+    checks are `cut.py`, `post.py` and `check.py` in `m4spike\demo\`.
+
 ## M4 step 4a — the README, `SECURITY.md` and their tests (2026-11-09)
 
-- **Commit:** pending.
+- **Commit:** `5a1bc23`.
 - **Plan:** [`docs/plans/M4/M4-step4-docs.md`](plans/M4/M4-step4-docs.md) (v2, signed 2026-11-09
   with V1–V4; §13 is the as-built for 4a). It adds dated amendments to P6, P7, F5, §3 and
-  criterion 2 of [`M4-adoption.md`](plans/M4/M4-adoption.md). 4b, the demo GIF, is not built.
+  criterion 2 of [`M4-adoption.md`](plans/M4/M4-adoption.md). 4b, the demo GIF, has its own
+  entry above.
 - **What:**
   - **`README.md`,** rewritten for someone who has never seen the project: what is and isn't
     sandboxed, a quick start per platform with `uv tool install vestibule-mcp`, the client

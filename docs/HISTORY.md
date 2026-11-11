@@ -613,8 +613,8 @@ backend. Contract: [`docs/plans/M2/M2-native-warden.md`](plans/M2/M2-native-ward
     by `verifier` and fixed. Among them: the cleaner failed silently in some installs, and
     naive-backend guests could outlive the server.
 - **Step 2 — rootfs and `vestibule-mcp setup`, done 2026-10-25
-  ([plan](plans/M2/M2-step2-rootfs.md); committed in `2af2c0c` and `9197a55`, review fixes
-  pending).**
+  ([plan](plans/M2/M2-step2-rootfs.md); committed in `2af2c0c` and `9197a55`, review fixes in
+  `4c8afcf`).**
   - **Now:** on Linux, `vestibule-mcp setup` downloads the two pinned images straight from
     Docker Hub, with no Docker needed. It checks every byte against the pin and unpacks each
     image into a folder the native sandbox will use as its `/` (step 3). Both images take
@@ -1416,7 +1416,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     caught, and the last can't fail on a default Windows. `critic` reviewed the diff twice, and
     the gate is green on both platforms. macOS hasn't run: Victor runs the manual job on the
     branch after the push.
-- **Step 4a — done 2026-11-09** (commit pending; [plan](plans/M4/M4-step4-docs.md), §13 as
+- **Step 4a — done 2026-11-09** (commit `5a1bc23`; [plan](plans/M4/M4-step4-docs.md), §13 as
   built): the README and `SECURITY.md`.
   - **The README is written for a stranger now.** It says what is and isn't sandboxed (only code
     sent to `run_code`), gives a quick start per platform that starts from `uv tool install
@@ -1440,3 +1440,95 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     had added. All confirmed findings are fixed. The doc tests were written by the new `builder`
     agent (Opus 5.5) and shown to fail 39 ways. The gate is green on both platforms.
   - **What's left of step 4:** 4b, the demo GIF.
+- **Step 4b — done 2026-11-10** (commit `bc79e75`; [plan](plans/M4/M4-step4-docs.md), §14 as
+  built): the demo GIF.
+  - **What it shows, in about 20 seconds:** a fake key file that is readable on the machine,
+    then an agent asked to read it and to send something out. Both fail inside the sandbox,
+    with `No such file or directory` and `Network is unreachable`, and both results say
+    `isolation: native`.
+  - **It's a real session,** recorded by Victor in WSL, where `run_code` was the agent's only
+    way to run code. Every edit is in time, and the caption lists them: the start-up banner,
+    the pasting of the prompt and the first 2.4 s of the agent's turn are cut, pauses are
+    capped at 2 s, it plays 1.3 times faster, it ends at the second result, and the last frame
+    is held.
+  - **It took six takes.**
+    - In the first three the prompt was given on the command line and went out before the
+      server had connected, so the agent had no tools.
+    - Fable 5.2's safeguard also stopped the first two. The demo names Opus 5.5; Fable 5.2
+      wasn't tried again once the agent had its tools.
+    - In the next two the model made both calls without showing the first result, so the demo
+      asks for the two calls in two messages.
+  - **How it was checked:** what the agent typed was compared with the tool's own results and
+    matches exactly. Every screen was checked for an email or account details; the only name on
+    screen is the Linux user name in the paths, which is the GitHub name. A new test keeps the
+    file a GIF under 3 MB. `critic` reviewed the caption and the records, and its findings are
+    fixed.
+  - **What it leaves for step 5:** whether the GIF shows on the PyPI page. It can't until the
+    branch is on `main`.
+- **Step 4 follow-ups — plan signed 2026-11-10**
+  ([plan](plans/M4/M4-step4-followups.md), v2 after the `skeptic` review). Victor asked for the
+  open issues to be fixed before step 5 is planned, and took the recommendation on both
+  decisions.
+  - **K1:** a directory listing reads at most 10,000 entries. Today it reads every one, and a
+    folder of a million files takes 7 seconds to list.
+  - **K2:** the new message for a Linux user who can't open Docker's socket names the `docker`
+    group, and says that its members can become root on the machine.
+  - **Also in the plan:** a file name can no longer forge extra lines in a listing, and a
+    listing is cut to the output cap.
+- **Step 4 follow-ups — done 2026-11-10** (commit `4bd503c`;
+  [plan](plans/M4/M4-step4-followups.md), §13 as built): the open issues in directory listings
+  and in `setup`'s Docker message.
+  - **A file name can't fake a listing any more.** A sandboxed run could name a file so that
+    `read_workspace` showed the agent an entry that wasn't there. Names are now shown with
+    their control characters escaped, one entry per line.
+  - **A listing is bounded.** It stops at the output cap, and it reads at most 10,000 entries
+    of a folder. A folder of a million files took 7 seconds to list; 20,000 files now take a
+    hundredth of a second, and a tenth with the workspace on a slow disk.
+  - **A Linux user who can't open Docker's socket is told why:** join the `docker` group, log
+    out and in, restart the agent, and what that group means. Before, the message said to
+    start Docker, which was already running.
+  - **What the reviews changed:**
+    - The plan review found that asking each file's size was the slow part on a slow disk, so
+      sizes are asked only for the 200 entries shown.
+    - The code review found that a run deleting its files during a listing could still force
+      10,000 lookups, and that a folder made unreadable listed as empty. Both are fixed, and
+      such entries now show as `unknown`.
+  - **How it was checked:** every new test failed on the old code first, the mutants were
+    caught, the gate is green on both platforms, and a real sandboxed run made the hostile
+    names and the big folder on Linux and on Windows.
+  - **Two small docs fixes went in with it,** with Victor's OK: `CLAUDE.md` no longer says
+    "structurally impossible", and the M2 step 2 line above names its review-fix commit.
+  - **What it leaves:** a folder past 10,000 entries is listed from the first 10,000 read, and
+    names that aren't valid text can look alike. Both are in `SECURITY.md`.
+- **Step 5 — plan signed 2026-11-10** ([plan](plans/M4/M4-step5-release.md), v2 after the
+  `skeptic` review): the first runs on fresh machines, the release, and "M4 accepted". Victor
+  took the recommendation on all five decisions. The sign-off starts the part that publishes
+  nothing; the upload waits for his separate go.
+  - **S5-D1:** the release candidate is built once, from the branch, and the two files the
+    test machines run are the two files uploaded. `main` gets the commit when the tests pass.
+  - **S5-D2:** Claude does a timed dry pass on each machine first, and restores it, so that
+    Victor's run is still a first run.
+  - **S5-D3:** the README's last quick-start sentence names the tool: ask your agent to run
+    `print(1)` with Vestibule's `run_code` tool. Without that, an agent may run it with its own
+    shell, on the machine.
+  - **S5-D4:** the published README's M4 row says "first release, 0.1.0".
+  - **S5-D5:** after the upload, one machine (Debian) confirms the first run from PyPI.
+  - **What the review changed:** the clock stops at the first finished run, not the first
+    record; the 25 Mbit/s limit is measured before anything is timed; and the uninstall test
+    gets a locked folder and a before-and-after listing, so that it can fail.
+- **Step 5a — the first runs on fresh machines, 2026-11-11 (in progress; candidate `4bd503c`).**
+  - **Before the runs:** the gate, the build, the smoke test on five Pythons per platform, the
+    secrets scan and the macOS job all passed on the candidate.
+  - **All four runs ended in the right isolation,** with only the README's commands typed:
+    Debian `native`, Ubuntu without Docker refused with the reason and the fix, Ubuntu with
+    Docker `container`, Windows `container`.
+  - **The two-minute target:** Ubuntu with Docker took 117.7 s. Debian took 150.5 s, of which
+    about 84 s is downloading and the model, on a line held to 25 Mbit/s. Windows wasn't timed
+    cleanly.
+  - **Decided by Victor, 2026-11-11:** the criterion will say what was measured, and 0.1.0's
+    `setup` download isn't cut. The Windows VM runs on an uncapped line, because nothing on
+    the host could limit a VM's downloads; its time at 25 Mbit/s is an estimate.
+  - **How the line was held on Linux:** Hyper-V's cap limits only what a VM sends, so the two
+    Linux VMs shape their own downloads (measured at 23.6 Mbit/s).
+  - **Still to do:** the uninstall test on two machines, and Cursor on the candidate. Details
+    are in [`BUILD_LOG.md`](BUILD_LOG.md).

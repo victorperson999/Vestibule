@@ -6,6 +6,10 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/victorperson999/Vestibule/blob/main/LICENSE) [![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg)](https://www.python.org/downloads/) [![MCP Server](https://img.shields.io/badge/MCP-Server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io) [![Status: Early Development](https://img.shields.io/badge/status-early%20development-orange.svg)](https://github.com/victorperson999/Vestibule#status) [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/victorperson999/badge.svg)](https://hub.xerj.org/contributors/victorperson999)
 
+![Terminal recording. A fake key file is readable on the machine. Run through Vestibule, code that reads it fails with "No such file or directory", and code that opens a network connection fails with "Network is unreachable". Both results end with "isolation: native".](https://raw.githubusercontent.com/victorperson999/Vestibule/main/docs/demo.gif)
+
+*A real Claude Code session in Ubuntu under WSL2, recorded on 2026-11-10 with a development install and the flags of the stricter line from [What is and isn't sandboxed](https://github.com/victorperson999/Vestibule#what-is-and-isnt-sandboxed), so `run_code` was the agent's only way to run code. A fake key is planted on the machine; the agent is asked to read it, then to send a placeholder string to an address reserved for documentation. Claude Code folds tool results, so the agent was asked to repeat each one, and its copies match the tool's results exactly. Edits: Claude Code's start-up banner, the pasting of the prompt and the first 2.4 s of the agent's turn are cut, pauses are capped at 2 s, it plays 1.3× faster, it ends at the second result, and the last frame is held. `native` needs a Linux that allows unprivileged user namespaces, as WSL2 does. An install on Windows itself with Docker Desktop, or on stock Ubuntu 24.04 with Docker Engine from Docker's apt repository, gets `isolation: container`, and macOS is expected to.*
+
 > A *vestibule* is the small sealed entry chamber you pass through between outside and inside. Vestibule sits between an AI agent and your host machine: the code an agent sends to Vestibule runs *inside* the chamber, not on your real system. Its one opening is a workspace folder.
 
 ```text
@@ -70,7 +74,7 @@ Only code sent to `run_code` goes through the chamber: see [What is and isn't sa
 
 You need an MCP client (these steps use [Claude Code](https://claude.com/claude-code)) and [uv](https://docs.astral.sh/uv/), which installs Vestibule in its own environment.
 
-Follow your platform. Each installs uv with uv's own installer ([other ways](https://docs.astral.sh/uv/getting-started/installation/)), and **you need a new terminal after that** so `uv` is found. Each ends the same way: ask your agent to run `print(1)`, and check the `isolation:` line at the end of the result.
+Follow your platform. Each installs uv with uv's own installer ([other ways](https://docs.astral.sh/uv/getting-started/installation/)), and **you need a new terminal after that** so `uv` is found. Each ends the same way: ask your agent to run `print(1)` with Vestibule's `run_code` tool, and check the `isolation:` line at the end of the result.
 
 ### Linux with systemd (Debian, Fedora, Arch, WSL2)
 
@@ -173,7 +177,7 @@ On macOS a GUI client doesn't see your terminal's `PATH`, so give it the program
 - **`setup` fails with `CERTIFICATE_VERIFY_FAILED`:** install `ca-certificates` (a minimal Debian doesn't have it).
 - **`isolation: native-degraded (… no systemd user bus)`:** install `dbus-user-session` and reboot.
 - **`Blocked:` saying Ubuntu restricts unprivileged user namespaces, or naming the snap:** see [Ubuntu 23.10 and later](https://github.com/victorperson999/Vestibule#ubuntu-2310-and-later).
-- **`daemon not reachable`:** start Docker. If the message also says `permission denied`, Docker is running and you aren't in the `docker` group yet: run `sudo usermod -aG docker $USER`, then log out and back in. (The message itself only says to start Docker.)
+- **`daemon not reachable`:** start Docker. If the message says this user may not open docker's socket, you aren't in the `docker` group yet: run `sudo usermod -aG docker $USER`, log out and back in, then restart your agent.
 - **A warning about `server/discover` with 31 validation errors,** once per session in the server's log: harmless. Claude Code first sends a request this version of the MCP SDK doesn't know, then falls back, and the session works.
 - **Anything else:** every `Blocked:` message names its fix, and [`docs/GETTING_STARTED.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/GETTING_STARTED.md#troubleshooting) has the longer list.
 
@@ -339,7 +343,7 @@ Two backends are accepted, and every result states the isolation that actually a
 | M1 | Container backend (Docker/Podman) — the cross-platform isolation floor, + `read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M1/M1-container-backend.md) |
 | M2 | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required) | ✅ accepted 2026-10-31 (all 17 acceptance criteria + live-agent check) — see [`docs/plans/M2/M2-native-warden.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M2/M2-native-warden.md) |
 | M3 | Audit log + resource reporting | ✅ accepted 2026-11-07 (all 10 acceptance criteria + live-agent checks) — see [`docs/plans/M3/M3-audit-usage.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M3/M3-audit-usage.md) |
-| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | in progress — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
+| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | first release, 0.1.0 — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
 
 ## Documentation
 
