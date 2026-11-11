@@ -1516,7 +1516,8 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **What the review changed:** the clock stops at the first finished run, not the first
     record; the 25 Mbit/s limit is measured before anything is timed; and the uninstall test
     gets a locked folder and a before-and-after listing, so that it can fail.
-- **Step 5a — the first runs on fresh machines, 2026-11-11 (in progress; candidate `4bd503c`).**
+- **Step 5a — the first runs on fresh machines, 2026-11-11 (all tests run; candidate `4bd503c`;
+  nothing published).**
   - **Before the runs:** the gate, the build, the smoke test on five Pythons per platform, the
     secrets scan and the macOS job all passed on the candidate.
   - **All four runs ended in the right isolation,** with only the README's commands typed:
@@ -1530,5 +1531,15 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     the host could limit a VM's downloads; its time at 25 Mbit/s is an estimate.
   - **How the line was held on Linux:** Hyper-V's cap limits only what a VM sends, so the two
     Linux VMs shape their own downloads (measured at 23.6 Mbit/s).
-  - **Still to do:** the uninstall test on two machines, and Cursor on the candidate. Details
-    are in [`BUILD_LOG.md`](BUILD_LOG.md).
+  - **Uninstall passed on Debian and on the Windows VM.** On each, the agent first locked
+    something in the workspace and made a link to a read-only folder outside it; then Victor
+    typed the README's uninstall lines. Everything of Vestibule's was gone and the outside
+    folder was untouched.
+    - On Windows the guest's own link was one Windows doesn't follow, so the link that was
+      tested was a real one made by the test kit.
+    - Two things stay that the README's "What stays" list doesn't name, neither of them
+      Vestibule's: uv's package cache and Claude Code's log folder for the server. Whether
+      0.1.0's README names them is open for Victor.
+  - **Cursor passed on the candidate** on the dev PC: `setup` said `container`, Cursor's
+    first call ran in `container`, and the audit log names Cursor.
+  - **Next:** 5b, the release, on Victor's go. Details are in [`BUILD_LOG.md`](BUILD_LOG.md).

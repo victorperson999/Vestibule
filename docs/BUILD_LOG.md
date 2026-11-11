@@ -64,6 +64,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | `5a1bc23` | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
 | M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | `bc79e75` | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
 | M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | `4bd503c` | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
+| M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, pending | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -151,7 +152,11 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 5a — the 0.1.0 release candidate (in progress, 2026-11-10)
+## M4 step 5a — the 0.1.0 release candidate (2026-11-10 to 2026-11-11)
+
+- **Where it stands:** every test of 5a has been run. Nothing is published; 5b (the release)
+  waits for Victor's go. The record's commits: `b26b573` (up to W1), and one pending (the
+  uninstall tests and Cursor).
 
 - **Plan:** [`docs/plans/M4/M4-step5-release.md`](plans/M4/M4-step5-release.md) (v2 after the
   `skeptic` review, signed 2026-11-10 with S5-D1 to S5-D5). The sign-off covers 5a, which
@@ -322,13 +327,101 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
     isn't cut in 0.1.0.
   - **The Windows VM's line: W1 runs uncapped,** and the record gives the measured clock and a
     worst case computed from the metered bytes at 25 Mbit/s, marked as computed.
-- **Where the VMs were left, 2026-11-11:** `m4-debian` saved in its state after D1 and
-  `m4-win11` in its state after W1, both for the uninstall test; `m4-ubuntu` off.
+- **Where the VMs were left after the runs, 2026-11-11:** `m4-debian` saved in its state
+  after D1 and `m4-win11` in its state after W1, both for the uninstall test; `m4-ubuntu` off.
 - **To raise with the first-run findings** (none changes a shipped path yet):
   - Claude Code doesn't show the `isolation:` line the README tells the user to check;
   - the README's two minutes: the criterion's wording, by Victor's decision above;
   - `sudo reboot` on a minimal Debian prints a bus error before it reboots.
-- **Still to do in 5a:** uninstall on two machines, and Cursor on the candidate.
+- **Uninstall on Debian** (plan §4, on D1's machine after its first run, 2026-11-11): **pass.**
+  - **Before the uninstall,** through the agent (one `run_code` call, bash, `isolation: native`,
+    exit 0): a folder `locked` in the workspace holding one file, with every permission taken
+    away, and a link `sentinel-link` to `/home/victor/sentinel`. That folder is the kit's,
+    outside `~/.vestibule`, read-only, with one file. Seen on the host: the user couldn't list
+    `locked`, and the link was a real one to the folder.
+    - The prompt was sent twice (the first answer wasn't copied before `/exit`), so the audit
+      log also holds a second call, exit 1 because `locked` was there, and an `ls`.
+  - **Victor typed the README's three lines** and nothing else (the history shows them); the
+    `docker image rm` line doesn't apply, the machine has no Docker.
+  - **After it:**
+    - `~/.vestibule` is gone, the locked folder with it;
+    - the sentinel's file has the same content, hash and permissions (`dr-xr-xr-x`,
+      `-r--r--r--`);
+    - no `vestibule-mcp` on `PATH`, `uv tool list` says "No tools installed", Claude Code's
+      config has no `vestibule` entry, no process, no `vestibule-*` user unit, nothing of
+      Vestibule's in `/tmp`.
+  - **Against the `prereq` checkpoint** (two listings, one three levels deep and one of every
+    path outside uv's cache, Claude Code's folders and the Python; the checkpoint was restored
+    afterwards to take the "before"): what is new is uv (`~/.local/bin/uv`, `uvx`,
+    `~/.config/uv`, `~/.local/share/uv`), the kit's own files, Claude Code's logs and temp
+    folders, and systemd's and D-Bus's runtime folders under `/run/user/1000`.
+  - **Two things stay that the README's "What stays" list doesn't name.** Neither is
+    Vestibule's:
+    - uv's package cache, 43 MB in `~/.cache/uv`, which holds a copy of the Vestibule wheel and
+      its dependencies. The list says "uv, and any Python it downloaded" (118 MB here);
+    - Claude Code's own log folder for the server, `~/.cache/claude-cli-nodejs/…/mcp-logs-vestibule`,
+      three files, 40 KB.
+  - Listings: `m4spike\logs\step5\listing-debian-{before,mid-with-sentinel,after}.txt` and
+    `deep-debian-{before,after}.txt`.
+- **Uninstall on the Windows VM** (plan §4, on W1's machine after its first run, 2026-11-11):
+  **pass.**
+  - **Before the uninstall,** through the agent (one `run_code` call, bash,
+    `isolation: container`, exit 0): a folder `locked` with a file made read-only, and a link
+    `sentinel-link` to `../../sentinel`. Seen on the Windows side: the file has the ReadOnly
+    attribute.
+    - **The guest's own link isn't one Windows follows.** Developer Mode is off in the VM, and
+      the link arrived as a WSL-style reparse point (tag `0xa000001d`): PowerShell names no
+      link type for it and sees nothing through it.
+    - **So the kit made a real one,** as the plan says for this case: `sentinel-link-kit`, a
+      symbolic link (tag `0xa000000c`) to `C:\Users\victo\sentinel`, made from an
+      administrator window; Windows sees `keep.txt` through it. The link that tested "the
+      uninstall doesn't leave the workspace" is the kit's, not the guest's.
+    - The two calls before the one that ran were refused, 4 s apart, with "container runtime
+      did not respond while checking image …": the VM had just been resumed from its saved
+      state and Docker Desktop wasn't answering yet. The agent tried again and the third ran.
+  - **Victor typed the README's four lines** in a window that wasn't elevated: the three
+    lines, with the Windows form of the third, and the `docker image rm` line, which the kit
+    put on the clipboard word for word (checked equal to the README's line).
+    - Before the third line ran, `Remove-Item -Recurse -Force $HOME.vestibule` was typed
+      twice and failed with a null path, deleting nothing. That was Claude's steps, not the
+      README: the line was given as plain text and the display dropped the backslash.
+  - **After it:**
+    - `.vestibule` is gone, with the read-only file and both links;
+    - the sentinel's file has the same content and hash and is still read-only;
+    - no `vestibule-mcp` on `PATH`, uv says "No tools installed", Claude Code's config has no
+      `vestibule` entry, no container, no image, nothing named `vestibule-*` in the temp folder.
+  - **Against the `prereq` checkpoint** (the kit's listing: the home folder two levels deep,
+    the temp folder's names, containers, images, `PATH`; the checkpoint was restored afterwards
+    to take the "before"): what is new is `uv.exe`, the kit's own files and the sentinel, two
+    folders of Claude Code's under `.claude`, and temp files that come and go on their own
+    (Edge's and Windows' `.tmp` names differ between the two listings in both directions).
+    - Two folders in the temp folder with GUID names are in "after" only. Nothing Vestibule
+      makes there has such a name (its run folders are `vestibule-run-…` and
+      `vestibule-runs-…`), and the VM was restored before they were looked into, so what made
+      them isn't known.
+    - The listing is two levels deep, so uv's own folders under `AppData` aren't in it.
+  - Evidence: `m4spike\logs\step5\uninstall-win.txt`, `listing-win-{before,after}.txt`.
+- **Cursor on the candidate** (plan §5, on the dev PC, 2026-11-11): **pass.**
+  - **Before:** `uv tool list` said "No tools installed", and there was no
+    `~/.cursor/mcp.json`.
+  - The candidate wheel was installed with `uv tool install` (uv 0.13.7, which chose CPython
+    3.15.2). All 26 files of the wheel, its `RECORD` aside, are byte for byte the installed
+    ones.
+  - `setup` ended with `ready in this terminal's environment: isolation container`.
+  - `~/.cursor/mcp.json` got the README's JSON. In Cursor, Victor asked the agent to run
+    `print(1)` with `run_code`: `exit_code: 0`, `isolation: container`, and the usage line.
+    Cursor showed the result with its `isolation:` line.
+  - The audit log has one call after the install, at 21:47:50 UTC: `ran`, `container`, client
+    `cursor-vscode` 1.0.0. That agrees with `setup`'s line.
+  - **After:** the config file is removed and the tool uninstalled. Cursor didn't stop its
+    server when the entry went away, so that idle server was stopped by hand first. No
+    `vestibule-mcp` on `PATH`, no container left.
+  - Log: `m4spike\logs\step5\cursor-candidate.txt`.
+- **Where the VMs are now:** `m4-debian` and `m4-win11` both restored to `prereq`;
+  `m4-ubuntu` off.
+- **Open for Victor before 5b:** whether the README's "What stays" list should name uv's
+  package cache and Claude Code's log folder. The README is a shipped path, so changing it
+  makes a new candidate (plan §7); leaving it means a known gap in 0.1.0's README.
 - **The kit** is outside the repo, in `m4spike\vm\step5\`.
 
 ## M4 step 4 follow-ups — directory listings and the `docker`-group hint (2026-11-10)
