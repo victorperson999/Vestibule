@@ -1475,7 +1475,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     group, and says that its members can become root on the machine.
   - **Also in the plan:** a file name can no longer forge extra lines in a listing, and a
     listing is cut to the output cap.
-- **Step 4 follow-ups — done 2026-11-10** (commit pending;
+- **Step 4 follow-ups — done 2026-11-10** (commit `4bd503c`;
   [plan](plans/M4/M4-step4-followups.md), §13 as built): the open issues in directory listings
   and in `setup`'s Docker message.
   - **A file name can't fake a listing any more.** A sandboxed run could name a file so that
@@ -1516,3 +1516,19 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **What the review changed:** the clock stops at the first finished run, not the first
     record; the 25 Mbit/s limit is measured before anything is timed; and the uninstall test
     gets a locked folder and a before-and-after listing, so that it can fail.
+- **Step 5a — the first runs on fresh machines, 2026-11-11 (in progress; candidate `4bd503c`).**
+  - **Before the runs:** the gate, the build, the smoke test on five Pythons per platform, the
+    secrets scan and the macOS job all passed on the candidate.
+  - **All four runs ended in the right isolation,** with only the README's commands typed:
+    Debian `native`, Ubuntu without Docker refused with the reason and the fix, Ubuntu with
+    Docker `container`, Windows `container`.
+  - **The two-minute target:** Ubuntu with Docker took 117.7 s. Debian took 150.5 s, of which
+    about 84 s is downloading and the model, on a line held to 25 Mbit/s. Windows wasn't timed
+    cleanly.
+  - **Decided by Victor, 2026-11-11:** the criterion will say what was measured, and 0.1.0's
+    `setup` download isn't cut. The Windows VM runs on an uncapped line, because nothing on
+    the host could limit a VM's downloads; its time at 25 Mbit/s is an estimate.
+  - **How the line was held on Linux:** Hyper-V's cap limits only what a VM sends, so the two
+    Linux VMs shape their own downloads (measured at 23.6 Mbit/s).
+  - **Still to do:** the uninstall test on two machines, and Cursor on the candidate. Details
+    are in [`BUILD_LOG.md`](BUILD_LOG.md).
