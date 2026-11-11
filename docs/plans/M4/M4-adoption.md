@@ -364,6 +364,16 @@ The server has never run on macOS; only monkeypatched `darwin` tests exist (§7)
 > - Before the upload, `release_smoke.py smoke` fails on any package a fresh install gets that
 >   neither gate ran.
 
+> **Amendment 2026-11-11 (step 5c, [`M4-step5c-pypi-page.md`](M4-step5c-pypi-page.md), asked
+> for and signed by Victor after he saw 0.1.0's page on PyPI):**
+> - **The version M4 ends on is 0.1.1.** 0.1.0 went up first, on 2026-11-11, and stays on
+>   PyPI. 0.1.1 has the same code; its description and its version number differ.
+> - **PyPI's description is `PYPI.md`, cut from the README,** not the README itself. It
+>   leaves out the status badge, the "early development" warning and the `Status` and
+>   `Documentation` sections.
+> - **The warning stays in the README,** so on GitHub. It no longer shows on PyPI.
+> - The development status of "Alpha" stays.
+
 **F2 — The release checklist** (a new `RELEASE.md` under `docs/`, and a smoke script).
 - **Build from a clean export** (`git archive HEAD`), never the working tree, and give the
   sdist an explicit include list in `pyproject.toml`.

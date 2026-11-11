@@ -9,8 +9,13 @@ and the wheel from the candidate commit and puts them aside. The smoke test, the
 and the upload all take those two files. Nothing is built again.
 
 **If a later step changes a shipped file, go back to step 3.** The shipped files are
-`src/vestibule/`, `README.md`, `LICENSE`, `pyproject.toml` and `.gitignore`. A change anywhere
-else (`docs/`, `tests/`, `scripts/`, `requirements/`) doesn't make a new candidate.
+`src/vestibule/`, `README.md`, `PYPI.md`, `LICENSE`, `pyproject.toml` and `.gitignore`. A change
+anywhere else (`docs/`, `tests/`, `scripts/`, `requirements/`) doesn't make a new candidate.
+
+**PyPI's page is `PYPI.md`, not the README** (since 0.1.1). It is the README with the status
+badge, the early-development warning and the `Status` and `Documentation` sections taken out.
+After any edit to the README, run `.venv\Scripts\python.exe scripts\pypi_readme.py` and commit
+both files; a doc test fails if they have drifted apart.
 
 The commands are for PowerShell at the repo root, with the dev venv. On Linux use
 `.venv/bin/python`, or the gate's `~/.venvs/vestibule/bin/python`.
@@ -69,11 +74,12 @@ upstream fixes until they're re-pinned. For `python:3.12-slim` and `node:22-slim
 ## 3. The candidate commit
 
 The working tree is clean, the version in `pyproject.toml` and `src/vestibule/__init__.py` is the one
-being released, and the commit is pushed to its branch. It doesn't go to `main` yet: the README
-names an install line that only works once the package is on PyPI, so `main` gets it at step 10.
+being released, and the commit is pushed to its branch. It doesn't go to `main` yet: `main`'s
+README is the one people follow, and it shouldn't describe a release that hasn't passed its
+tests. `main` gets it at step 10, just before the upload.
 
-The README is PyPI's description, and a published description can't be changed. Two things are
-true of it before this commit: private vulnerability reporting is turned on for the repo
+`PYPI.md`, cut from the README, is PyPI's description, and a published description can't be
+changed. Two things are true of the README before this commit: private vulnerability reporting is turned on for the repo
 (`SECURITY.md` links to it), and each "tested" or "untested" mark in the README's client table
 says what really happened.
 
@@ -135,18 +141,30 @@ M4 contract P6: on fresh VMs at 25 Mbit/s, on the copied wheel, following only t
 and the pass rule are in [`M4-adoption.md`](plans/M4/M4-adoption.md), and how they are run is in
 [`M4-step5-release.md`](plans/M4/M4-step5-release.md).
 
+**This step is skipped only when nothing a first run touches has changed** since the last
+release whose first runs were made: no command in the README's quick start, nothing in `setup`,
+nothing in either backend. The record names that release and says why, and that release's
+results stand as they were, misses included. The uninstall test is skipped by the same rule,
+for the commands under Uninstall.
+
+0.1.1 is skipped this way ([its plan](plans/M4/M4-step5c-pypi-page.md), §6). Against 0.1.0:
+the code differs only in the version number; PyPI's description is now cut from the README;
+and the README's other edits are two lines in Uninstall's "What stays" list and one sentence
+in the speed note. No command changed.
+
 ## 10. `main` gets the commit, and the checks before the upload
 
 Victor merges the candidate's branch to `main`. Then, before anything is uploaded:
 1. **`main` ships the same files as the candidate.** In a fresh clone of GitHub's `main`, in a
    scratch folder:
-   `git diff --quiet <candidate> origin/main -- src/vestibule README.md LICENSE pyproject.toml .gitignore`.
+   `git diff --quiet <candidate> origin/main -- src/vestibule README.md PYPI.md LICENSE pyproject.toml .gitignore`.
    If it reports a difference, stop: what would be uploaded isn't what `main` holds.
 2. **The two files are the recorded ones:** their sha256 match step 6's.
 3. **`smoke` once more** on the copied wheel. Drift found here is step 2's.
-4. **The page's links work.** The README's absolute URLs into `main` resolve now: fetch each one,
-   and the demo GIF's.
-5. **The name is still free:** `https://pypi.org/pypi/vestibule-mcp/json` returns 404.
+4. **The page's links work.** The absolute URLs in `PYPI.md` resolve now: fetch each one, and
+   the demo GIF's.
+5. **The version isn't on PyPI yet:** `https://pypi.org/pypi/vestibule-mcp/<version>/json`
+   returns 404. A version that is up can never be uploaded again.
 
 ## 11. Upload
 
@@ -165,7 +183,7 @@ replaced.
 ## 12. The same smoke, from PyPI
 
 ```powershell
-.venv\Scripts\python.exe scripts\release_smoke.py smoke vestibule-mcp==0.1.0 --allow-drift
+.venv\Scripts\python.exe scripts\release_smoke.py smoke vestibule-mcp==<version> --allow-drift
 ```
 
 On Linux and on Windows. `--allow-drift` because the release is out by now, so a newer package can

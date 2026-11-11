@@ -23,7 +23,7 @@ assert _spec is not None and _spec.loader is not None
 smoke = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(smoke)
 
-GOOD_SDIST = ["PKG-INFO", ".gitignore", "LICENSE", "README.md", "pyproject.toml",
+GOOD_SDIST = ["PKG-INFO", ".gitignore", "LICENSE", "README.md", "PYPI.md", "pyproject.toml",
               "src/vestibule/__init__.py"]
 # V13's files, spelled out here so that a name dropped from the script's own list is caught.
 REQUIRED = ["vestibule/backends/native_helper.py", "vestibule/backends/native_seccomp.py",
@@ -42,7 +42,7 @@ def test_anything_else_in_an_sdist_is_named(stray):
     assert smoke.sdist_problems([*GOOD_SDIST, stray]) == [f"not allowed in the sdist: {stray}"]
 
 
-@pytest.mark.parametrize("gone", ["LICENSE", "PKG-INFO", "README.md", "pyproject.toml"])
+@pytest.mark.parametrize("gone", ["LICENSE", "PKG-INFO", "PYPI.md", "README.md", "pyproject.toml"])
 def test_a_file_missing_from_an_sdist_is_named(gone):
     assert smoke.sdist_problems([n for n in GOOD_SDIST if n != gone]) == [
         f"missing from the sdist: {gone}"]
@@ -152,14 +152,14 @@ def test_skipping_the_end_to_end_tests_fails_except_on_macos(expect, reason, pas
     assert (smoke.e2e_problem(expect, reason) is None) == passes
 
 
-def _built(tmp_path: Path, stray: str | None = None) -> Path:
+def _built(tmp_path: Path, stray: str | None = None, gone: str | None = None) -> Path:
     built = tmp_path / "built"
     built.mkdir()
     src = tmp_path / "src"
     src.mkdir()
     (src / "pkg-file").write_bytes(b"x")
     with tarfile.open(built / "vestibule_mcp-0.1.0.tar.gz", "w:gz") as tf:
-        for name in [*GOOD_SDIST, *([stray] if stray else [])]:
+        for name in [*(n for n in GOOD_SDIST if n != gone), *([stray] if stray else [])]:
             tf.add(src / "pkg-file", arcname=f"vestibule_mcp-0.1.0/{name}")
     _wheel(built / "vestibule_mcp-0.1.0-py3-none-any.whl", GOOD_WHEEL)
     return built
@@ -197,6 +197,14 @@ def test_a_good_build_replaces_only_our_own_files(tmp_path, twine_passes):
         "someone-elses.txt", "vestibule_mcp-0.1.0-py3-none-any.whl", "vestibule_mcp-0.1.0.tar.gz"]
 
 
+def test_a_build_without_pypi_md_fails(tmp_path, twine_passes, capsys):
+    """M4 step 5c: PYPI.md is PyPI's page, so an sdist without it never reaches dist/."""
+    dist = tmp_path / "dist"
+    assert smoke.finish_build(_built(tmp_path, gone="PYPI.md"), dist, "uv") == 1
+    assert "missing from the sdist: PYPI.md" in capsys.readouterr().out
+    assert not dist.exists()
+
+
 def test_build_refuses_what_isnt_committed(monkeypatch, tmp_path, capsys):
     calls = []
 
@@ -211,7 +219,7 @@ def test_build_refuses_what_isnt_committed(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(smoke.subprocess, "run", no_export)
     assert smoke.build(tmp_path, "uv") == 1
     assert "M README.md" in capsys.readouterr().out
-    assert calls[0][-5:] == ["src", "pyproject.toml", "README.md", "LICENSE",
+    assert calls[0][-6:] == ["src", "pyproject.toml", "README.md", "PYPI.md", "LICENSE",
                              "requirements/constraints.txt"]
 
 

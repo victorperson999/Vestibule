@@ -1,8 +1,8 @@
 [project]
 name = "vestibule-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server."
-readme = "README.md"
+readme = "PYPI.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Victor" }]
@@ -46,7 +46,7 @@ packages = ["src/vestibule"]
 
 [tool.hatch.build.targets.sdist]
 # Explicit: a build otherwise ships everything git doesn't ignore (M4 F2).
-include = ["/src/vestibule", "/README.md", "/LICENSE", "/pyproject.toml"]
+include = ["/src/vestibule", "/README.md", "/PYPI.md", "/LICENSE", "/pyproject.toml"]
 
 [tool.ruff]
 line-length = 100

@@ -1516,7 +1516,8 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **What the review changed:** the clock stops at the first finished run, not the first
     record; the 25 Mbit/s limit is measured before anything is timed; and the uninstall test
     gets a locked folder and a before-and-after listing, so that it can fail.
-- **Step 5a — the first runs on fresh machines, 2026-11-11 (in progress; candidate `4bd503c`).**
+- **Step 5a — the first runs on fresh machines, 2026-11-11 (all tests run; candidate `4bd503c`;
+  nothing published).**
   - **Before the runs:** the gate, the build, the smoke test on five Pythons per platform, the
     secrets scan and the macOS job all passed on the candidate.
   - **All four runs ended in the right isolation,** with only the README's commands typed:
@@ -1530,5 +1531,46 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     the host could limit a VM's downloads; its time at 25 Mbit/s is an estimate.
   - **How the line was held on Linux:** Hyper-V's cap limits only what a VM sends, so the two
     Linux VMs shape their own downloads (measured at 23.6 Mbit/s).
-  - **Still to do:** the uninstall test on two machines, and Cursor on the candidate. Details
-    are in [`BUILD_LOG.md`](BUILD_LOG.md).
+  - **Uninstall passed on Debian and on the Windows VM.** On each, the agent first locked
+    something in the workspace and made a link to a read-only folder outside it; then Victor
+    typed the README's uninstall lines. Everything of Vestibule's was gone and the outside
+    folder was untouched.
+    - On Windows the guest's own link was one Windows doesn't follow, so the link that was
+      tested was a real one made by the test kit.
+    - Two things stay that the README's "What stays" list doesn't name, neither of them
+      Vestibule's: uv's package cache and Claude Code's log folder for the server.
+      **Victor, 2026-11-11: 0.1.0's README stays as built;** the wording is fixed in the next
+      release.
+  - **Cursor passed on the candidate** on the dev PC: `setup` said `container`, Cursor's
+    first call ran in `container`, and the audit log names Cursor.
+  - Details are in [`BUILD_LOG.md`](BUILD_LOG.md).
+- **Step 5b — the release: Victor's go, 2026-11-11 (in progress). `vestibule-mcp` 0.1.0 is
+  on PyPI: Victor uploaded the two tested files at 22:14 UTC, and the smoke test from PyPI
+  passed on five Pythons on Windows and on Linux.**
+  - `main` already held the candidate (pull request #31).
+  - **The checks before the upload all passed:** `main` ships the candidate's files, the two
+    files have their recorded hashes, the smoke test passed again on five Pythons per
+    platform, every link in the README works, and the name is free on PyPI.
+  - **The first run from PyPI, on Debian, ended in `native`** with only the README's lines
+    typed. Its clock doesn't count: Claude Code's login in the VM had expired and Victor
+    logged in again inside the run.
+- **Step 5c — 0.1.1, a shorter page on PyPI: plan signed 2026-11-11**
+  ([plan](plans/M4/M4-step5c-pypi-page.md), v2 after the `skeptic` review).
+  - **Why:** Victor looked at 0.1.0's page on PyPI. He doesn't want it to carry the parts
+    about how the project was built, or the early-development warning. GitHub's README stays.
+    A published description can't be edited, so the page changes with a new release.
+  - **Decided by Victor:**
+    - the PyPI page leaves out the `Status` and `Documentation` sections, the warning and
+      the "early development" badge;
+    - `How it works (design)` stays on the page. He first chose to drop it, on a question
+      that described the section wrongly; it is where the page says what the `isolation:`
+      values mean and where the promise ends;
+    - PyPI's "Alpha" label stays;
+    - the README's "What stays" list gets its two missing lines now;
+    - 0.1.1 goes up before "M4 accepted" is written.
+  - **How:** a small script cuts `PYPI.md` from `README.md`, and the package names `PYPI.md`
+    as its description. A test fails if the two drift apart. The package's code doesn't
+    change.
+  - **What the review changed:** the first plan put marks into the README, and a mark beside
+    the badge would have broken GitHub's row of badges. The script now cuts named parts and
+    the README isn't edited for it.
