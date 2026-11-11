@@ -64,7 +64,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 4a | F4, F5, P8: the README rewritten for a stranger (what is and isn't sandboxed, a quick start per platform, client configs, uninstall, absolute links), `SECURITY.md`, and the doc tests that hold them; live client sessions, a dry run on two VMs and the macOS job | 2026-11-09 | `5a1bc23` | 1042 Linux (0 skipped); 850 + 172 POSIX/Linux-only skips on Windows |
 | M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | `bc79e75` | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
 | M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | `4bd503c` | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
-| M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, pending | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
+| M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, `ddf522c` | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -87,6 +87,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-09 (M4 step 4a, critic round 2) | container backend | The selection check reads back the resource caps and `/tmp`'s size (cgroup v2 only) and the workspace's mode. `--network none`, `--cap-drop ALL`, `no-new-privileges`, `--read-only` and `--user` are passed to the runtime and never read back on the user's machine, and Vestibule doesn't set the container's seccomp profile (the daemon's default applies). The Docker-marked acceptance tests check all of these from inside a container, on the machines the gate runs on. | Documented residual (`SECURITY.md` §3.14) |
 | 2026-11-09 (M4 step 4a, critic round 3) | Claude Code, not Vestibule | A sandbox-only session (`--tools ""`, with or without `--strict-mcp-config`) still runs the hooks of the user's plugins on the host (the stricter line drops a plugin's MCP server, not its hooks): the Codex plugin's Stop hook ran `node` after every turn in both live sessions. The README says so and names `/plugin`. | Documented (README); upstream behaviour |
 | 2026-11-09 (M4 step 4a, critic rounds 1–3) | README and `SECURITY.md` | The two state some facts twice: native's layers, the audit log's permissions, the re-pin tradeoff. The README is frozen at each upload and `SECURITY.md` isn't, so they can drift. The step 4 plan asked for both copies. | Open; `critic` compares the two at each release |
+| 2026-11-11 (M4 step 5a, uninstall test) | README, "What stays" | After the README's uninstall lines two things stay that the list doesn't name, neither of them Vestibule's: uv's package cache (43 MB on Debian, with a copy of the Vestibule wheel and its dependencies) and Claude Code's own log folder for the server (`mcp-logs-vestibule`). | Fixed in 0.1.1's README (M4 step 5c): two lines added to the list. 0.1.0's page on PyPI keeps the gap; Victor, 2026-11-11: 0.1.0 stays as built |
+| 2026-11-11 (M4 step 5a, first runs) | Claude Code, not Vestibule | Claude Code 2.1.322 shows a `run_code` call as "Called vestibule" and the agent's summary, so the `isolation:` line the README tells a user to check isn't on screen unless the agent quotes it. Cursor showed it. | Open; to raise with the first-run findings |
 
 **Closed:**
 - The 2026-11-09 `read_workspace` listings issue is closed in the M4 step 4 follow-ups. It was
@@ -152,10 +154,69 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M4 step 5b — the release (in progress, 2026-11-11)
+
+- **Victor's go for 5b:** 2026-11-11, after 5a's tests were recorded. Nothing is uploaded yet.
+- **Victor's decision on 5a's uninstall finding, 2026-11-11: leave the README as it is.** The
+  candidate stays as built and tested. The gap (the "What stays" list doesn't name uv's
+  package cache or Claude Code's log folder) is a known issue, for the next release.
+- **`main` already holds the candidate.** Pull request #31 was merged on 2026-11-11 at 08:11
+  UTC (GitHub's `main` is `2bf4370`), before the uninstall tests; it carries `4bd503c` and
+  `b26b573`.
+- **The checks before the upload** (RELEASE step 10), 2026-11-11, all passed:
+  1. `main` ships the candidate's files: no difference between `4bd503c` and GitHub's `main`
+     (`2bf4370`, fetched) in `src/vestibule`, `README.md`, `LICENSE`, `pyproject.toml` and
+     `.gitignore`. The plan asks for a scratch clone; this compared the fetched commit, whose
+     hash is the one GitHub reports for `main`.
+  2. The two files in `m4spike\release\0.1.0\` have the recorded sha256.
+  3. `smoke` once more on the copied wheel, no drift reported: Linux (WSL), `native`, OK on
+     Python 3.11.18, 3.12.16, 3.13.18, 3.14.4 and 3.15.2; Windows, `container`, OK on 3.11.9,
+     3.12.3, 3.13.1, 3.14.10 and 3.15.2 (uv 0.13.7 on both).
+  4. All 39 absolute URLs in the candidate's README answer 200, and the demo GIF's URL returns
+     the 719,281 bytes of `docs/demo.gif`.
+  5. `https://pypi.org/pypi/vestibule-mcp/json` returns 404: the name is free.
+  - Logs: `m4spike\logs\step5\5b-links.txt`, `5b-smoke-wsl.txt`, `5b-smoke-win.txt`.
+- **The upload** is Victor's, with `m4spike\release\publish.cmd`: it checks the two files'
+  hashes and the name again, asks for the word `upload` and then for the token at a hidden
+  prompt, and runs `uv publish` on those two files by name.
+- **Uploaded by Victor, 2026-11-11** (RELEASE step 11): `uv publish` ended with exit code 0.
+  PyPI's record of `vestibule-mcp` 0.1.0:
+  - two files, the wheel uploaded at 22:14:56 UTC and the sdist at 22:14:57, with the sizes
+    and the sha256 of the two tested files;
+  - `requires_python` `>=3.11`, not yanked;
+  - the description is the candidate's README, line endings aside (43,608 characters).
+- **`smoke` from PyPI** (RELEASE step 12; `vestibule-mcp==0.1.0 --allow-drift`, uv 0.13.7), no
+  drift reported:
+  - Windows, `container`: OK on Python 3.11.9, 3.12.3, 3.13.1, 3.14.10 and 3.15.2;
+  - Linux (WSL), `native`: OK on Python 3.11.18, 3.12.16, 3.13.18, 3.14.4 and 3.15.2.
+  - Logs: `m4spike\logs\step5\5b-smoke-pypi-win.txt`, `5b-smoke-pypi-wsl.txt`.
+- **The page itself wasn't seen by Claude:** PyPI answers a script with a challenge page, not
+  the project page. The description's text and the GIF's URL were checked separately (above);
+  Victor looks at the page in a browser.
+- **The first run from PyPI** (S5-D5; Debian 13.7 from `prereq`, 2026-11-11, clock started
+  22:23:48 UTC, line 23.6 Mbit/s):
+  - **Right:** `uv tool install vestibule-mcp`, the README's own line, installed 0.1.0 from
+    the index (uv 0.13.7, CPython 3.15.2, `mcp` 1.30.0). One audit record: `ran`,
+    `isolation: native`, exit 0, client `claude-code`; nothing blocked or refused before it.
+    The history holds only the README's commands.
+  - **The clock, 216.1 s, isn't a measurement of the README.** Claude Code's login in the
+    checkpoint had expired, so the first try answered "Login expired" and Victor logged in
+    again inside the run. Plan §9 puts a login outside the clock; the run wasn't repeated.
+  - **The machine's part matches D1:** the Python was there at +56 s, the tool at +61 s, and
+    `setup` ran from +65 s to +111 s (D1: about +110 s). Claude Code's session began at
+    +181 s.
+  - Evidence: `m4spike\logs\step5\run-debian-pypi\`.
+- **Victor looked at the page, 2026-11-11:** it shows. His finding: the page shouldn't carry
+  the README's `Status` and `Documentation` sections (how the project was built), and he wants
+  the early-development warning gone. 0.1.0's description can't be changed, so that is a new
+  release with its own plan.
+- **Still to do:** 0.1.1 (step 5c, its own entry), then the docs pass and the acceptance
+  record.
+
 ## M4 step 5a — the 0.1.0 release candidate (2026-11-10 to 2026-11-11)
 
-- **Where it stands:** every test of 5a has been run. Nothing is published; 5b (the release)
-  waits for Victor's go. The record's commits: `b26b573` (up to W1), and one pending (the
+- **Where it stands:** every test of 5a was run on the candidate before anything was
+  published. The release itself is step 5b, above. The record's commits: `b26b573` (up to W1) and `ddf522c` (the
   uninstall tests and Cursor).
 
 - **Plan:** [`docs/plans/M4/M4-step5-release.md`](plans/M4/M4-step5-release.md) (v2 after the
@@ -417,11 +478,11 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
     server when the entry went away, so that idle server was stopped by hand first. No
     `vestibule-mcp` on `PATH`, no container left.
   - Log: `m4spike\logs\step5\cursor-candidate.txt`.
-- **Where the VMs are now:** `m4-debian` and `m4-win11` both restored to `prereq`;
-  `m4-ubuntu` off.
-- **Open for Victor before 5b:** whether the README's "What stays" list should name uv's
-  package cache and Claude Code's log folder. The README is a shipped path, so changing it
-  makes a new candidate (plan §7); leaving it means a known gap in 0.1.0's README.
+- **Where the VMs are now:** `m4-debian` and `m4-win11` both restored to `prereq` and then
+  saved (21:50 UTC); `m4-ubuntu` off.
+- **The README's "What stays" list** doesn't name uv's package cache or Claude Code's log
+  folder. The README is a shipped path, so changing it would make a new candidate (plan §7).
+  Victor, 2026-11-11: leave it; it is a known issue for the next release.
 - **The kit** is outside the repo, in `m4spike\vm\step5\`.
 
 ## M4 step 4 follow-ups — directory listings and the `docker`-group hint (2026-11-10)

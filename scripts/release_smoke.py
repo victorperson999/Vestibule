@@ -31,9 +31,9 @@ sys.path[:0] = [str(ROOT / "scripts"), str(ROOT / "tests")]
 
 PYTHONS = ("3.11", "3.12", "3.13", "3.14", "3.15")  # pyproject's classifiers say the same (F1)
 # What ships, and the set `smoke` compares an install against.
-_MUST_BE_COMMITTED = ("src", "pyproject.toml", "README.md", "LICENSE",
+_MUST_BE_COMMITTED = ("src", "pyproject.toml", "README.md", "PYPI.md", "LICENSE",
                       "requirements/constraints.txt")
-_SDIST_REQUIRED = ("LICENSE", "PKG-INFO", "README.md", "pyproject.toml")
+_SDIST_REQUIRED = ("LICENSE", "PKG-INFO", "PYPI.md", "README.md", "pyproject.toml")
 _SDIST_ALSO_ALLOWED = (".gitignore",)  # hatchling always adds it
 # V13: without these a wheel can't start. Packaged data, so nothing else would notice.
 _WHEEL_REQUIRED = ("vestibule/backends/native_helper.py", "vestibule/backends/native_seccomp.py",

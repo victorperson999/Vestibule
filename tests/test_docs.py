@@ -8,12 +8,18 @@ the CLAUDE.md changelog, docs/reviews/, and docs/archive/. So are git worktrees 
 .claude/worktrees/, which are other checkouts, not live docs.
 """
 import ast
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
+import sys
+import tomllib
 import unicodedata
+from collections import Counter
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 _EXEMPT = ("docs/reviews/", "docs/archive/", ".claude/worktrees/")
@@ -330,3 +336,110 @@ def test_demo_gif_is_under_3_mb():
     data = (ROOT / "docs" / "demo.gif").read_bytes()  # raises if it's missing
     assert data[:6] in (b"GIF87a", b"GIF89a"), f"docs/demo.gif isn't a GIF: it starts {data[:6]!r}"
     assert len(data) < 3_000_000, f"docs/demo.gif is {len(data):,} bytes, not under 3 MB"
+
+
+# M4 step 5c (docs/plans/M4/M4-step5c-pypi-page.md §5): PyPI's page is PYPI.md, which
+# scripts/pypi_readme.py cuts from the README, the one text anyone edits.
+_PYPI = ROOT / "PYPI.md"
+_LEFT_OUT = ("Status", "Documentation")  # the sections PyPI's page leaves out (§3, Y3)
+
+
+@pytest.fixture()
+def pypi_readme():
+    script = ROOT / "scripts" / "pypi_readme.py"
+    spec = importlib.util.spec_from_file_location("pypi_readme", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_pypi_md_is_what_the_script_makes_of_the_readme(pypi_readme):
+    """As text, so a checkout with CRLF line endings (core.autocrlf=true) compares the same."""
+    want = pypi_readme.pypi_text(_README.read_text(encoding="utf-8"))
+    assert _PYPI.read_text(encoding="utf-8") == want, "run scripts/pypi_readme.py"
+
+
+def test_pypi_md_loses_only_the_badge_the_warning_and_two_sections():
+    readme, pypi = _README.read_text(encoding="utf-8"), _PYPI.read_text(encoding="utf-8")
+    assert {_github_slug(title) for title in _LEFT_OUT} <= _heading_ids(readme)
+    kept, inside = [], False  # the README's lines outside those sections
+    for line in readme.splitlines():
+        if line.startswith("## "):
+            inside = line[3:] in _LEFT_OUT
+        if not inside:
+            kept.append(line)
+    assert _heading_ids(pypi) == _heading_ids("\n".join(kept))
+    row = next(line for line in kept if "[![Status: Early Development]" in line)
+    warning = next(line for line in kept if line.startswith("> ⚠️ **Early development"))
+    lines = pypi.splitlines()
+    assert Counter(kept) - Counter(lines) == Counter([row, warning, ""])  # "": after the warning
+    # The badge's row keeps its other badges, in order and one space apart.
+    badge = re.search(r" \[!\[Status: Early Development\]\S*", row)
+    assert badge
+    assert list((Counter(lines) - Counter(kept)).elements()) == [row.replace(badge.group(0), "")]
+    assert "early development" not in pypi.lower()
+
+
+def _main(pypi_readme, monkeypatch, tmp_path, readme, pypi, *args):
+    """The script's exit code, run on these two files as a checkout with core.autocrlf=true
+    has them (CRLF), in tmp_path instead of the repo."""
+    (tmp_path / "README.md").write_text(readme, encoding="utf-8", newline="\r\n")
+    (tmp_path / "PYPI.md").write_text(pypi, encoding="utf-8", newline="\r\n")
+    monkeypatch.setattr(pypi_readme, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pypi_readme.py", *args])
+    try:
+        return pypi_readme.main()
+    except SystemExit as stopped:
+        return stopped.code
+
+
+# Each part the script takes out, as the README has it, and a rename that hides it.
+_PARTS = [("[![Status: Early Development]", "[![Status: Early]"),
+          ("> ⚠️ **Early development", "> ⚠️ **Early days"),
+          ("## Status\n", "## State\n"),
+          ("## Documentation\n", "## Docs\n")]
+
+
+@pytest.mark.parametrize("times", [0, 2])
+@pytest.mark.parametrize("part, renamed", _PARTS, ids=["badge", "warning", "status", "docs"])
+def test_the_script_writes_nothing_unless_each_part_is_there_once(
+        pypi_readme, monkeypatch, tmp_path, part, renamed, times):
+    readme = _README.read_text(encoding="utf-8")
+    assert readme.count(part) == 1
+    if times == 0:
+        readme = readme.replace(part, renamed)
+    else:  # the paragraph that holds it, twice
+        start = readme.rfind("\n", 0, readme.index(part)) + 1
+        end = readme.index("\n\n", start) + 2
+        readme = readme[:end] + readme[start:end] + readme[end:]
+    assert _main(pypi_readme, monkeypatch, tmp_path, readme, "as it was\n") not in (0, None)
+    assert (tmp_path / "PYPI.md").read_text(encoding="utf-8") == "as it was\n"
+
+
+def test_the_script_writes_nothing_unless_license_ends_the_two_sections(
+        pypi_readme, monkeypatch, tmp_path):
+    readme = _README.read_text(encoding="utf-8")
+    assert readme.count("\n## License\n") == 1
+    readme = readme.replace("\n## License\n", "\n## Licence\n")
+    assert _main(pypi_readme, monkeypatch, tmp_path, readme, "as it was\n") not in (0, None)
+    assert (tmp_path / "PYPI.md").read_text(encoding="utf-8") == "as it was\n"
+
+
+def test_check_passes_only_an_up_to_date_pypi_md_and_the_default_writes_it(
+        pypi_readme, monkeypatch, tmp_path):
+    readme = _README.read_text(encoding="utf-8")
+    want = pypi_readme.pypi_text(readme)
+    assert _main(pypi_readme, monkeypatch, tmp_path, readme, want, "--check") == 0
+    assert _main(pypi_readme, monkeypatch, tmp_path, readme, "as it was\n", "--check") not in (
+        0, None)
+    assert (tmp_path / "PYPI.md").read_text(encoding="utf-8") == "as it was\n"
+    assert _main(pypi_readme, monkeypatch, tmp_path, readme, "as it was\n") == 0
+    assert (tmp_path / "PYPI.md").read_bytes() == want.encode("utf-8")
+
+
+def test_pyproject_makes_pypi_md_the_description_and_ships_it():
+    with open(ROOT / "pyproject.toml", "rb") as f:
+        project = tomllib.load(f)
+    assert project["project"]["readme"] == "PYPI.md"
+    assert "/PYPI.md" in project["tool"]["hatch"]["build"]["targets"]["sdist"]["include"]

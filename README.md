@@ -210,6 +210,8 @@ Remove-Item -Recurse -Force $HOME\.vestibule
 
 **What stays:**
 - uv, and any Python it downloaded;
+- uv's package cache, which holds a copy of Vestibule and its dependencies (`uv cache clean` empties it);
+- your MCP client's own logs of the server (Claude Code keeps `mcp-logs-vestibule` folders in its cache, one for each folder you used it in);
 - a folder you set with `VESTIBULE_WORKSPACE`, `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_AUDIT_DIR`;
 - anything named `vestibule-*` in the temp folder after a hard kill (root-owned ones in `/tmp` need `sudo`);
 - any container that `docker ps -a --filter label=vestibule.run=1` lists.
@@ -279,7 +281,7 @@ On Linux, Vestibule doesn't need Docker. Each run gets a fresh sandbox built fro
 | native    | 118 ms | 141 ms  |
 | container | 895 ms | 1002 ms |
 
-The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (`docker ps`). So these are this host's numbers, not a speed-up factor. On 2026-10-31 the same host measured 82 ms and 392 ms; the code from before M3, run again in the same session as the numbers above, measures the same as today's, so the host got slower, not the code. `scripts/bench_coldstart.py` reproduces them.
+The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (`docker ps`). So these are this host's numbers, not a speed-up factor. On 2026-10-31 the same host measured 82 ms and 392 ms; the code from before the audit log was added, run again in the same session as the numbers above, measures the same as today's, so the host got slower, not the code. `scripts/bench_coldstart.py` reproduces them.
 
 ### Where native works
 

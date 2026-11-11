@@ -54,6 +54,10 @@ branch, the tests run on it, and the two files that were tested are the two file
   clone of GitHub's `main` in a scratch folder, so nothing in Victor's checkout moves. If they
   differ, the step stops.
 
+> **Amendment 2026-11-11 (step 5c, [`M4-step5c-pypi-page.md`](M4-step5c-pypi-page.md), signed
+> by Victor):** from 0.1.1 on, `PYPI.md` is a shipped path too. It is the package's
+> description on PyPI, cut from `README.md` by `scripts/pypi_readme.py`.
+
 **5a, nothing published and nothing that can't be undone:**
 
 1. **The candidate commit `C`:** the follow-ups step committed; the README's M4 row (S5-D4) and
