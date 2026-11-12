@@ -66,7 +66,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | `4bd503c` | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, `ddf522c` | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5b | 0.1.0 released: the checks before the upload, Victor's upload of the two tested files, the smoke test from PyPI, one first run from PyPI on Debian (no `src/` change) | 2026-11-11 | `02fc3b8` (the record) | no test change |
-| M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, pending (the record) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
+| M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, `22b5fe7` (the record, and the quick start's new order) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -235,7 +235,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
     log file holds the passing run.
 - **Not run again** (plan §6, and `RELEASE.md` step 9's rule): the four first runs on the VMs,
   the uninstall tests and Cursor. They stand as 0.1.0's, misses included.
-- **After the release, on GitHub only** (Victor's ask, 2026-11-11, after reading the page as
+- **After the release, in the README** (commit `22b5fe7`, which reaches GitHub with 0.1.2;
+  Victor's ask, 2026-11-11, after reading the page as
   a user would): the README's quick start now lists Windows, then Ubuntu, then Linux with
   systemd, then macOS. It listed Linux first, and an Ubuntu user who followed that section
   got `Blocked:`. Whole sections moved; no command changed; the Ubuntu section's two "the
@@ -718,10 +719,14 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   `tests/test_docs.py` and `tests/test_pins.py`: 16 passed on Windows 3.11 and on Linux 3.14 and
   3.11; ruff and mypy clean.
 - **Where to start if it breaks:**
-  - **`test_demo_gif_is_under_3_mb` fails:** the file was replaced. `m4spike\demo\HOW.txt` has
-    the commands that made it, and the take.
-  - **A new recording:** the kit is WSL's `~/vestibule-live/demo/` (`take.sh`); the cut and the
-    checks are `cut.py`, `post.py` and `check.py` in `m4spike\demo\`.
+  - **The GIF's test fails:** since step 5d that test is
+    `test_a_published_demo_gif_is_there_unchanged`, which pins this file by its sha256: the
+    file was replaced or removed. Put it back; don't change the hash in the test's table.
+    `m4spike\demo\HOW.txt` has the commands that made it, and the take.
+  - **A new recording** never replaces this file or `docs/demo-2.gif`. It is a new file and
+    a new row in that table (step 5d's entry says why). The kit is WSL's
+    `~/vestibule-live/demo/` (`take.sh`); the cut and the checks are `cut.py`, `post.py` and
+    `check.py` in `m4spike\demo\`.
 
 ## M4 step 4a — the README, `SECURITY.md` and their tests (2026-11-09)
 

@@ -330,6 +330,22 @@ short confirmation from PyPI after the upload (§6, step 5).
 >   result is dropped, and the last frame is held 4 s. All are edits in time, no output is
 >   changed, and the caption lists them.
 
+> **Amendment 2026-11-11 (step 5d, [`M4-step5d-demo-gif.md`](M4-step5d-demo-gif.md) Z1, asked
+> for and signed by Victor after he saw the first GIF on the page):** a second recording
+> replaces the first on the README, because the first read as the tool failing (two
+> tracebacks and `exit_code: 1`).
+> - **One call, not two.** One short program tries the read and the connection.
+> - **The program catches each failure** and prints the system's own message in one line
+>   (`No such file or directory`, `Network is unreachable`). No traceback.
+> - **The same program runs first on the machine itself,** as the control: there it prints the
+>   fake key's last word and `connected`.
+> - **The connection goes to `1.1.1.1`,** which answers from the machine, not to an address
+>   reserved for documentation. The program connects and closes, and sends no data.
+> - **It is `docs/demo-2.gif`,** 16.2 s. `docs/demo.gif` stays, unchanged: the pages of 0.1.0
+>   and 0.1.1 load it, and their captions describe it.
+> - The agent is asked for the result only. A take that also asked it for a sentence was
+>   dropped: the sentence said more than Vestibule does.
+
 ### P8 (Victor, 2026-11-07: (1)) — How vulnerabilities are reported
 
 - **(1) Recommended: GitHub's private vulnerability reporting** on the public repo. Victor turns

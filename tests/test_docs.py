@@ -8,6 +8,7 @@ the CLAUDE.md changelog, docs/reviews/, and docs/archive/. So are git worktrees 
 .claude/worktrees/, which are other checkouts, not live docs.
 """
 import ast
+import hashlib
 import importlib.util
 import os
 import re
@@ -331,11 +332,36 @@ def test_security_md_cites_only_what_exists():
     assert bad == [], "no such test or file:\n" + "\n".join(bad)
 
 
-# The README's demo (M4 step 4b): criterion 7's "under 3 MB", read as 3,000,000 bytes.
-def test_demo_gif_is_under_3_mb():
-    data = (ROOT / "docs" / "demo.gif").read_bytes()  # raises if it's missing
-    assert data[:6] in (b"GIF87a", b"GIF89a"), f"docs/demo.gif isn't a GIF: it starts {data[:6]!r}"
-    assert len(data) < 3_000_000, f"docs/demo.gif is {len(data):,} bytes, not under 3 MB"
+# The README's demo GIFs (M4 steps 4b and 5d), oldest first; the README shows the last. Published
+# pages load each one from main, and their captions can't be edited, so none may change or go.
+_PUBLISHED_GIFS = [
+    ("docs/demo.gif", "85d12697e8d591237e85363fc8b3294fc5f77fafd999e94d2868a16e54dca722"),
+    ("docs/demo-2.gif", "0436af530a7de9ea8367062cbd302426d896e1a2f67880f9224f34fb76289e17"),
+]
+
+
+@pytest.mark.parametrize("path, sha256", _PUBLISHED_GIFS, ids=[p for p, _ in _PUBLISHED_GIFS])
+def test_a_published_demo_gif_is_there_unchanged(path, sha256):
+    assert _exists_exactly(ROOT / path), f"{path} is gone, and a published page loads it"
+    data = (ROOT / path).read_bytes()
+    assert data[:6] in (b"GIF87a", b"GIF89a"), f"{path} isn't a GIF: it starts {data[:6]!r}"
+    # Criterion 7's "under 3 MB", read as 3,000,000 bytes.
+    assert len(data) < 3_000_000, f"{path} is {len(data):,} bytes, not under 3 MB"
+    assert hashlib.sha256(data).hexdigest() == sha256, f"{path} changed, and a page loads it"
+
+
+def test_the_readme_shows_the_newest_demo_gif():
+    shown = []  # the README's images that are GIFs under docs/ on main
+    for line in _text(_README).splitlines():
+        for url in _IMAGE.findall(_CODE_SPAN.sub("", line)):
+            g = _GITHUB.match(url)
+            if not g or g.group(1).lower() != _SITES[1]:
+                continue
+            on_main = _ON_MAIN.fullmatch(re.split(r"[?#]", g.group(3), maxsplit=1)[0].strip("/"))
+            path = (on_main and on_main.group(2)) or ""
+            if path.startswith("docs/") and path.endswith(".gif"):
+                shown.append(path)
+    assert shown == [_PUBLISHED_GIFS[-1][0]]
 
 
 # M4 step 5c (docs/plans/M4/M4-step5c-pypi-page.md §5): PyPI's page is PYPI.md, which

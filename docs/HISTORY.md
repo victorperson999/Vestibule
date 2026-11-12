@@ -1587,7 +1587,20 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **Not run again:** the first runs on the VMs, the uninstall tests and Cursor. No command a
     first run types changed, so 0.1.0's results stand, the missed two minutes on Debian
     included.
-- **After 0.1.1, 2026-11-11: the README's quick start is reordered, on GitHub** (Victor's
-  ask): Windows, Ubuntu, Linux with systemd, macOS. Ubuntu now comes before the general Linux
-  section, because Ubuntu is where that section's steps end in `Blocked:`. No command
-  changed. PyPI's page gets the new order with the next release.
+- **After 0.1.1, 2026-11-11: the README's quick start is reordered** (Victor's ask; commit
+  `22b5fe7`): Windows, Ubuntu, Linux with systemd, macOS. Ubuntu now comes before the general
+  Linux section, because Ubuntu is where that section's steps end in `Blocked:`. No command
+  changed. It reaches GitHub and PyPI's page with 0.1.2.
+- **Step 5d — 0.1.2, a clearer demo GIF: plan signed 2026-11-11**
+  ([plan](plans/M4/M4-step5d-demo-gif.md), v2 after the `skeptic` review).
+  - **Why:** Victor looked at the GIF as a new user would. Two tracebacks and `exit_code: 1`
+    read as the tool failing; only the caption said the failures were the point.
+  - **The new recording** runs one short program twice: on the machine itself, where it reads
+    the fake key and connects to 1.1.1.1, and through Vestibule, where it prints "No such
+    file or directory" and "Network is unreachable". Victor signed the change to the GIF's
+    rules (P7).
+  - **A take in between was dropped.** It ended with a sentence the agent was asked for, "no
+    way to send anything". The review found that it says more than Vestibule does: a run's
+    output still goes back to the agent. Claude had first told Victor the sentence was fine.
+  - **The new GIF is a new file,** `docs/demo-2.gif`. The first stays, because the pages of
+    0.1.0 and 0.1.1 load it and their captions can't be edited. A test now pins both by hash.
