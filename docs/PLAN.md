@@ -104,6 +104,10 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
 **Acceptance:** a stranger can install and run it in under 2 minutes on a clean machine following only the README.
 
+**Detailed contract:** `docs/plans/M4/M4-adoption.md`; its 11 acceptance criteria supersede the list above. The install is `uv tool install vestibule-mcp`, not `pipx` (P1).
+
+**Status (2026-11-11):** accepted by the owner as amended. The acceptance sentence above is not met as written. `vestibule-mcp` 0.1.0, 0.1.1 and 0.1.2 are on PyPI. On fresh VMs the README's commands alone ended in the expected isolation on Debian (`native`), on Ubuntu with Docker and on Windows (both `container`). The first run took under two minutes on one machine of three: Ubuntu 117.7 s, Debian 150.5 s, Windows not measured. The owner made the runs, with the steps listed for him in advance; no stranger's run was made. The criterion-by-criterion record, and what stays open, are in the contract's §5.
+
 ---
 
 ## Cross-platform strategy (non-negotiable for adoption)

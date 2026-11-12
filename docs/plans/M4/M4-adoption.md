@@ -1,6 +1,10 @@
 # M4 contract — install, first run, and the threat model
 
-Status: **signed off 2026-11-07 (v2).** v1 was reviewed by `skeptic` (19 findings: 3 high,
+Status: **accepted by Victor on 2026-11-11, as the acceptance record in §5 states it.** The
+first-run criterion is met as amended, not as first written, and PLAN.md's sentence about a
+stranger isn't met as written.
+
+Signed off 2026-11-07 (v2). v1 was reviewed by `skeptic` (19 findings: 3 high,
 12 medium, 4 low; verdict "sound with amendments"). `verifier` checked the 15 checkable
 claims: 8 confirmed, 4 confirmed with corrections, 2 plausible, 1 mostly refuted. It also found
 two more problems: the sdist leak (now high) and snap Docker (§8). Every finding is taken into
@@ -624,27 +628,29 @@ Then: "ask your agent to run `print(1)`".
 
 ### Acceptance record (2026-11-11)
 
-Two releases went up on 2026-11-11: 0.1.0 from commit `4bd503c`, and 0.1.1 from `02fc3b8`.
-0.1.1's code is 0.1.0's with one line changed, the version number; its PyPI page is shorter
-([step 5c](M4-step5c-pypi-page.md)). The first runs, the uninstall tests and the client
+Three releases went up on 2026-11-11 (the third after midnight UTC): 0.1.0 from commit
+`4bd503c`, 0.1.1 from `02fc3b8` and 0.1.2 from `430c1b6`. Their code is the same but for the
+version number. 0.1.1's PyPI page is shorter ([step 5c](M4-step5c-pypi-page.md)); 0.1.2's
+has a second demo GIF and the quick start in a new order
+([step 5d](M4-step5d-demo-gif.md)). The first runs, the uninstall tests and the client
 sessions were made on 0.1.0 and weren't repeated, because no command in the quick start or
 in the uninstall steps changed. (0.1.1's "What stays" list mentions `uv cache clean`; no test
 ran it.)
-The details and the logs are in [`BUILD_LOG.md`](../../BUILD_LOG.md), steps 5a, 5b and 5c.
+The details and the logs are in [`BUILD_LOG.md`](../../BUILD_LOG.md), steps 5a to 5d.
 
 | # | Criterion | Result | Ran on |
 |---|---|---|---|
-| 1 | The release | Met. Both versions are on PyPI, each built once from a clean export of its commit. The sdists hold the include list's files plus the two the build tool adds (27 files, then 28 with `PYPI.md`). The smoke test from PyPI passed on Linux and Windows, Python 3.11 to 3.15 | 0.1.0 and 0.1.1 |
+| 1 | The release | Met. All three versions are on PyPI, each built once from a clean export of its commit. The sdists hold the include list's files plus the two the build tool adds (27 files, then 28 with `PYPI.md`). The smoke test from PyPI passed for each on Linux and Windows, Python 3.11 to 3.15 | 0.1.0, 0.1.1 and 0.1.2 |
 | 2 | The first run | **Met as amended on 2026-11-11, not as first written.** Every machine ended in the expected isolation (Debian `native`, Ubuntu with Docker `container`, Windows `container`) with only the README's commands in the history. The two minutes were met on one machine of three: Ubuntu 117.7 s; Debian 150.5 s; Windows not measured. The Python uv chose is recorded for each machine, and the line speed for the two Linux ones; the Windows VM's line wasn't measured. The run from PyPI, on Debian, ended in `native`; its clock doesn't count, because Claude Code's login had expired and was renewed inside the run | 0.1.0 (the candidate wheel, then PyPI) |
 | 3 | Setup | **Met, except two things no machine showed.** Shown: Ubuntu downloaded no native trees, without Docker and with it; Debian downloaded the trees; Windows pulled the two images only. On the two Ubuntu runs `setup`'s readiness line and the first call in Claude Code agree, and so do they in Cursor on the dev PC. Not shown on a machine: "no images where native is full" (the one native machine, Debian, has no Docker; a unit test with a stand-in covers it); and on Debian and Windows `setup`'s last line was recorded in Claude's dry pass from the same checkpoint, not in Victor's run, whose first call then had that isolation | 0.1.0 |
 | 4 | Stock Ubuntu without Docker | Met, with one difference in wording. `setup` ended with `Blocked:`, the reason and the Docker fix. The agent's call was refused with the same reason, and its message says to install Docker and restart the agent, not to run `setup`. No run and no wrong isolation. The reason says "Ubuntu restricts unprivileged user namespaces on this host"; it doesn't name AppArmor, which the criterion does | 0.1.0 |
 | 5 | The README's configs | Met. Claude Code on Windows, in WSL and on the three VMs; Cursor in step 4a and again on the candidate; Claude Desktop in step 4a. The macOS configs are marked untested | step 4a's tree and 0.1.0 |
 | 6 | `SECURITY.md` | Met in step 4a: `critic` and `verifier` reviewed it, each claim with its source. `critic` compared it with the README again for 0.1.1 and found them in agreement | step 4a; 0.1.1 |
-| 7 | The demo GIF | A real session with its caption, 19.7 s, 719,281 bytes. On PyPI: the page's image address returns that file, and the page as PyPI's renderer draws it has the image. Victor's look at 0.1.1's page is still to come | 0.1.1 |
+| 7 | The demo GIF | Met for the first GIF, which was then replaced. The first (19.7 s, 719,281 bytes) showed on the pages of 0.1.0 and 0.1.1; Victor looked at it there and found that it reads as the tool failing. The second (`docs/demo-2.gif`, 16.2 s, 180,456 bytes, P7's amendment of 2026-11-11) is a real session with its caption; the page's image address returns that file, and the page as PyPI's renderer draws it has the image. Victor looked at 0.1.2's page on 2026-11-11: the new GIF plays there | 0.1.2 |
 | 8 | F3's sweep | Met: step 1's tests, in both gates of every candidate | 0.1.1's gate |
 | 9 | Uninstall | Met, on Debian and on the Windows VM: everything Vestibule made was gone, and the read-only folder a workspace link pointed to was untouched. Three things to know. On Windows the guest's own link was one Windows doesn't follow, so a real link made by the test kit was the one tested. Two leftovers that aren't Vestibule's weren't on the README's list (uv's package cache, the client's own logs); 0.1.1's README names them. Two temp folders on Windows with GUID names couldn't be attributed; nothing Vestibule makes has such a name | 0.1.0 |
-| 10 | macOS | Met: the manual job passed three times, the last on `02fc3b8`. Container runs on macOS stay untested, and the README says so | 0.1.1's commit |
-| 11 | The gate | Met: Linux 1074 passed with no skips, Windows 878 passed with 176 platform skips, `tests/test_docs.py` in both. It ran on the working tree just before the commit `02fc3b8` was made from it. The four shipped files were compared by hash before and after; the tests and scripts weren't edited in between; three docs files were | 0.1.1 |
+| 10 | macOS | Met: the manual job passed four times, the last on `430c1b6`. Container runs on macOS stay untested, and the README says so | 0.1.2's commit |
+| 11 | The gate | Met: Linux 1076 passed with no skips, Windows 880 passed with 176 platform skips, `tests/test_docs.py` in both. It ran on the working tree just before the commit `430c1b6` was made from it; seven files, the shipped ones and the changed test among them, had the same hashes at the gate's start, at its end and in the commit. 0.1.1's gate ran the same way on `02fc3b8`'s tree | 0.1.2 |
 
 **PLAN.md's sentence for this milestone isn't met as written:** "a stranger can install and
 run it in under 2 minutes on a clean machine following only the README". What was shown is
@@ -664,6 +670,15 @@ run). Every checkpoint already had the folder on `PATH`, put there for Claude Co
 **Left open, in BUILD_LOG's known issues:** Claude Code shows a call as "Called vestibule"
 and not the `isolation:` line the README says to check; `sudo reboot` on a minimal Debian
 prints a bus error before it reboots.
+
+**Accepted by Victor, 2026-11-11,** with what this record lists left as it is. Nothing more
+was built or run for it. What stays open after the milestone:
+- no stranger's run was made;
+- the first run on Debian took 150.5 s, and the one on Windows wasn't timed;
+- the two things criterion 3 didn't show on a machine;
+- whether uv's installer needs a new terminal on Windows;
+- a sandboxed run on macOS;
+- the two known issues named above.
 
 ---
 

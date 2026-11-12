@@ -1257,12 +1257,12 @@ accepted 2026-11-07).
   - **Not in M3, by decision:** workspace quotas (they need root) and retention (old files are
     deleted by hand).
 
-## M4 — Polish for adoption (in progress)
+## M4 — Polish for adoption (✅ accepted 2026-11-11, as amended)
 
 Goal: a stranger installs Vestibule and gets a sandboxed result in under 2 minutes on a clean
 machine, following only the README; and `SECURITY.md` says honestly what it protects and what
 it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) (signed off
-2026-11-07).
+2026-11-07, accepted 2026-11-11).
 
 ### Decision sign-offs
 
@@ -1604,3 +1604,32 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     output still goes back to the agent. Claude had first told Victor the sentence was fine.
   - **The new GIF is a new file,** `docs/demo-2.gif`. The first stays, because the pages of
     0.1.0 and 0.1.1 load it and their captions can't be edited. A test now pins both by hash.
+- **Step 5d — 0.1.2 built and released, 2026-11-11** (commit `430c1b6`).
+  - **Built as planned:** the new GIF, its caption, version 0.1.2. The package's code differs
+    from 0.1.1 in one line, the version number.
+  - **The review of the diff found nothing serious.** Three wordings on the page were made
+    exact: the key is "outside the workspace", the program "sends no data" (on the machine it
+    does open a connection), and one sentence in the Ubuntu section.
+  - **Checked before the upload:** both gates, the smoke test on five Pythons per platform,
+    the secrets scan, the macOS job, the page as PyPI's renderer draws it, and, once `main`
+    had the commit, that both GIFs on `main` are the recorded files.
+  - **Victor uploaded it at 01:36 UTC on 2026-11-12** (the evening of the 11th here). PyPI
+    holds the two tested files, and its page shows the new GIF and the quick start in the
+    new order.
+    - The smoke test from PyPI passed on both platforms. PyPI's index was slow again: a try
+      three minutes after the upload still couldn't find 0.1.2, and the next one did. The
+      checklist now says five minutes.
+  - **Not run again:** the first runs, the uninstall tests and Cursor. No command changed.
+- **M4 accepted — 2026-11-11, as amended.** Victor looked at 0.1.2's page on PyPI, saw the new
+  GIF play, and accepted the milestone as its record stands. Nothing more was built or run
+  for it. The criterion-by-criterion record is in the contract's §5.
+  - **What was shown:** three releases on PyPI; on fresh VMs the README's commands alone end
+    in the expected isolation on Debian (`native`), Ubuntu with Docker and Windows
+    (`container`); uninstall on Debian and Windows; the client configs; `SECURITY.md`.
+  - **The goal's sentence isn't met as written.** The first run took under two minutes on
+    one machine of three (Ubuntu 117.7 s, Debian 150.5 s, Windows not timed). Victor made
+    the runs, with the steps listed for him in advance. No stranger's run was made.
+  - **What stays open:** the first-run time on Debian, a stranger's run, whether uv's
+    installer needs a new terminal on Windows, a sandboxed run on macOS, and the two known
+    issues from the first runs (Claude Code doesn't show the `isolation:` line; the bus
+    message from `sudo reboot` on a minimal Debian).

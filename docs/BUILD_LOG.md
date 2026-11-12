@@ -67,6 +67,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, `ddf522c` | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5b | 0.1.0 released: the checks before the upload, Victor's upload of the two tested files, the smoke test from PyPI, one first run from PyPI on Debian (no `src/` change) | 2026-11-11 | `02fc3b8` (the record) | no test change |
 | M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, `22b5fe7` (the record, and the quick start's new order) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
+| M4 step 5d | 0.1.2 released: a second demo GIF, `docs/demo-2.gif` (one program run on the machine and then through Vestibule; no traceback), pinned with the first by sha256; PyPI's page gets the quick start's new order (Windows, Ubuntu, Linux, macOS); the code differs from 0.1.1 only in the version number | 2026-11-11 | `22b5fe7`, `430c1b6`, pending (the record) | 1076 Linux (0 skipped); 880 + 176 POSIX/Linux-only skips on Windows |
+| M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | pending | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
 
 ## Known open issues
 
@@ -92,7 +94,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-11 (M4 step 5a, uninstall test) | README, "What stays" | After the README's uninstall lines two things stay that the list doesn't name, neither of them Vestibule's: uv's package cache (43 MB on Debian, with a copy of the Vestibule wheel and its dependencies) and Claude Code's own log folder for the server (`mcp-logs-vestibule`). | Fixed in 0.1.1's README (M4 step 5c): two lines added to the list. 0.1.0's page on PyPI keeps the gap; Victor, 2026-11-11: 0.1.0 stays as built |
 | 2026-11-11 (M4 step 5a, first runs) | Claude Code, not Vestibule | Claude Code 2.1.322 shows a `run_code` call as "Called vestibule" and the agent's summary, so the `isolation:` line the README tells a user to check isn't on screen unless the agent quotes it. Cursor showed it. | Open; to raise with the first-run findings |
 | 2026-11-09 (M4 step 4a's dry run), seen again 2026-11-11 (step 5a) | README, Debian's prerequisites | Right after the README's three packages are installed on a minimal Debian 13.7, the README's next line, `sudo reboot`, prints "Failed to connect to system scope bus via local transport: No such file or directory" and then reboots anyway. The bus is one of the packages just installed, so it isn't running yet. | Open; the README doesn't mention the message |
-| 2026-11-11 (M4 step 5c, the smoke test from PyPI) | PyPI, not Vestibule | After an upload an installer can still get the old index page and report that the new version doesn't exist. For 0.1.1 a try 98 s after the upload failed and one at 134 s passed. | Documented: `RELEASE.md` step 12 says to wait three minutes |
+| 2026-11-11 (M4 step 5c, the smoke test from PyPI) | PyPI, not Vestibule | After an upload an installer can still get the old index page and report that the new version doesn't exist. For 0.1.1 a try 98 s after the upload failed and one at 134 s passed; for 0.1.2 a try at 181 s failed and one at 206 s passed. | Documented: `RELEASE.md` step 12 says to wait five minutes, and to try again if the version isn't found |
 
 **Closed:**
 - The 2026-11-09 `read_workspace` listings issue is closed in the M4 step 4 follow-ups. It was
@@ -157,6 +159,136 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   fixed in the M1 follow-up below.
 
 ---
+
+## M4 accepted (2026-11-11)
+
+- **Commit:** pending.
+- **Contract:** [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md), §5's acceptance
+  record.
+- **What:** no code and no release.
+  - Victor looked at 0.1.2's page on PyPI: the new GIF plays (criterion 7's last clause).
+  - He accepted M4 as the record stands. The first-run criterion is met as amended (under
+    two minutes on Ubuntu, 117.7 s; Debian 150.5 s; Windows not timed), and PLAN.md's
+    sentence about a stranger isn't met as written.
+  - Afterwards he installed 0.1.2 from PyPI on the dev PC with the Windows section's
+    commands (uv was already there, and so were the images). `uv tool install` took
+    `vestibule-mcp==0.1.2` with `mcp==1.30.0`; `setup` ended with `ready in this terminal's
+    environment: isolation container`; Claude Code, started from his home folder, was asked
+    for `print(1)`, and he reported the result as expected (its text wasn't kept). He then
+    removed the server entry and the tool. This isn't a first run: the machine wasn't fresh
+    and nothing was timed.
+- **Files:** the contract's status line, row 7 and closing paragraph; `docs/PLAN.md`
+  (Milestone 4 gets its contract and status lines); `README.md` (the M4 row and one bullet in
+  `Status`); `docs/HISTORY.md`.
+  - The README is a shipped file, and this edit is after 0.1.2. `Status` is cut from
+    `PYPI.md`, so `PYPI.md` is unchanged (`scripts/pypi_readme.py --check` passes) and no
+    release follows from it. The next release's sdist carries the new README.
+- **Open after M4:** the first-run time on Debian; a stranger's run; whether uv's installer
+  needs a new terminal on Windows; a sandboxed run on macOS; and the rows of 2026-11-11 in
+  the known issues above.
+
+---
+
+## M4 step 5d — 0.1.2, a clearer demo GIF (2026-11-11)
+
+- **Commit:** `430c1b6` on `pcbranch` (`430c1b602e727328d1767f4024483aca0578b201`), 0.1.2's
+  candidate commit. GitHub's `main` got it, and `22b5fe7` before it, as `4d55de4`.
+- **Plan:** [`docs/plans/M4/M4-step5d-demo-gif.md`](plans/M4/M4-step5d-demo-gif.md) (v2 after
+  the `skeptic` review, signed 2026-11-11 with Z1; §12 is the diff review and the as-built).
+  It adds a dated amendment to P7 in [`M4-adoption.md`](plans/M4/M4-adoption.md).
+- **Why:** Victor looked at the page as a new user would. The first GIF shows `exit_code: 1`
+  and a Python traceback, twice, and reads as the tool failing. Only its caption said the
+  failures were the sandbox working.
+- **The new recording** (`m4spike\demo\v3\`, with `HOW.txt`): one short program, shown twice.
+  - On the machine itself, before Claude Code starts: `read the fake key file ->
+    sk-demo-0000-0000-0000-FAKE` and `connect to 1.1.1.1:80  -> connected`.
+  - Through Vestibule, in one `run_code` call: `read the fake key file -> No such file or
+    directory` and `connect to 1.1.1.1:80  -> Network is unreachable`, with `exit_code: 0`
+    and `isolation: native`.
+  - A real session: Claude Code 2.1.322 in Ubuntu under WSL2, `claude-opus-5-5`, the dev
+    install at `22b5fe7` (version 0.1.1), the first GIF's flags.
+  - **Checked:** one call with exactly the prompt's code; the agent's copy of the result is
+    the tool's, all 253 characters, and it added nothing; the audit log has that one run
+    (`ran`, `native`, exit 0); all 43 frames looked at; no screen after the cut shows Claude
+    Code's banner or anything private.
+  - **Edits, to timing only:** the banner and the pasting of the prompt take no time; the end
+    of the session after the result is dropped; the last frame is held 6 s. Real speed, no
+    pause shortened. 16.2 s, 180,456 bytes, sha256 `0436af53…76289e17`.
+  - **A take before it was dropped** (`m4spike\demo\v2\`). Its prompt asked the agent for a
+    closing sentence and told it what the demo shows; the agent wrote "… no way to send
+    anything". `SECURITY.md` lists printing what a run can read back to the agent among the
+    things that stay possible. Claude had told Victor the sentence was fine; the `skeptic`
+    review of the plan caught it.
+- **What:**
+  - **`docs/demo-2.gif` (new).** `docs/demo.gif` is unchanged and stays: the pages of 0.1.0
+    and 0.1.1 load it from `main`, and their captions describe it.
+  - **`README.md`:** the demo's image line, alt text and caption, for the new recording; the
+    caption says the key is outside the workspace and that the program sends no data. One
+    sentence in the Ubuntu section reworded. The quick start's new order came in `22b5fe7`.
+  - **`PYPI.md`:** regenerated.
+  - **`pyproject.toml`, `src/vestibule/__init__.py`:** 0.1.2.
+  - **`docs/RELEASE.md`:** step 10.4 fetches every published GIF from `main` and compares it.
+- **Tests:** `tests/test_docs.py`: `test_demo_gif_is_under_3_mb` is replaced by
+  `test_a_published_demo_gif_is_there_unchanged` (one table, `_PUBLISHED_GIFS`, of both GIFs
+  with their sha256: each is there, is a GIF, is under 3 MB and has its hash) and
+  `test_the_readme_shows_the_newest_demo_gif`. 5 mutants, all caught in the test that names
+  them.
+- **A new recording later never replaces a published GIF.** It is a new file and a new last
+  row in `_PUBLISHED_GIFS`. If the hash test fails, the file was changed or removed: put it
+  back. Changing the hash in the table makes a published page's caption describe a recording
+  it doesn't show.
+- **Reviews:** `skeptic` on the plan (1 high, the dropped take's sentence; 4 medium, 5 low);
+  `critic` on the diff against `02fc3b8`, so the reorder of `22b5fe7` was reviewed with it:
+  no high, no medium, 8 low. Fixed: "sends no data" (on the host the program does open and
+  close a connection), "outside the workspace", the Ubuntu sentence, and four record lines.
+  Left as they are:
+  - a viewer whose browser doesn't play GIFs sees only the first frame, the line from
+    outside the sandbox, which is labelled as such;
+  - `test_the_readme_shows_the_newest_demo_gif` accepts only the `raw.githubusercontent.com`
+    form of the image's address; another form fails it with an unhelpful message.
+- **Gate, on the working tree just before `430c1b6` was committed from it** (seven files'
+  sha256 the same at its start, at its end and in the commit; the tree was clean at its
+  end): check_env, ruff and mypy clean on both platforms.
+  - Windows: 880 passed, plus 176 POSIX/Linux-only skips; the Docker-marked tests ran.
+  - Linux (386 s): 3.14 full suite 1076 passed, 0 skipped; 3.11 Docker-free 1026; stdio 7.
+  - A full gate also passed on the tree before the three wording fixes to the README.
+- **The secrets scan:** gitleaks v8.30.1, 75 commits, `no leaks found`. **The macOS job:** run
+  #4, on `pcbranch` at `430c1b6`, success.
+- **The two files, built once** (uv 0.13.7) and put aside in `m4spike\release\0.1.2\`:
+  - `vestibule_mcp-0.1.2-py3-none-any.whl`, 127,495 bytes, sha256
+    `a9df7308aa92ebc6781fa1e0664c5916351000cdf3cbd3281c4330b7483863a4`;
+  - `vestibule_mcp-0.1.2.tar.gz`, 138,605 bytes, 28 files, sha256
+    `a2e1718accf4c0caec08999c0188cdddcd36535d985a6a226c26796d1a7dd7c9`.
+  - **Against 0.1.1's wheel:** the same 22 code files, and one differing line, the version.
+    The wheel's description is `PYPI.md`.
+- **Before the upload:**
+  - `smoke` on the wheel, no drift: Windows `container` on Python 3.11.9, 3.12.3, 3.13.1,
+    3.14.10, 3.15.2; Linux (WSL) `native` on 3.11.18, 3.12.16, 3.13.18, 3.14.4, 3.15.2.
+  - `PYPI.md` rendered with PyPI's renderer: the quick start reads Windows, Ubuntu, Linux
+    with systemd, macOS; the image is `demo-2.gif`. Of its 26 URLs, 25 answered 200 and the
+    new GIF's answered 404, because `main` didn't have the file yet.
+  - **After the merge,** the upload helper checked that GitHub's `main` (`4d55de4`) ships the
+    candidate's files, that both GIFs fetched from `main` have their recorded sha256, and
+    that 0.1.2 wasn't on PyPI.
+- **Uploaded by Victor, 2026-11-12 UTC** (the evening of 2026-11-11 here): the wheel at
+  01:36:38 and the sdist at 01:36:39. PyPI's record of 0.1.2 has the two tested files' sizes
+  and sha256, the description equal to `PYPI.md` (with `demo-2.gif`), "Development Status ::
+  3 - Alpha", and it isn't yanked. Read at 01:45, PyPI's project record names 0.1.2 as the
+  current version, with 0.1.0 and 0.1.1 still listed.
+  - After the merge all 26 URLs of `PYPI.md` answer 200, and both GIFs fetched from `main`
+    are the recorded files.
+- **`smoke` from PyPI** (`vestibule-mcp==0.1.2 --allow-drift`), no drift: Windows and Linux,
+  the same ten Pythons, all OK.
+  - **Three minutes weren't enough.** The first try on Windows, 181 s after the upload,
+    failed with "there is no version of vestibule-mcp==0.1.2". The try started at 206 s
+    passed. At 195 s PyPI's index still answered with the old page for some request
+    encodings and with the new one for others. `RELEASE.md` step 12 now says five minutes,
+    and what a failure in that time means.
+- **Not run again** (`RELEASE.md` step 9's rule; the release whose first runs stand is
+  0.1.0): the four first runs, the uninstall tests and Cursor. No command changed. The quick
+  start's sections changed their order; the first runs were made with the steps listed in
+  advance, so they never measured a reader finding his own section.
+- **Logs:** `m4spike\logs\step5\5d-*.txt`.
 
 ## M4 step 5c — 0.1.1, a shorter page on PyPI (2026-11-11)
 

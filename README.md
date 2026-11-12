@@ -338,6 +338,7 @@ Two backends are accepted, and every result states the isolation that actually a
 - **Native isolation on Linux (M2):** each run executes in a fresh sandbox built from the kernel's own namespaces, cgroup limits and a seccomp allowlist, with no root and no Docker. It passed its 17-criterion acceptance on WSL2 Ubuntu 26.04 and a check from a live Linux Claude Code session.
 - **The container backend (M1)**, the floor on Windows and macOS: each run executes in a throwaway, locked-down Docker container (no network, all capabilities dropped, read-only root filesystem, non-root user, memory/CPU/process caps). It passed its 14-criterion acceptance suite on Windows with Docker Desktop and a check from a live Claude Code session.
 - **Usage numbers and an audit log (M3):** every result reports what the run used, measured from outside the sandbox, and every call leaves a record in a local audit log that `vestibule-mcp audit` prints. It passed its 10-criterion acceptance, including live Claude Code sessions on Linux (native) and Windows (container).
+- **Install and first run (M4):** released on PyPI as `vestibule-mcp`. On fresh VMs the quick start's commands alone ended in the expected isolation on Debian, on Ubuntu with Docker and on Windows. The first run took under two minutes on one of the three (Ubuntu 117.7 s, Debian 150.5 s, Windows not timed), and the project's owner made the runs, not a stranger.
 
 | Milestone | What | Status |
 | --- | --- | --- |
@@ -345,7 +346,7 @@ Two backends are accepted, and every result states the isolation that actually a
 | M1 | Container backend (Docker/Podman) — the cross-platform isolation floor, + `read_workspace` | ✅ accepted 2026-10-14 (all 14 acceptance criteria + live-agent check) — see [`docs/plans/M1/M1-container-backend.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M1/M1-container-backend.md) |
 | M2 | Native Linux isolation (namespaces + cgroups v2 + seccomp, no root required) | ✅ accepted 2026-10-31 (all 17 acceptance criteria + live-agent check) — see [`docs/plans/M2/M2-native-warden.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M2/M2-native-warden.md) |
 | M3 | Audit log + resource reporting | ✅ accepted 2026-11-07 (all 10 acceptance criteria + live-agent checks) — see [`docs/plans/M3/M3-audit-usage.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M3/M3-audit-usage.md) |
-| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | first release, 0.1.0 — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
+| M4 | Install and first-run polish, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | ✅ accepted 2026-11-11, as amended (on PyPI; the two-minute first run was met on one test machine of three) — see [`docs/plans/M4/M4-adoption.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md) |
 
 ## Documentation
 
