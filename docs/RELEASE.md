@@ -161,8 +161,11 @@ Victor merges the candidate's branch to `main`. Then, before anything is uploade
    If it reports a difference, stop: what would be uploaded isn't what `main` holds.
 2. **The two files are the recorded ones:** their sha256 match step 6's.
 3. **`smoke` once more** on the copied wheel. Drift found here is step 2's.
-4. **The page's links work.** The absolute URLs in `PYPI.md` resolve now: fetch each one, and
-   the demo GIF's.
+4. **The page's links work.** The absolute URLs in `PYPI.md` resolve now: fetch each one. Fetch
+   every demo GIF a published page loads (the table in `tests/test_docs.py` lists them) and
+   compare it with the file: the pages load them from `main`, so a GIF must be there before the
+   upload, and the older ones must still be there. A URL that is new can answer "not found" for
+   a few minutes after the merge; try again before deciding it is missing.
 5. **The version isn't on PyPI yet:** `https://pypi.org/pypi/vestibule-mcp/<version>/json`
    returns 404. A version that is up can never be uploaded again.
 
@@ -188,6 +191,9 @@ replaced.
 
 On Linux and on Windows. `--allow-drift` because the release is out by now, so a newer package can
 only be reported. Record what it reports.
+
+**Wait three minutes after the upload first.** Until PyPI's index page has caught up, an
+installer says the new version doesn't exist (for 0.1.1 it still failed 98 s after the upload).
 
 **If the release from the index is broken,** yank it on PyPI. A yank can be undone, and an install
 line with no version then skips it, while the fix goes out as the next version.

@@ -3,7 +3,8 @@
 Status: **v2, 2026-11-11, after the `skeptic` review (§10). Signed off by Victor 2026-11-11,
 with option (1) on Y2, Y3 and Y4: the Alpha label stays, `How it works (design)` stays on the
 PyPI page, and the two "What stays" lines go in now. So the script takes out the badge, the
-warning, and the sections `Status` and `Documentation`.**
+warning, and the sections `Status` and `Documentation`. Built, reviewed and released
+2026-11-11: §11 is the diff review, §12 the as-built.**
 
 Victor looked at the PyPI page of 0.1.0 on 2026-11-11 and asked for two changes to it:
 - the page shouldn't carry the parts about how the project was built;
@@ -248,3 +249,23 @@ that was corrected:
   also changed in two places outside the quick start; the paragraph now lists them, and says
   the uninstall test is skipped by the same rule.
 - A sentence in BUILD_LOG's 5a entry still said nothing was published.
+
+## 12. As built (2026-11-11)
+
+Built to the plan, by the `builder`, in two rounds (the second for §11's findings). Commit
+`02fc3b8`; the record is `docs/BUILD_LOG.md`, "M4 step 5c".
+
+- **The script** is 57 lines, not about 40. It cuts the two sections as one run from
+  `## Status` to just before `## License`, and checks five things are there once: the badge,
+  the warning, each of the two headings, and that run ending at `License`.
+- **Tests:** six in `tests/test_docs.py` (13 cases) and one in `tests/test_release_smoke.py`.
+  Two are beyond §5's list, both from the diff review: `License` must follow the two
+  sections, and `--check` and the default mode through `main()`.
+- **As §4 decided,** `build` doesn't call `--check`. The link checks on `PYPI.md` and the
+  code-block refusal were dropped in v2 and aren't there.
+- **The README changed in one more place than §4 says:** the speed note's "before M3"
+  (§11, finding 5).
+- **Released:** Victor uploaded 0.1.1 at 23:50 UTC. PyPI's files have the tested hashes and
+  its description is `PYPI.md`. Right after the upload an installer couldn't find 0.1.1: a
+  try at 98 s failed and one at 134 s passed (§8's "cached for a few minutes" row, but for
+  the index, not the page).

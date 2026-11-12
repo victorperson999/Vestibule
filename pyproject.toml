@@ -1,6 +1,6 @@
 [project]
 name = "vestibule-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP server."
 readme = "PYPI.md"
 requires-python = ">=3.11"

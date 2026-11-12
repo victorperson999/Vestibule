@@ -6,9 +6,9 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/victorperson999/Vestibule/blob/main/LICENSE) [![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg)](https://www.python.org/downloads/) [![MCP Server](https://img.shields.io/badge/MCP-Server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io) [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/victorperson999/badge.svg)](https://hub.xerj.org/contributors/victorperson999)
 
-![Terminal recording. A fake key file is readable on the machine. Run through Vestibule, code that reads it fails with "No such file or directory", and code that opens a network connection fails with "Network is unreachable". Both results end with "isolation: native".](https://raw.githubusercontent.com/victorperson999/Vestibule/main/docs/demo.gif)
+![Terminal recording. A short program runs twice. On the machine itself it reads a fake key file and connects to 1.1.1.1. Run through Vestibule, the same program reports "No such file or directory" for the file and "Network is unreachable" for the connection, and the result ends with "isolation: native".](https://raw.githubusercontent.com/victorperson999/Vestibule/main/docs/demo-2.gif)
 
-*A real Claude Code session in Ubuntu under WSL2, recorded on 2026-11-10 with a development install and the flags of the stricter line from [What is and isn't sandboxed](https://github.com/victorperson999/Vestibule#what-is-and-isnt-sandboxed), so `run_code` was the agent's only way to run code. A fake key is planted on the machine; the agent is asked to read it, then to send a placeholder string to an address reserved for documentation. Claude Code folds tool results, so the agent was asked to repeat each one, and its copies match the tool's results exactly. Edits: Claude Code's start-up banner, the pasting of the prompt and the first 2.4 s of the agent's turn are cut, pauses are capped at 2 s, it plays 1.3× faster, it ends at the second result, and the last frame is held. `native` needs a Linux that allows unprivileged user namespaces, as WSL2 does. An install on Windows itself with Docker Desktop, or on stock Ubuntu 24.04 with Docker Engine from Docker's apt repository, gets `isolation: container`, and macOS is expected to.*
+*A real Claude Code session in Ubuntu under WSL2, recorded on 2026-11-11 with a development install of 0.1.1's code and the flags of the stricter line from [What is and isn't sandboxed](https://github.com/victorperson999/Vestibule#what-is-and-isnt-sandboxed), so `run_code` was the agent's only way to run code. A fake key is planted on the machine, outside the workspace. The same short program runs first on the machine itself and then through Vestibule: it tries to read the key and to open a connection to 1.1.1.1, and prints one line for each. It sends no data. Claude Code folds tool results, so the agent was asked to repeat the result, and its copy matches the tool's result exactly. Edits: Claude Code's start-up banner and the pasting of the prompt are cut, the end of the session after the result is dropped, and the last frame is held. `native` needs a Linux that allows unprivileged user namespaces, as WSL2 does. An install on Windows itself with Docker Desktop, or on stock Ubuntu 24.04 with Docker Engine from Docker's apt repository, gets `isolation: container`, and macOS is expected to.*
 
 > A *vestibule* is the small sealed entry chamber you pass through between outside and inside. Vestibule sits between an AI agent and your host machine: the code an agent sends to Vestibule runs *inside* the chamber, not on your real system. Its one opening is a workspace folder.
 
@@ -74,6 +74,40 @@ You need an MCP client (these steps use [Claude Code](https://claude.com/claude-
 
 Follow your platform. Each installs uv with uv's own installer ([other ways](https://docs.astral.sh/uv/getting-started/installation/)), and **you need a new terminal after that** so `uv` is found. Each ends the same way: ask your agent to run `print(1)` with Vestibule's `run_code` tool, and check the `isolation:` line at the end of the result.
 
+### Windows
+
+- **Before you start:** Docker Desktop, running, installed as [Docker's page for Windows](https://docs.docker.com/desktop/setup/install/windows-install/) shows.
+  - If its recommended install stops and asks for the Virtual Machine Platform feature, this fixed it on our one test machine: `Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All` in an admin PowerShell, then a restart.
+- **Install uv, then open a new terminal:**
+
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+- **Install and connect:**
+
+  ```powershell
+  uv tool install vestibule-mcp
+  uv tool update-shell          # if it says it changed your PATH, open a new terminal
+  vestibule-mcp setup
+  claude mcp add --scope user vestibule -- vestibule-mcp
+  ```
+- **Expect:** `setup` prints `ready in this terminal's environment: isolation container`, and the result of `print(1)` ends with `isolation: container`.
+- **For native isolation on Windows,** run your agent and Vestibule both inside WSL2 with systemd on, and follow the Linux steps there. A Windows client driving a server inside WSL isn't designed or tested.
+
+### Ubuntu 23.10 and later
+
+This is for Ubuntu installed on a machine or in a VM. Ubuntu under WSL2 doesn't have the restriction the next paragraph describes: follow the Linux section below.
+
+Ubuntu restricts the kernel feature that native isolation needs (unprivileged user namespaces, through AppArmor), and lifting that needs root. So Vestibule uses its container backend there, and you need Docker.
+
+- **Before you start:**
+  - `sudo apt install curl`, for uv's installer.
+  - Docker Engine from Docker's own apt repository, as [Docker's page for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) shows. Then `sudo usermod -aG docker $USER`, and log out and back in.
+  - **Not the snap** (`snap install docker`): it can't run Vestibule, because its containers don't start with `no-new-privileges`, which Vestibule always sets.
+  - **Know what the `docker` group means:** its members can become root on that machine. Rootless Docker avoids that, and hasn't been tried with Vestibule.
+- **Install uv, open a new terminal, then install and connect:** the same commands as in the Linux section below.
+- **Expect:** `setup` says why native isn't used, and prints `ready in this terminal's environment: isolation container`. The result of `print(1)` ends with `isolation: container`.
+
 ### Linux with systemd (Debian, Fedora, Arch, WSL2)
 
 - **Before you start:** `curl`, for uv's installer (`sudo apt install curl` on Debian and Ubuntu). On a minimal Debian, install three packages and reboot, or `setup` can't download and runs lose their limits. If that Debian has no `sudo`, become root with `su -` and type both lines without it:
@@ -95,40 +129,6 @@ Follow your platform. Each installs uv with uv's own installer ([other ways](htt
   claude mcp add --scope user vestibule -- vestibule-mcp
   ```
 - **Expect:** `setup` prints `ready in this terminal's environment: isolation native`, and the result of `print(1)` ends with `isolation: native`. No Docker is needed.
-
-### Ubuntu 23.10 and later
-
-This is for Ubuntu installed on a machine or in a VM. Ubuntu under WSL2 doesn't have the restriction below: follow the Linux section above.
-
-Ubuntu restricts the kernel feature that native isolation needs (unprivileged user namespaces, through AppArmor), and lifting that needs root. So Vestibule uses its container backend there, and you need Docker.
-
-- **Before you start:**
-  - `sudo apt install curl`, for uv's installer.
-  - Docker Engine from Docker's own apt repository, as [Docker's page for Ubuntu](https://docs.docker.com/engine/install/ubuntu/) shows. Then `sudo usermod -aG docker $USER`, and log out and back in.
-  - **Not the snap** (`snap install docker`): it can't run Vestibule, because its containers don't start with `no-new-privileges`, which Vestibule always sets.
-  - **Know what the `docker` group means:** its members can become root on that machine. Rootless Docker avoids that, and hasn't been tried with Vestibule.
-- **Install uv, open a new terminal, then install and connect:** the same commands as in the Linux section above.
-- **Expect:** `setup` says why native isn't used, and prints `ready in this terminal's environment: isolation container`. The result of `print(1)` ends with `isolation: container`.
-
-### Windows
-
-- **Before you start:** Docker Desktop, running, installed as [Docker's page for Windows](https://docs.docker.com/desktop/setup/install/windows-install/) shows.
-  - If its recommended install stops and asks for the Virtual Machine Platform feature, this fixed it on our one test machine: `Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All` in an admin PowerShell, then a restart.
-- **Install uv, then open a new terminal:**
-
-  ```powershell
-  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-  ```
-- **Install and connect:**
-
-  ```powershell
-  uv tool install vestibule-mcp
-  uv tool update-shell          # if it says it changed your PATH, open a new terminal
-  vestibule-mcp setup
-  claude mcp add --scope user vestibule -- vestibule-mcp
-  ```
-- **Expect:** `setup` prints `ready in this terminal's environment: isolation container`, and the result of `print(1)` ends with `isolation: container`.
-- **For native isolation on Windows,** run your agent and Vestibule both inside WSL2 with systemd on, and follow the Linux steps there. A Windows client driving a server inside WSL isn't designed or tested.
 
 ### macOS
 
