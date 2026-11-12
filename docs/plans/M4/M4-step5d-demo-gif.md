@@ -201,3 +201,29 @@ transcript and the audit log, and they held.
 | 8 | low | A new image URL is fetched before `main` has the file; nothing checks the GIF is committed | §7, §9 |
 | 9 | low | `RELEASE.md` step 10.4 names one GIF | §4 |
 | 10 | low | The record didn't say which prompt the kit used | `v3\HOW.txt` |
+
+## 12. The diff review, and as built (2026-11-11)
+
+**`critic`, on the diff against `02fc3b8`:** no high and no medium finding; eight low. It
+checked the caption's facts against the cast, the transcript, the audit log and the frames,
+and found the control honest (in the sandbox the error is the empty network's, and the key
+file existed for the whole take).
+
+| # | Finding | Fix |
+|---|---|---|
+| 1 | "It sends nothing" isn't exact: on the host the program opens and closes a connection | "It sends no data", in the caption, P7's amendment and this plan |
+| 2 | The caption didn't say the key is outside the workspace; on PyPI no warning stands above it | "planted on the machine, outside the workspace" |
+| 3 | BUILD_LOG's step 4b entry named the deleted test and the old way to re-record | Rewritten there; the rule is in step 5d's entry |
+| 4 | BUILD_LOG said the reorder was "on GitHub" before it was | Reworded |
+| 5 | The README-image test accepts only the `raw.githubusercontent.com` form; the table's comment says pages load each GIF before 0.1.2's did | Left; noted in BUILD_LOG |
+| 6 | §2 said "three takes" (two), and "the same bytes" (a final newline differs) | §2 |
+| 7 | "this restriction" in the Ubuntu section pointed at a paragraph not yet read | "the restriction the next paragraph describes" |
+| 8 | Without autoplay a viewer sees only the first frame, the line from outside the sandbox | Left; noted in BUILD_LOG |
+
+**As built** (commit `430c1b6`; the record is `docs/BUILD_LOG.md`, "M4 step 5d"):
+- to the plan, by the `builder` in one round: the version, and in `tests/test_docs.py` the
+  table `_PUBLISHED_GIFS` with two tests, in place of the old size test;
+- the README changed in one place §4 doesn't list: the Ubuntu sentence (finding 7);
+- the full gate ran twice, before and after the three wording fixes to the README;
+- released: Victor uploaded 0.1.2 on 2026-11-12 at 01:36 UTC, after the upload helper had
+  fetched both GIFs from `main` and compared them with the recorded hashes.
