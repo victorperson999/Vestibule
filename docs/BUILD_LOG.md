@@ -65,6 +65,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 4b | P7: the demo GIF, a real recorded session cut to 19.7 s, with its caption in the README and a size test (no `src/` change) | 2026-11-10 | `bc79e75` | doc tests only (`test_docs.py`, `test_pins.py`): 16 passed on Windows 3.11 and on Linux 3.14 and 3.11; the full gate wasn't re-run |
 | M4 step 4 follow-ups | A directory listing escapes names, fits the output cap and reads at most 10,000 entries; a `docker`-group hint for a socket the user may not open | 2026-11-10 | `4bd503c` | 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, `ddf522c` | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
+| M4 step 5b | 0.1.0 released: the checks before the upload, Victor's upload of the two tested files, the smoke test from PyPI, one first run from PyPI on Debian (no `src/` change) | 2026-11-11 | `02fc3b8` (the record) | no test change |
+| M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, pending (the record) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -89,6 +91,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | 2026-11-09 (M4 step 4a, critic rounds 1–3) | README and `SECURITY.md` | The two state some facts twice: native's layers, the audit log's permissions, the re-pin tradeoff. The README is frozen at each upload and `SECURITY.md` isn't, so they can drift. The step 4 plan asked for both copies. | Open; `critic` compares the two at each release |
 | 2026-11-11 (M4 step 5a, uninstall test) | README, "What stays" | After the README's uninstall lines two things stay that the list doesn't name, neither of them Vestibule's: uv's package cache (43 MB on Debian, with a copy of the Vestibule wheel and its dependencies) and Claude Code's own log folder for the server (`mcp-logs-vestibule`). | Fixed in 0.1.1's README (M4 step 5c): two lines added to the list. 0.1.0's page on PyPI keeps the gap; Victor, 2026-11-11: 0.1.0 stays as built |
 | 2026-11-11 (M4 step 5a, first runs) | Claude Code, not Vestibule | Claude Code 2.1.322 shows a `run_code` call as "Called vestibule" and the agent's summary, so the `isolation:` line the README tells a user to check isn't on screen unless the agent quotes it. Cursor showed it. | Open; to raise with the first-run findings |
+| 2026-11-09 (M4 step 4a's dry run), seen again 2026-11-11 (step 5a) | README, Debian's prerequisites | Right after the README's three packages are installed on a minimal Debian 13.7, the README's next line, `sudo reboot`, prints "Failed to connect to system scope bus via local transport: No such file or directory" and then reboots anyway. The bus is one of the packages just installed, so it isn't running yet. | Open; the README doesn't mention the message |
+| 2026-11-11 (M4 step 5c, the smoke test from PyPI) | PyPI, not Vestibule | After an upload an installer can still get the old index page and report that the new version doesn't exist. For 0.1.1 a try 98 s after the upload failed and one at 134 s passed. | Documented: `RELEASE.md` step 12 says to wait three minutes |
 
 **Closed:**
 - The 2026-11-09 `read_workspace` listings issue is closed in the M4 step 4 follow-ups. It was
@@ -154,7 +158,93 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 step 5b — the release (in progress, 2026-11-11)
+## M4 step 5c — 0.1.1, a shorter page on PyPI (2026-11-11)
+
+- **Commit:** `02fc3b8` on `pcbranch` (`02fc3b81a2eb69455b2c2d6d943c3989ecd408d7`), which is
+  0.1.1's candidate commit. GitHub's `main` got it as `067ddfd` before the upload.
+- **Plan:** [`docs/plans/M4/M4-step5c-pypi-page.md`](plans/M4/M4-step5c-pypi-page.md) (v2
+  after the `skeptic` review, signed 2026-11-11 with Y2, Y3 and Y4; §11 is the diff review,
+  §12 the as-built). It adds dated amendments to F1 in
+  [`M4-adoption.md`](plans/M4/M4-adoption.md) and to §2 of
+  [`M4-step5-release.md`](plans/M4/M4-step5-release.md).
+- **Why:** Victor looked at 0.1.0's page on PyPI. He didn't want it to carry the parts about
+  how the project was built, or the early-development warning. A published description can't
+  be edited, so the page changes only with a new release.
+- **What:**
+  - **`scripts/pypi_readme.py` (new):** makes `PYPI.md` from `README.md` by taking out four
+    parts: the "Status: Early Development" badge, the warning block, and the sections `Status`
+    and `Documentation`. Each must be in the README exactly once, and the run that starts at
+    `Status` must reach `License`, or the script stops and writes nothing. A section added
+    between `Documentation` and `License` would be cut with them; the test that compares
+    headings then fails. `--check` writes nothing and fails if `PYPI.md` isn't up to date.
+  - **`PYPI.md` (new, generated, committed):** 334 lines against the README's 367.
+  - **`pyproject.toml`:** `readme = "PYPI.md"`, version 0.1.1, `/PYPI.md` in the sdist's
+    include list. The "Alpha" classifier stays.
+  - **`src/vestibule/__init__.py`:** `__version__ = "0.1.1"`. Nothing else under `src/`.
+  - **`scripts/release_smoke.py`:** `PYPI.md` must be committed and must be in the sdist.
+  - **`README.md`:** two lines added under Uninstall's "What stays" (uv's package cache, and
+    the MCP client's own logs of the server), which closes 5a's finding; and the speed note
+    says "from before the audit log was added" where it said "before M3". The README has no
+    marks for the cut: nothing in it changed for the page.
+  - **`docs/RELEASE.md`:** `PYPI.md` among the shipped files; the version check for a release
+    that isn't the first; when the first-run tests are skipped.
+- **Tests:** `tests/test_docs.py` gains six tests, 13 cases (the file equals what the script
+  makes; nothing but the four parts is lost; the script stops when a part is missing or
+  doubled, 8 cases, or when `License` doesn't follow; `--check` and the default mode;
+  `pyproject.toml`), and `tests/test_release_smoke.py` one test and one case, with its
+  fixtures following. 9 mutants, all caught, each in the test that names it.
+- **Reviews:** `skeptic` on the plan (1 high: marks beside the badge would have split GitHub's
+  badge row, so there are no marks); `critic` on the diff twice (no high; 2 medium and 6 low,
+  all fixed but the one left to the acceptance record). The second pass caught a claim the
+  first round's fix had added to `RELEASE.md` ("first runs passed").
+- **Gate, on the working tree just before `02fc3b8` was committed from it:** check_env, ruff
+  and mypy clean on both platforms. The four shipped files' sha256 were the same before and
+  after the commit; the tests and scripts weren't edited in between; three docs files were
+  (`RELEASE.md`, this file and the step's plan).
+  - Windows: 878 passed, plus 176 POSIX/Linux-only skips; of the Docker-marked tests 45 ran
+    and passed.
+  - Linux (380 s): 3.14 full suite 1074 passed, 0 skipped; 3.11 Docker-free 1024; stdio 7.
+- **The secrets scan:** gitleaks v8.30.1, 73 commits, `no leaks found`. **The macOS job:** run
+  #3, on `pcbranch` at `02fc3b8`, success.
+- **The two files, built once** (uv 0.13.7) and put aside in `m4spike\release\0.1.1\`:
+  - `vestibule_mcp-0.1.1-py3-none-any.whl`, 127,509 bytes, sha256
+    `490e40804fbe96df6811786c3d5fd2745ebbc059907d08fa0f0eb4da650d9c6b`;
+  - `vestibule_mcp-0.1.1.tar.gz`, 138,641 bytes, 28 files (0.1.0's 27 plus `PYPI.md`), sha256
+    `27675c90327e0053de5db002021d6173499a2f972d2418f36703c2d33da5411f`.
+  - **Against 0.1.0's wheel:** the same 22 code files, and one differing line, the version.
+    The wheel's description is `PYPI.md`.
+- **Before the upload:**
+  - `smoke` on the wheel, no drift: Windows `container` on Python 3.11.9, 3.12.3, 3.13.1,
+    3.14.10, 3.15.2; Linux (WSL) `native` on 3.11.18, 3.12.16, 3.13.18, 3.14.4, 3.15.2.
+  - `PYPI.md` rendered with PyPI's renderer (readme-renderer 43.0): the outline has no
+    `Status` or `Documentation`, and "early development" isn't on the page. All 26 of its
+    URLs answer 200, and the GIF's returns `docs/demo.gif`.
+  - The upload helper checked that GitHub's `main` (`067ddfd`) ships the candidate's files,
+    `PYPI.md` included, and that 0.1.1 wasn't on PyPI.
+- **Uploaded by Victor, 2026-11-11:** the wheel at 23:50:56 UTC and the sdist at 23:50:57.
+  PyPI's record of 0.1.1 has the two tested files' sizes and sha256, the description equal to
+  `PYPI.md`, "Development Status :: 3 - Alpha", and it isn't yanked. PyPI's project record
+  still showed 0.1.0 alone seconds after the upload; read again at 23:56 UTC and at 00:07
+  it names 0.1.1 as the current version, with 0.1.0 still listed.
+- **`smoke` from PyPI** (`vestibule-mcp==0.1.1 --allow-drift`), no drift: Windows and Linux,
+  the same ten Pythons, all OK.
+  - **The first three tries on Windows failed** with "there is no version of
+    vestibule-mcp==0.1.1", all within about 100 s of the upload (the last at 23:52:34 UTC):
+    the index page an installer got was still the old one. The try started at 23:53:10
+    passed. Nothing was changed between the tries. The failed tries' output isn't kept: the
+    log file holds the passing run.
+- **Not run again** (plan §6, and `RELEASE.md` step 9's rule): the four first runs on the VMs,
+  the uninstall tests and Cursor. They stand as 0.1.0's, misses included.
+- **After the release, on GitHub only** (Victor's ask, 2026-11-11, after reading the page as
+  a user would): the README's quick start now lists Windows, then Ubuntu, then Linux with
+  systemd, then macOS. It listed Linux first, and an Ubuntu user who followed that section
+  got `Blocked:`. Whole sections moved; no command changed; the Ubuntu section's two "the
+  Linux section above" say "below", and one sentence there lost a doubled "below". `PYPI.md`
+  was regenerated, so the next release's page has the new order. 0.1.1's page on PyPI keeps
+  the old one.
+- **Logs:** `m4spike\logs\step5\5c-*.txt`.
+
+## M4 step 5b — the release of 0.1.0 (2026-11-11)
 
 - **Victor's go for 5b:** 2026-11-11, after 5a's tests were recorded. Nothing is uploaded yet.
 - **Victor's decision on 5a's uninstall finding, 2026-11-11: leave the README as it is.** The
@@ -210,8 +300,7 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   the README's `Status` and `Documentation` sections (how the project was built), and he wants
   the early-development warning gone. 0.1.0's description can't be changed, so that is a new
   release with its own plan.
-- **Still to do:** 0.1.1 (step 5c, its own entry), then the docs pass and the acceptance
-  record.
+- **After it:** 0.1.1 (step 5c, above), then the docs pass and the acceptance record.
 
 ## M4 step 5a — the 0.1.0 release candidate (2026-11-10 to 2026-11-11)
 
@@ -253,10 +342,6 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
   - **Shaping inside the guest holds:** incoming packets redirected to an `ifb` device with a
     25 Mbit/s token bucket gave 23.6 to 23.7 Mbit/s three times (inside the 20 to 27 band).
     It was removed again afterwards (441 Mbit/s). It can't be used in the Windows VM.
-- **Seen while preparing the Debian VM:** right after the README's three packages are
-  installed on a minimal Debian 13.7, `sudo reboot` prints "Failed to connect to system scope
-  bus via local transport: No such file or directory", and then reboots anyway. The bus is
-  one of the packages just installed, so it isn't running yet.
   - **The host's adapter on the switch can't be capped:** Hyper-V refuses with "The automatic
     Internet Connection Sharing switch cannot be modified."
   - **A Windows QoS policy on the host doesn't limit them either:** with a 25 Mbit/s throttle
@@ -265,6 +350,10 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
     (`m4cap.service`) that goes into their checkpoints. Measured after a reboot: Debian 23.6,
     23.6 and 23.7 Mbit/s; Ubuntu 23.7, 23.1 and 23.7.
   - **The Windows VM has no cap that works.** Plan §9 leaves that to Victor.
+- **Seen while preparing the Debian VM:** right after the README's three packages are
+  installed on a minimal Debian 13.7, `sudo reboot` prints "Failed to connect to system scope
+  bus via local transport: No such file or directory", and then reboots anyway. The bus is
+  one of the packages just installed, so it isn't running yet.
 - **Checkpoints** (Hyper-V "Standard", so with the running state), 2026-11-11: `prereq` on
   `m4-debian` and `m4-ubuntu` (Claude Code 2.1.322 installed and logged in, apt's timers off,
   the shaping unit, no uv, no Vestibule, no Docker), and `prereq-docker` on `m4-ubuntu` (plus

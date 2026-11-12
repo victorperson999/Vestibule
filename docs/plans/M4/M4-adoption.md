@@ -270,6 +270,26 @@ short confirmation from PyPI after the upload (§6, step 5).
 > - On a minimal Debian, the three packages and the reboot they need are prerequisites outside
 >   the clock, like Docker.
 
+> **Amendment 2026-11-11 (step 5 as run, [`M4-step5-release.md`](M4-step5-release.md) §3;
+> the line's handling decided by Victor that day):**
+> - **The line.** Hyper-V's cap on a VM's adapter limits only what the VM sends, so it
+>   couldn't hold downloads to 25 Mbit/s. The two Linux VMs shaped their own downloads
+>   instead, measured at 23.1 to 23.7 Mbit/s. Nothing could cap the Windows VM, so it ran on
+>   an uncapped line.
+> - **The machines** started from checkpoints that held the prerequisites: Claude Code logged
+>   in, Docker where the quick start needs it, Debian's three packages.
+> - **The clock** ran from the test kit's start command to the audit log's first record of a
+>   finished run with the expected isolation.
+> - **Before the timed runs,** the same steps were timed without a person, up to but not
+>   including Claude Code, and the checkpoints were restored: by Claude over SSH on Debian and
+>   on Ubuntu with Docker, and by the kit's script, started by Victor, in the Windows VM. The
+>   Ubuntu run without Docker isn't timed and had none.
+> - **The steps were listed for Victor in advance, prompt by prompt,** after two false starts
+>   on Debian. So the runs show that the README's commands work and how long they take, not
+>   that a newcomer finds them unaided.
+> - **The sentence to the agent** was the README's: run `print(1)` with Vestibule's `run_code`
+>   tool.
+
 ### P7 (Victor, 2026-11-07: (1)) — The demo GIF
 
 - **(1) Recommended: a real recorded session, trimmed to about 20 s.**
@@ -568,6 +588,66 @@ Then: "ask your agent to run `print(1)`".
 > **Amendment 2026-11-09 (step 4, [`M4-step4-docs.md`](M4-step4-docs.md) §4, approved by
 > Victor):** in criterion 2, "every command typed is one the README shows" counts a page the
 > README sends you to, for Docker's install alone.
+
+> **Amendment 2026-11-11 (step 5, [`M4-step5-release.md`](M4-step5-release.md) S5-D5 and §3.6;
+> Victor's decisions of 2026-11-10 and 2026-11-11):**
+> - **Criterion 2, the two minutes: the criterion records what was measured** (Victor, after
+>   the runs; 0.1.0's `setup` download isn't cut). The two-minute target was met on one
+>   machine of three:
+>   - Ubuntu with Docker: 117.7 s, within it;
+>   - Debian: 150.5 s, over it. About 84 s of that is downloading and the model at
+>     23.6 Mbit/s. The other 67 s or so is Victor's part: pasting, the new SSH session,
+>     starting Claude Code, the sentence;
+>   - Windows: not measured. The run's clock (362 s) includes a skipped line and a question,
+>     and nothing could cap the VM's line. In Claude's dry pass from the same checkpoint the
+>     machine's own part was 83.2 s uncapped; at 25 Mbit/s it is estimated, from the other
+>     machines' bytes, at no more than about 145 s.
+> - **Criterion 2, "confirmed from PyPI"** means one machine, Debian (S5-D5).
+> - **Criterion 1's version:** 0.1.0 and then 0.1.1 are on PyPI (F1's amendment of the same
+>   day). The acceptance record below says which version each criterion's evidence ran on.
+
+### Acceptance record (2026-11-11)
+
+Two releases went up on 2026-11-11: 0.1.0 from commit `4bd503c`, and 0.1.1 from `02fc3b8`.
+0.1.1's code is 0.1.0's with one line changed, the version number; its PyPI page is shorter
+([step 5c](M4-step5c-pypi-page.md)). The first runs, the uninstall tests and the client
+sessions were made on 0.1.0 and weren't repeated, because no command in the quick start or
+in the uninstall steps changed. (0.1.1's "What stays" list mentions `uv cache clean`; no test
+ran it.)
+The details and the logs are in [`BUILD_LOG.md`](../../BUILD_LOG.md), steps 5a, 5b and 5c.
+
+| # | Criterion | Result | Ran on |
+|---|---|---|---|
+| 1 | The release | Met. Both versions are on PyPI, each built once from a clean export of its commit. The sdists hold the include list's files plus the two the build tool adds (27 files, then 28 with `PYPI.md`). The smoke test from PyPI passed on Linux and Windows, Python 3.11 to 3.15 | 0.1.0 and 0.1.1 |
+| 2 | The first run | **Met as amended on 2026-11-11, not as first written.** Every machine ended in the expected isolation (Debian `native`, Ubuntu with Docker `container`, Windows `container`) with only the README's commands in the history. The two minutes were met on one machine of three: Ubuntu 117.7 s; Debian 150.5 s; Windows not measured. The Python uv chose is recorded for each machine, and the line speed for the two Linux ones; the Windows VM's line wasn't measured. The run from PyPI, on Debian, ended in `native`; its clock doesn't count, because Claude Code's login had expired and was renewed inside the run | 0.1.0 (the candidate wheel, then PyPI) |
+| 3 | Setup | **Met, except two things no machine showed.** Shown: Ubuntu downloaded no native trees, without Docker and with it; Debian downloaded the trees; Windows pulled the two images only. On the two Ubuntu runs `setup`'s readiness line and the first call in Claude Code agree, and so do they in Cursor on the dev PC. Not shown on a machine: "no images where native is full" (the one native machine, Debian, has no Docker; a unit test with a stand-in covers it); and on Debian and Windows `setup`'s last line was recorded in Claude's dry pass from the same checkpoint, not in Victor's run, whose first call then had that isolation | 0.1.0 |
+| 4 | Stock Ubuntu without Docker | Met, with one difference in wording. `setup` ended with `Blocked:`, the reason and the Docker fix. The agent's call was refused with the same reason, and its message says to install Docker and restart the agent, not to run `setup`. No run and no wrong isolation. The reason says "Ubuntu restricts unprivileged user namespaces on this host"; it doesn't name AppArmor, which the criterion does | 0.1.0 |
+| 5 | The README's configs | Met. Claude Code on Windows, in WSL and on the three VMs; Cursor in step 4a and again on the candidate; Claude Desktop in step 4a. The macOS configs are marked untested | step 4a's tree and 0.1.0 |
+| 6 | `SECURITY.md` | Met in step 4a: `critic` and `verifier` reviewed it, each claim with its source. `critic` compared it with the README again for 0.1.1 and found them in agreement | step 4a; 0.1.1 |
+| 7 | The demo GIF | A real session with its caption, 19.7 s, 719,281 bytes. On PyPI: the page's image address returns that file, and the page as PyPI's renderer draws it has the image. Victor's look at 0.1.1's page is still to come | 0.1.1 |
+| 8 | F3's sweep | Met: step 1's tests, in both gates of every candidate | 0.1.1's gate |
+| 9 | Uninstall | Met, on Debian and on the Windows VM: everything Vestibule made was gone, and the read-only folder a workspace link pointed to was untouched. Three things to know. On Windows the guest's own link was one Windows doesn't follow, so a real link made by the test kit was the one tested. Two leftovers that aren't Vestibule's weren't on the README's list (uv's package cache, the client's own logs); 0.1.1's README names them. Two temp folders on Windows with GUID names couldn't be attributed; nothing Vestibule makes has such a name | 0.1.0 |
+| 10 | macOS | Met: the manual job passed three times, the last on `02fc3b8`. Container runs on macOS stay untested, and the README says so | 0.1.1's commit |
+| 11 | The gate | Met: Linux 1074 passed with no skips, Windows 878 passed with 176 platform skips, `tests/test_docs.py` in both. It ran on the working tree just before the commit `02fc3b8` was made from it. The four shipped files were compared by hash before and after; the tests and scripts weren't edited in between; three docs files were | 0.1.1 |
+
+**PLAN.md's sentence for this milestone isn't met as written:** "a stranger can install and
+run it in under 2 minutes on a clean machine following only the README". What was shown is
+less:
+- the README's commands alone install and run it on Debian (`native`), Ubuntu with Docker
+  and Windows (`container`);
+- the runs were made by the project's owner, with the steps listed for him in advance. No
+  stranger's run was arranged (P6 makes it optional);
+- it took under two minutes on Ubuntu with Docker (117.7 s on a line held to 23.6 Mbit/s),
+  150.5 s on Debian, and wasn't measured on Windows. On Debian the downloads and the model
+  alone take about 84 s on that line, which leaves a person 36 s.
+
+**Not answered by this step, though promised to it:** whether uv's installer needs a new
+terminal on Windows before `uv` is found (P1's amendment of 2026-11-08 left that to the first
+run). Every checkpoint already had the folder on `PATH`, put there for Claude Code.
+
+**Left open, in BUILD_LOG's known issues:** Claude Code shows a call as "Called vestibule"
+and not the `isolation:` line the README says to check; `sudo reboot` on a minimal Debian
+prints a bus error before it reboots.
 
 ---
 

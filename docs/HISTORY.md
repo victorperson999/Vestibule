@@ -1524,7 +1524,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     Debian `native`, Ubuntu without Docker refused with the reason and the fix, Ubuntu with
     Docker `container`, Windows `container`.
   - **The two-minute target:** Ubuntu with Docker took 117.7 s. Debian took 150.5 s, of which
-    about 84 s is downloading and the model, on a line held to 25 Mbit/s. Windows wasn't timed
+    about 84 s is downloading and the model, on a line held to 23.6 Mbit/s. Windows wasn't timed
     cleanly.
   - **Decided by Victor, 2026-11-11:** the criterion will say what was measured, and 0.1.0's
     `setup` download isn't cut. The Windows VM runs on an uncapped line, because nothing on
@@ -1544,7 +1544,7 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **Cursor passed on the candidate** on the dev PC: `setup` said `container`, Cursor's
     first call ran in `container`, and the audit log names Cursor.
   - Details are in [`BUILD_LOG.md`](BUILD_LOG.md).
-- **Step 5b — the release: Victor's go, 2026-11-11 (in progress). `vestibule-mcp` 0.1.0 is
+- **Step 5b — the release of 0.1.0, done 2026-11-11 on Victor's go. `vestibule-mcp` 0.1.0 is
   on PyPI: Victor uploaded the two tested files at 22:14 UTC, and the smoke test from PyPI
   passed on five Pythons on Windows and on Linux.**
   - `main` already held the candidate (pull request #31).
@@ -1574,3 +1574,20 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
   - **What the review changed:** the first plan put marks into the README, and a mark beside
     the badge would have broken GitHub's row of badges. The script now cuts named parts and
     the README isn't edited for it.
+- **Step 5c — 0.1.1 built and released, 2026-11-11** (commit `02fc3b8`).
+  - **Built as planned:** the script, `PYPI.md`, version 0.1.1. Against 0.1.0 the package's
+    code differs in one line, the version number.
+  - **Checked before the upload:** both gates, the smoke test on five Pythons per platform,
+    the secrets scan, the macOS job, every link on the new page, and the page's outline as
+    PyPI's own renderer draws it.
+  - **Victor uploaded it at 23:50 UTC.** PyPI holds the two tested files, and its page text is
+    `PYPI.md`. The smoke test from PyPI passed on both platforms.
+    - Right after the upload an installer still got the old index page and couldn't find
+      0.1.1: a try 98 s after it failed, and one at 134 s passed, with nothing changed.
+  - **Not run again:** the first runs on the VMs, the uninstall tests and Cursor. No command a
+    first run types changed, so 0.1.0's results stand, the missed two minutes on Debian
+    included.
+- **After 0.1.1, 2026-11-11: the README's quick start is reordered, on GitHub** (Victor's
+  ask): Windows, Ubuntu, Linux with systemd, macOS. Ubuntu now comes before the general Linux
+  section, because Ubuntu is where that section's steps end in `Blocked:`. No command
+  changed. PyPI's page gets the new order with the next release.

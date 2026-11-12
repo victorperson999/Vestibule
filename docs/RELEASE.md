@@ -189,5 +189,8 @@ replaced.
 On Linux and on Windows. `--allow-drift` because the release is out by now, so a newer package can
 only be reported. Record what it reports.
 
+**Wait three minutes after the upload first.** Until PyPI's index page has caught up, an
+installer says the new version doesn't exist (for 0.1.1 it still failed 98 s after the upload).
+
 **If the release from the index is broken,** yank it on PyPI. A yank can be undone, and an install
 line with no version then skips it, while the fix goes out as the next version.
