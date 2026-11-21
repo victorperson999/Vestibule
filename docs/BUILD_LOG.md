@@ -67,8 +67,9 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 5a | The 0.1.0 candidate built once from `4bd503c` and tested: both gates, smoke on five Pythons per platform, the secrets scan, the macOS job, four first runs on fresh VMs, uninstall on two of them, Cursor (no `src/` change; nothing published) | 2026-11-11 | `b26b573`, `ddf522c` | no test change; the gate on the candidate: 1059 Linux (0 skipped); 863 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5b | 0.1.0 released: the checks before the upload, Victor's upload of the two tested files, the smoke test from PyPI, one first run from PyPI on Debian (no `src/` change) | 2026-11-11 | `02fc3b8` (the record) | no test change |
 | M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, `22b5fe7` (the record, and the quick start's new order) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
-| M4 step 5d | 0.1.2 released: a second demo GIF, `docs/demo-2.gif` (one program run on the machine and then through Vestibule; no traceback), pinned with the first by sha256; PyPI's page gets the quick start's new order (Windows, Ubuntu, Linux, macOS); the code differs from 0.1.1 only in the version number | 2026-11-11 | `22b5fe7`, `430c1b6`, pending (the record) | 1076 Linux (0 skipped); 880 + 176 POSIX/Linux-only skips on Windows |
-| M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | pending | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
+| M4 step 5d | 0.1.2 released: a second demo GIF, `docs/demo-2.gif` (one program run on the machine and then through Vestibule; no traceback), pinned with the first by sha256; PyPI's page gets the quick start's new order (Windows, Ubuntu, Linux, macOS); the code differs from 0.1.1 only in the version number | 2026-11-11 | `22b5fe7`, `430c1b6`, `2c51337` (the record) | 1076 Linux (0 skipped); 880 + 176 POSIX/Linux-only skips on Windows |
+| M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | `2c51337` | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
+| M4 follow-up: README | The README for a first-time user: a table and numbered steps per platform, Check it works with two real results and `vestibule-mcp audit`, the reference sections moved to `docs/REFERENCE.md` (docs only; no release) | 2026-11-20 | pending | no test change; the doc tests (`test_docs.py`, `test_pins.py`, `test_release_smoke.py`): 112 passed on Windows |
 
 ## Known open issues
 
@@ -160,9 +161,37 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 accepted (2026-11-11)
+## M4 follow-up — the README for a first-time user (2026-11-20)
 
 - **Commit:** pending.
+- **Plan:** [`docs/plans/M4/M4-followup-readme.md`](plans/M4/M4-followup-readme.md); §10 is the
+  as-built.
+- **What:** docs only, no `src/` or `tests/` change, and no release. The quick start gets a
+  table and numbered steps per platform, Check it works is new, and the reference sections move
+  to `docs/REFERENCE.md` verbatim, leaving short versions under the same headings.
+- **Files:** `README.md`, `PYPI.md` (regenerated), `docs/REFERENCE.md` (new), `SECURITY.md` (one
+  reference), `docs/GETTING_STARTED.md` (one reference), `docs/RELEASE.md` (one checklist line),
+  `docs/PLAN.md` (one stale reference), `docs/HISTORY.md`, the plan.
+- **Guarded by:**
+  - `test_docs.py`: links, heading ids, the GIF, and `PYPI.md` matching the README;
+  - `test_pins.py`: the `docker pull` and `docker image rm` lines, still in the README;
+  - `pypi_readme.py --check`.
+- **Not guarded:** the seven heading ids that published PyPI pages link to were checked by hand
+  (plan §2). A permanent test was offered and not taken. The example results and the audit line
+  are pasted text from 2026-11-20: a change to `_format_result` or `audit_cli.py` won't fail any
+  test, and the page will show the old format.
+- **If it breaks:** a published link landing at the top of the page means a heading of plan §2
+  was renamed. `REFERENCE.md` describing the wrong version means the release checklist's line in
+  `docs/RELEASE.md` §3 was skipped. A re-pin edits the README only (the "as of" date and the pull
+  and rm lines); `REFERENCE.md` names no digest.
+- **Open:** Claude Code still doesn't show the `isolation:` line (the known issue of
+  2026-11-11). The README now says how to check without it.
+
+---
+
+## M4 accepted (2026-11-11)
+
+- **Commit:** `2c51337`.
 - **Contract:** [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md), §5's acceptance
   record.
 - **What:** no code and no release.

@@ -75,7 +75,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 - cgroups v2: `memory.max`, `cpu.max`, `pids.max` (filesystem writes).
 - `no_new_privs` + a required seccomp allowlist (our own libseccomp binding, derived from Docker's profile) + drop capabilities.
 - A fresh helper process per run makes the blocking syscalls, so they never stall the async server.
-- **Benchmark cold-start latency vs. the container backend.** Measured on WSL2: native 82 ms median, container 392 ms (2026-10-31). On 2026-11-06 the same host measured 118 ms and 895 ms with the code of `03f0fb7`, and the code from before M3 measured the same, so the host got slower. The container path there goes through Docker Desktop's VM, so the README quotes both numbers with that caveat, not a ratio.
+- **Benchmark cold-start latency vs. the container backend.** Measured on WSL2: native 82 ms median, container 392 ms (2026-10-31). On 2026-11-06 the same host measured 118 ms and 895 ms with the code of `03f0fb7`, and the code from before M3 measured the same, so the host got slower. The container path there goes through Docker Desktop's VM, so `docs/REFERENCE.md` quotes both numbers with that caveat, not a ratio.
 
 **Acceptance:** on Linux, code runs with no host filesystem visibility (a canary planted at an absolute host path can't be read), no network, enforced mem/cpu/pids caps, and denied syscalls reported. Result reports `isolation: native`. Cold-start benchmark recorded.
 

@@ -42,7 +42,8 @@ projects.
 
 **Other MCP clients**, or to set `VESTIBULE_*` variables: edit the client's MCP config file
 (for example Claude Desktop's `claude_desktop_config.json`, or a project's `.mcp.json` for
-Claude Code). The variables are listed in the README's **Configuration** table.
+Claude Code). The variables are listed in the **Configuration** table of
+[`REFERENCE.md`](REFERENCE.md#configuration).
 
 ```json
 {

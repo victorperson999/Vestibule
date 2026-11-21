@@ -1,0 +1,99 @@
+# Vestibule — reference
+
+The details behind the [README](../README.md), written for vestibule-mcp 0.1.2.
+
+## Configuration
+
+Set these as environment variables in Vestibule's entry in your MCP client's config ([how](GETTING_STARTED.md#register-the-server-with-an-agent)). They are read once, when the agent starts the server, so restart it after a change. Numbers must be positive whole numbers, and on/off settings take `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off`; a blank value counts as unset. If any setting is invalid, the server still starts, but it refuses every tool call with a `Blocked:` message that names the setting, so your agent can tell you what to fix. Nothing runs until you fix it and restart the server.
+
+| Variable                        | Default                     | What it does                                                                                                                                                                                                                                                                                                                |
+| ------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VESTIBULE_WORKSPACE`         | `~/.vestibule/workspace`  | Host folder mounted at `/workspace`, the one place runs can keep files. Created on first use.                                                                                                                                                                                                                             |
+| `VESTIBULE_WORKSPACE_RO`      | off                         | `1`/`true`/`yes`/`on` mounts the workspace read-only.                                                                                                                                                                                                                                                               |
+| `VESTIBULE_RUNTIME`           | `auto`                    | `auto` (Docker, then Podman), `docker`, or `podman`. Podman is experimental: it is used only if it passes the setup check, and only Docker is tested.                                                                                                                                                                                                                                                                  |
+| `VESTIBULE_BACKEND`           | `auto`                    | `auto` uses native isolation on Linux once `vestibule-mcp setup` has run, and the container backend otherwise (or when it protects more). `native` and `container` force one backend. `naive` runs code directly on your machine with **no isolation** (development only; results say `isolation: none`). |
+| `VESTIBULE_IMAGE_PYTHON`      | pinned `python:3.12-slim` | Image for `python` and `bash` runs. The rules for an override are under [What `setup` does](#what-setup-does-in-detail).                                                                                                                                                                                                                                                       |
+| `VESTIBULE_IMAGE_NODE`        | pinned `node:22-slim`     | Image for `node` runs.                                                                                                                                                                                                                                                                                                    |
+| `VESTIBULE_ROOTFS_DIR`        | `~/.vestibule/rootfs`     | Linux only: where `vestibule-mcp setup` unpacks the native sandbox's root filesystems, and where the server looks for them. Keep it on the Linux disk and outside the workspace.                                                                                                                                         |
+| `VESTIBULE_AUDIT_DIR`         | `~/.vestibule/audit`      | The audit log: one JSONL file per server process, with a `start` and an `end` record per `run_code` call, or one `blocked` record for a call refused before it reached a backend (the code up to 4 KiB, never the output; [more](#usage-numbers-and-the-audit-log)). Must be absolute or start with `~`, and outside the workspace and the rootfs folder, or every call is `Blocked:`. On Windows a custom folder keeps its own permissions, which may let other users read it; the default under your profile doesn't. `vestibule-mcp audit` reads it too: if your MCP config sets it, set it in your shell as well. |
+| `VESTIBULE_DEFAULT_TIMEOUT_S` | `10`                      | Timeout when a call doesn't set `timeout_seconds`.                                                                                                                                                                                                                                                                        |
+| `VESTIBULE_MAX_TIMEOUT_S`     | `60`                      | Ceiling on `timeout_seconds`.                                                                                                                                                                                                                                                                                             |
+| `VESTIBULE_MAX_CODE_BYTES`    | `262144`                  | Larger code is refused before anything runs.                                                                                                                                                                                                                                                                                |
+| `VESTIBULE_MAX_OUTPUT_BYTES`  | `20000`                   | Output returned per stream. Longer output is truncated, and a run printing more than twice this is stopped.                                                                                                                                                                                                                 |
+| `VESTIBULE_MEM_MB`            | `256`                     | Memory cap, with no swap on top.                                                                                                                                                                                                                                                                                            |
+| `VESTIBULE_CPU_PCT`           | `75`                      | CPU cap, as a percentage of one core.                                                                                                                                                                                                                                                                                       |
+| `VESTIBULE_PIDS_MAX`          | `128`                     | Cap on processes and threads inside a run.                                                                                                                                                                                                                                                                                  |
+| `VESTIBULE_TMPFS_MB`          | `64`                      | Size of the run's `/tmp`, which is also its `$HOME`.                                                                                                                                                                                                                                                                    |
+| `VESTIBULE_MAX_CONCURRENT`    | `4`                       | Runs at once. A further call waits up to 5 s for a slot, then is `Blocked:`.                                                                                                                                                                                                                                              |
+
+## What `setup` does, in detail
+
+The rest of what `setup` does is in the [README](../README.md#what-setup-does).
+
+- If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
+- Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
+- Custom images (`VESTIBULE_IMAGE_PYTHON` / `VESTIBULE_IMAGE_NODE`) must provide `bash`, coreutils `timeout` (every run is wrapped in it so a container ends itself at its deadline), and the language's interpreter on `PATH`, and work as an arbitrary non-root user on a read-only root filesystem. Pin them as `name@sha256:…`; an unpinned tag still works but logs a warning.
+
+## Native isolation on Linux
+
+On Linux, Vestibule doesn't need Docker. Each run gets a fresh sandbox built from the kernel's own features, without root:
+
+- **Its own world:** new user, PID, mount, network, UTS, IPC and cgroup namespaces. The guest runs as the server's own uid and gid, so as you, never root (a server started as root refuses to run code), with every capability dropped and `no_new_privs` set.
+- **A filesystem jail:** `pivot_root` into a read-only copy of the same pinned images the container backend uses, plus `/workspace`, a size-capped `/tmp`, and a read-only `/sandbox` holding the script. None of your other files exist in there.
+- **No network:** the network namespace has only `lo`. `AF_VSOCK`, which a network namespace doesn't isolate, is refused by the syscall filter.
+- **Resource limits:** each run gets its own systemd scope with cgroup v2 limits on memory (no swap), CPU and processes, the same values as the container backend.
+- **A syscall allowlist** (seccomp), derived from Docker's default profile and compiled by the system's libseccomp. A named set of dangerous calls (`mount`, `unshare`, `bpf`, `keyctl`, `reboot`, `socket(AF_VSOCK)` and others) fails with `EPERM` and is listed in the result, for example `blocked syscalls: mount`. After 256 such reports the result says reporting stopped, and further ones fail with `ENOSYS`. Any other call outside the allowlist fails without a report, with `EPERM` (or `ENOSYS` for `clone3`, as in Docker, so programs fall back to `clone`).
+- **Debuggers work:** as in Docker's profile, `ptrace` is allowed, so a debugger or tracer works on processes inside the same sandbox.
+
+**What `auto` picks.** On Linux, the strongest guarantee that verifies, in this order: `native`, then a full `container` (if Docker or Podman works), then `native-degraded`, then `container-degraded`, then `Blocked:` with both reasons. A full container beats degraded native because limits protect the host itself: without a memory cap, a native sandbox could set off the *host's* OOM killer. On Windows and macOS, `auto` uses the container backend and never tries native.
+
+**Speed,** measured through the server itself, 50 `print(1)` runs per backend after a warm-up, on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1, on 2026-11-06 with the code of `03f0fb7`:
+
+| Backend   | Median | p95     |
+| --------- | ------ | ------- |
+| native    | 118 ms | 141 ms  |
+| container | 895 ms | 1002 ms |
+
+The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (`docker ps`). So these are this host's numbers, not a speed-up factor. On 2026-10-31 the same host measured 82 ms and 392 ms; the code from before the audit log was added, run again in the same session as the numbers above, measures the same as today's, so the host got slower, not the code. `scripts/bench_coldstart.py` reproduces them.
+
+### Where native works
+
+| Linux                                           | Prerequisites as shipped                                                                                                     | Verdict                                                                     |
+| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| WSL2, Ubuntu 26.04, systemd enabled             | All met (Microsoft's kernel 6.6, no AppArmor)                                                                                | `native`, **measured**                                                      |
+| Ubuntu 23.10 and later, stock (24.04 LTS measured) | AppArmor restricts unprivileged user namespaces (`kernel.apparmor_restrict_unprivileged_userns=1`); lifting that needs root | `Blocked:` without Docker, and `container` with Docker Engine from Docker's apt repository; **measured** on 24.04 |
+| Debian 13, a minimal install (netinst, no tasks, no recommended packages) | no `ca-certificates` and no user bus as shipped | as shipped, `setup` failed, and once it worked the run was `native-degraded`; `native` after `ca-certificates`, `dbus-user-session` and a reboot, **measured** |
+| Debian 12 | kernel 6.1, systemd 252 | `native`, expected |
+| Fedora 38 and later                             | kernel 6.2+, systemd 253+                                                                                                    | `native`, expected                                                          |
+| Arch                                            | current kernel and systemd                                                                                                   | `native`, expected                                                          |
+| arm64, any distro                               | supported in the code, never run on a real arm64 host                                                                        | **untested**                                                                |
+
+The prerequisites, which the first `run_code` call checks for you:
+
+- Linux kernel 5.9 or later (`close_range`; pidfds need 5.3).
+- cgroup v2.
+- A systemd user manager that delegates `cpu`, `memory` and `pids`. systemd 252 and later do by default. Older versions delegate only `memory` and `pids`, so runs report `native-degraded (limits not applied: cpu)`.
+- `busctl`, part of systemd.
+- `libseccomp.so.2`, a systemd dependency on these distros (`apt install libseccomp2` otherwise).
+- Unprivileged user namespaces, not restricted.
+- For two of the usage numbers in each result: Linux 5.19 for `mem_peak` and 6.1 for `pids_peak`. On an older kernel the run is the same, and the result names what it didn't measure, for example `mem_peak not measured: Linux 5.19+ needed`.
+
+"Expected" rows follow from those prerequisites, not from a run.
+
+## Usage numbers and the audit log
+
+**A run's result says what it used,** on a `usage:` line (only a `Blocked:` call, and a run whose sandbox never reported back, have none), and each number on it comes from somewhere the sandboxed code can't write:
+
+- **`native`, and `native-degraded` when the run still had a cgroup of its own:** `wall`, `cpu`, `mem_peak` and `pids_peak`, read from the run's own cgroup after the sandbox has exited, timed-out runs included. When the run hit its process cap or was CPU-throttled, a `limits hit:` line follows, for example `limits hit: cpu (throttled in 40 of 41 periods of 100 ms)`. A process killed at the memory cap gets its own note instead: `[out of memory: the kernel killed a process in the sandbox at its 256 MiB limit]`.
+- **`container` and `container-degraded`:** `wall` only, and the line says why: `cpu, mem_peak and pids_peak not measured: not readable from outside a container`. A container can read its own cgroup, but those numbers could reach Vestibule only through the container's own output, which the code shares and could fake.
+- **The rest** (`native-degraded` without a cgroup of its own, and `none`): `wall`, and the line names what wasn't measured, and why. A run that never started (`isolation: none (… nothing was executed)`) shows `wall` alone.
+
+`mem_peak` counts the whole sandbox, as the line itself says: its setup, the code's processes, the files in its `/tmp`, and the file cache it read. So the same code can read 2–5× differently from one run to the next (python 14 vs 6 MiB, node 55 vs 11 MiB, measured). Read it as what the run cost the machine, not as the program's own size.
+
+**The audit log.** Every `run_code` call that reaches Vestibule leaves records in `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), one JSONL file per server process: a `start` and an `end` sharing one id, or one `blocked` record for a call refused before it reached a backend. Two kinds of call leave none: one that fails the tool's input schema, since the MCP SDK rejects it before Vestibule sees it, and every call while a setting is invalid, since none of them, the audit folder included, can be trusted then (each call is `Blocked:` with the setting's name). `vestibule-mcp audit` shows a `start` with no `end` as `no end`: the run is still going, the server stopped mid-run, or the record was lost.
+
+- **What a record keeps:** the language, the timeout, the backend and the isolation the result reported, the outcome (ran, timed out, cancelled, refused…), the exit code, the usage numbers, any denied syscalls, the image that ran, and the code itself, cut at 4 KiB, with its SHA-256 and its full size. Of the output it keeps only the sizes, never the content: output is unbounded, and it may hold what the code read from your workspace.
+- **Who can read it:** on Linux and macOS, each file is 0600, and a folder Vestibule creates is 0700 (one that already exists keeps its own mode). On Windows, they take their folder's permissions: the default folder under your profile is limited to you, SYSTEM and Administrators, but a custom one such as `D:\audit` may let other users read it.
+- **A failed write never stops a run.** The result says so on an `audit:` line just above `isolation:`, either `audit: not recorded (…)` or, when the disk didn't answer within 2 s, `audit: not confirmed (…)`.
+- **It isn't tamper-proof.** The sandboxed code can never reach it, but you, and any tool running as you (an agent's own shell tool outside Vestibule, for one), can edit it.
+- **Nothing deletes old records.** Delete old files by hand when you like; 100 MB holds about 20,000 runs.

@@ -48,7 +48,8 @@ tests that need no Docker pass (849 passed, 29 skipped for stated reasons, 2026-
 runner has no Docker to run a container with.
 
 Sources: the tests cited in §2 for each backend; [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md),
-"Honest scope"; for what wasn't tested, the README's "Where native works" and
+"Honest scope"; for what wasn't tested, "Where native works" in
+[`docs/REFERENCE.md`](docs/REFERENCE.md#where-native-works), and
 [`docs/BUILD_LOG.md`](docs/BUILD_LOG.md)'s M4 step 4a entry.
 
 ## 2. The boundary
