@@ -1633,3 +1633,44 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     installer needs a new terminal on Windows, a sandboxed run on macOS, and the two known
     issues from the first runs (Claude Code doesn't show the `isolation:` line; the bus
     message from `sudo reboot` on a minimal Debian).
+- **Follow-up: a README a first-time user can follow — plan signed 2026-11-20**
+  ([plan](plans/M4/M4-followup-readme.md), v2 after the `skeptic` review). Victor asked how the
+  README could be made more straightforward for a user.
+  - **What changes:** the quick start gets a table of what each platform needs and the
+    isolation it gets, and numbered steps that each stand on their own; a new Check it works
+    section shows two real results and names `vestibule-mcp audit` as the check that doesn't
+    rest on the agent's copy; the reference sections move to a new `REFERENCE.md` in `docs/`,
+    with short versions left behind.
+  - **What doesn't:** no command, no caveat, no "tested" or "untested" mark, and the top of the
+    page. F4's order and P7's caption stay as signed.
+  - **Victor's choices:** the reference moves out; the XERJ contributor badge stays where it is;
+    no permanent test of the seven published heading ids for now.
+  - **What the review changed:** v1 moved the sandbox-only section below the quick start and
+    cut the caption to one line, against F4 and P7. It also had the check rest on the
+    model's copy of the result, and wrote numbered steps for macOS, which no one has run.
+    v2 drops or fixes each.
+- **Follow-up: the README for a first-time user — done 2026-11-20** (docs only; no release;
+  [plan](plans/M4/M4-followup-readme.md) §10).
+  - **The README now:**
+    - opens its quick start with a table of what each platform needs first and the isolation
+      it gets, marked measured, expected or untested;
+    - gives each of Windows, Ubuntu and Linux numbered steps that stand on their own;
+    - has a Check it works section with two real results of 0.1.2 from PyPI (`native` on WSL2,
+      `container` on Windows), the `vestibule-mcp audit` line as the check that doesn't rest on
+      the agent's copy, and what each `isolation:` value means;
+    - makes First-run troubleshooting a section of its own, and moves Uninstall down.
+  - **Moved to `REFERENCE.md` in `docs/`, word for word:** the full Configuration table, the rest
+    of What `setup` does, Native isolation on Linux, and Usage numbers and the audit log. The
+    README keeps a short version of each, under the same headings, so the links on published
+    PyPI pages still land. The release checklist now updates the version on its first line.
+  - **Unchanged:** every command, in order (checked line by line), every caveat, the top of the
+    page and macOS's section.
+  - **The diff review:** `critic` found 7, `verifier` confirmed all 7, and all were fixed. The
+    worst: the new table said `isolation: none` meant either `naive` or a run that never
+    started, while `none` also comes back when the code may have run with no protection
+    claimed.
+  - **What didn't go as planned:** the README is 4,525 words (planned about 3,900), longer in
+    lines than before (381), with the first install command at line 93. The Windows capture
+    was installed with `pip`, not `uv`.
+  - **Not done here:** a release (PyPI keeps 0.1.2's page until the next one), and a check of
+    the page with PyPI's renderer, which the dev venv doesn't have.

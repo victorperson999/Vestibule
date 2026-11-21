@@ -74,9 +74,9 @@ upstream fixes until they're re-pinned. For `python:3.12-slim` and `node:22-slim
 ## 3. The candidate commit
 
 The working tree is clean, the version in `pyproject.toml` and `src/vestibule/__init__.py` is the one
-being released, and the commit is pushed to its branch. It doesn't go to `main` yet: `main`'s
-README is the one people follow, and it shouldn't describe a release that hasn't passed its
-tests. `main` gets it at step 10, just before the upload.
+being released, and so is the one in `docs/REFERENCE.md`'s first line. The commit is pushed to
+its branch. It doesn't go to `main` yet: `main`'s README is the one people follow, and it
+shouldn't describe a release that hasn't passed its tests. `main` gets it at step 10, just before the upload.
 
 `PYPI.md`, cut from the README, is PyPI's description, and a published description can't be
 changed. Two things are true of the README before this commit: private vulnerability reporting is turned on for the repo
