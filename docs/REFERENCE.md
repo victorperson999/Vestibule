@@ -28,7 +28,7 @@ Set these as environment variables in Vestibule's entry in your MCP client's con
 
 ## What `setup` does, in detail
 
-The rest of what `setup` does is in the [README](../README.md#what-setup-does).
+The rest of what `setup` does is in the [README](../README.md#configuration-and-auditing).
 
 - If your MCP config sets `VESTIBULE_ROOTFS_DIR` or `VESTIBULE_IMAGE_*`, set them for `setup` too.
 - Switched Docker Desktop's image store (classic ↔ containerd)? Pull again — the two stores are separate.
