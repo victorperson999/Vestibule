@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vestibule Inspector</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-name">Vestibule</span>
+      <span id="version-badge" class="badge badge-muted">inspector</span>
+      <span class="badge badge-muted">read-only</span>
+    </div>
+    <nav class="tabs" aria-label="Views">
+      <button id="tab-runs" class="tab is-active" type="button">Runs</button>
+      <button id="tab-workspace" class="tab" type="button">Workspace</button>
+    </nav>
+    <div class="status-controls">
+      <span id="status-dot" class="status-dot is-connecting" aria-hidden="true"></span>
+      <span id="status-label" class="status-label">Connecting</span>
+      <button id="toggle-poll" class="btn" type="button">Pause</button>
+    </div>
+  </header>
+
+  <div id="token-banner" class="banner banner-warn is-hidden" role="alert">
+    <p id="token-message" class="banner-text">
+      Session token required. Paste the token from the URL printed by vestibule-mcp ui.
+    </p>
+    <form id="token-form" class="token-form">
+      <input id="token-input" class="input" type="password" placeholder="Paste session token" autocomplete="off">
+      <button class="btn btn-primary" type="submit">Connect</button>
+    </form>
+  </div>
+
+  <div id="warning-banner" class="banner banner-warn is-hidden" role="status"></div>
+
+  <main class="main">
+    <section id="view-runs" class="view">
+      <div id="summary-pills" class="summary-pills" aria-label="Summary counts"></div>
+
+      <div class="stats-strip">
+        <div class="stat-card">
+          <div class="stat-label">Median wall time</div>
+          <div id="stat-wall" class="stat-value">—</div>
+          <div class="stat-note">End-to-end call time seen by the agent</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Median peak memory</div>
+          <div id="stat-mem" class="stat-value">—</div>
+          <div id="stat-mem-note" class="stat-note">Counts the whole sandbox, including its setup and file cache (not measured on container runs)</div>
+        </div>
+        <div class="stat-card stat-card-wide">
+          <div class="stat-label">Recent wall times (ms)</div>
+          <div id="sparkline-box" class="sparkline-box" aria-label="Wall time sparkline"></div>
+          <div id="stat-spark-note" class="stat-note">Latest completed runs (oldest to newest)</div>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <label class="field">
+          <span class="field-label">Filter</span>
+          <select id="filter-select" class="input">
+            <option value="all">All calls</option>
+            <option value="no_end">No end</option>
+            <option value="blocked">Blocked / failed</option>
+            <option value="timed_out">Timed out</option>
+            <option value="degraded">Degraded</option>
+            <option value="denied">Blocked syscalls</option>
+          </select>
+        </label>
+        <label class="field field-grow">
+          <span class="field-label">Search</span>
+          <input id="search-input" class="input" type="search" placeholder="Search code, id, language, isolation, reason, syscall...">
+        </label>
+        <label class="field">
+          <span class="field-label">Limit</span>
+          <select id="limit-select" class="input">
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+          </select>
+        </label>
+        <div id="scope-note" class="scope-note"></div>
+      </div>
+
+      <div id="runs-meta-note" class="meta-strip"></div>
+
+      <div class="split">
+        <div id="runs-list" class="runs-list" role="list"></div>
+        <aside id="run-detail" class="detail-drawer" aria-label="Call details">
+          <div class="empty-state">Select a call to inspect its full logged code, isolation, and usage.</div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="view-workspace" class="view is-hidden">
+      <div class="ws-bar">
+        <nav id="ws-breadcrumbs" class="breadcrumbs" aria-label="Workspace path"></nav>
+        <div class="ws-actions">
+          <button id="ws-refresh" class="btn" type="button">Refresh</button>
+        </div>
+      </div>
+      <div id="ws-meta-note" class="meta-strip"></div>
+      <div id="ws-banner" class="banner is-hidden" role="status"></div>
+      <div id="ws-body" class="ws-body"></div>
+    </section>
+  </main>
+</body>
+</html>

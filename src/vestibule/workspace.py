@@ -24,6 +24,7 @@ import stat
 import sys
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 
@@ -48,6 +49,40 @@ _WINDOWS_RESERVED = frozenset(
 
 class WorkspacePathError(Exception):
     """A requested path was refused by the jail. The message is agent-legible."""
+
+
+@dataclass(frozen=True)
+class WorkspaceEntry:
+    name: str            # raw UTF-8 (errors="replace") entry name for path navigation
+    display_name: str    # _shown(name): Cc/Cf/Cs/Zl/Zp escaped, '\\' doubled (bidi/control safe)
+    kind: str            # "dir" | "file" | "symlink" | "other" | "unknown"
+    size: int | None     # None when stat failed (rendered as "?" in text listings)
+
+
+@dataclass(frozen=True)
+class WorkspaceDir:
+    entries: tuple[WorkspaceEntry, ...]  # up to _MAX_DIR_ENTRIES (200), sorted by name
+    total_scanned: int                   # entries scanned before [:200], <= _MAX_SCAN (10_000)
+    gone: int                            # entries in [:200] that vanished before cutoff
+    over_scan: bool                      # True if directory held > _MAX_SCAN entries
+
+    @property
+    def hidden(self) -> int:
+        # Matches workspace.py:144 (`over`: the one entry read to learn there were > _MAX_SCAN).
+        return self.total_scanned + int(self.over_scan) - len(self.entries) - self.gone
+
+
+@dataclass(frozen=True)
+class WorkspaceFile:
+    content: str                         # UTF-8 (errors="replace"), capped at max_bytes
+    truncated: bool                      # True if file exceeded max_bytes
+    max_bytes: int
+
+
+@dataclass(frozen=True)
+class WorkspaceMissing:
+    root_exists: bool                    # False when workspace root does not exist
+    error: str | None = None             # underlying FileNotFoundError text when root_exists=False
 
 
 def split_relpath(user_path: str) -> list[str]:
@@ -96,6 +131,31 @@ def _is_symlink_or_reparse(st: os.stat_result) -> bool:
     return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
+def inspect_workspace_entry(
+    root: Path, user_path: str, max_bytes: int,
+) -> WorkspaceDir | WorkspaceFile | WorkspaceMissing:
+    """Structured workspace inspection backed by the same path jail as `read_workspace_entry`.
+
+    Raises WorkspacePathError for refused paths (including dangling symlink/reparse root);
+    returns WorkspaceMissing when the root or target does not exist without creating anything.
+    """
+    parts = split_relpath(user_path)
+    try:
+        real_root = root.resolve(strict=True)
+    except FileNotFoundError as e:
+        try:
+            is_link = _is_symlink_or_reparse(os.lstat(root))
+        except OSError:
+            is_link = False
+        if is_link or root.is_symlink():
+            raise WorkspacePathError(f"workspace root is not accessible: {e}") from e
+        return WorkspaceMissing(root_exists=False, error=str(e))
+    except OSError as e:
+        raise WorkspacePathError(f"workspace root is not accessible: {e}") from e
+    found = _inspect(str(real_root), parts, max_bytes, max_chars=None)
+    return WorkspaceMissing(root_exists=True) if found is None else found
+
+
 def read_workspace_entry(root: Path, user_path: str, max_bytes: int) -> str:
     """Directory -> listing, file -> content, missing -> 'Not found: …'.
 
@@ -107,49 +167,71 @@ def read_workspace_entry(root: Path, user_path: str, max_bytes: int) -> str:
     except OSError as e:
         raise WorkspacePathError(f"workspace root is not accessible: {e}") from e
     # The root is the one name opened by its full path: a guest can't rename its own mount point.
-    found = _read(str(real_root), parts, max_bytes)
-    return f"Not found: {user_path or '.'}" if found is None else found
-
-
-_K = TypeVar("_K")
-
-
-def _render(
-    entries: list[tuple[str, _K]], describe: Callable[[_K], tuple[str, int | str] | None],
-    max_chars: int, over: bool,
-) -> str:
-    """Name order, a line for each of the first 200 entries while the text fits `max_chars`
-    (counted in characters, as a run's output is), then what was left out. `describe` gives an
-    entry's kind and size, or None for one gone since the scan, whose place stays empty (§12 D1:
-    no other entry is looked up). `over`: the folder holds more than was read."""
-    if not entries:
+    found = _inspect(str(real_root), parts, max_bytes, max_chars=max_bytes)
+    if found is None:
+        return f"Not found: {user_path or '.'}"
+    if isinstance(found, WorkspaceFile):
+        text = found.content
+        if found.truncated:
+            text += f"\n...[truncated: file exceeds {found.max_bytes} bytes]"
+        return text
+    if not found.total_scanned:
         return "(empty directory)"
-    entries.sort()
     lines: list[str] = []
-    length = -1  # of the lines joined: the first has no line break before it
-    gone = 0
     escaped = False
-    for name, key in entries[:_MAX_DIR_ENTRIES]:
-        found = describe(key)
-        if found is None:
-            gone += 1
-            continue
-        shown = _shown(name)
-        line = f"{found[0]:<8}{found[1]:>12}  {shown}"
-        length += 1 + len(line)
-        if length > max_chars:
-            break
-        lines.append(line)
-        escaped |= shown != name
-    hidden = len(entries) + over - len(lines) - gone  # `over`: the one read to learn it
-    if over:
-        lines.append(f"...[{hidden}+ more entries not shown: the folder holds over {_MAX_SCAN}, "
-                     f"and only the first {_MAX_SCAN} read were sorted]")
+    for entry in found.entries:
+        size_str = "?" if entry.size is None else str(entry.size)
+        lines.append(f"{entry.kind:<8}{size_str:>12}  {entry.display_name}")
+        escaped |= entry.display_name != entry.name
+    hidden = found.hidden
+    if found.over_scan:
+        lines.append(
+            f"...[{hidden}+ more entries not shown: the folder holds over {_MAX_SCAN}, "
+            f"and only the first {_MAX_SCAN} read were sorted]"
+        )
     elif hidden:
         lines.append(f"...[{hidden} more entries not shown]")
     if escaped:
         lines.append(_ESCAPE_NOTE)
     return "\n".join(lines) or "(empty directory)"
+
+
+_K = TypeVar("_K")
+
+
+def _collect_dir(
+    entries: list[tuple[str, _K]],
+    describe: Callable[[_K], tuple[str, int | None] | None],
+    max_chars: int | None,
+    over: bool,
+) -> WorkspaceDir:
+    """Name order, up to the first 200 entries (optionally bounded by `max_chars` when rendered
+    for text output). `describe` gives an entry's kind and size (or None size on stat failure),
+    or None for one gone since the scan, whose place stays empty (§12 D1: no other entry is
+    looked up). `over`: the folder holds more than was read."""
+    if not entries:
+        return WorkspaceDir(entries=(), total_scanned=0, gone=0, over_scan=over)
+    entries.sort()
+    kept: list[WorkspaceEntry] = []
+    length = -1  # of the lines joined: the first has no line break before it
+    gone = 0
+    for name, key in entries[:_MAX_DIR_ENTRIES]:
+        found = describe(key)
+        if found is None:
+            gone += 1
+            continue
+        kind, size = found
+        display_name = _shown(name)
+        if max_chars is not None:
+            size_str = "?" if size is None else str(size)
+            line = f"{kind:<8}{size_str:>12}  {display_name}"
+            length += 1 + len(line)
+            if length > max_chars:
+                break
+        kept.append(WorkspaceEntry(name=name, display_name=display_name, kind=kind, size=size))
+    return WorkspaceDir(
+        entries=tuple(kept), total_scanned=len(entries), gone=gone, over_scan=over,
+    )
 
 
 def _shown(name: str) -> str:
@@ -167,18 +249,18 @@ def _escape(c: str) -> str:
     return f"\\x{n:02x}" if n < 0x100 else f"\\u{n:04x}" if n < 0x10000 else f"\\U{n:08x}"
 
 
-def _read_file(fd: int, max_bytes: int) -> str:
+def _read_file(fd: int, max_bytes: int) -> WorkspaceFile:
     with os.fdopen(fd, "rb", closefd=False) as f:
         data = f.read(max_bytes + 1)
     text = data[:max_bytes].decode("utf-8", errors="replace")
-    if len(data) > max_bytes:
-        text += f"\n...[truncated: file exceeds {max_bytes} bytes]"
-    return text
+    return WorkspaceFile(content=text, truncated=len(data) > max_bytes, max_bytes=max_bytes)
 
 
 if sys.platform != "win32":
 
-    def _read(real_root: str, parts: list[str], max_bytes: int) -> str | None:
+    def _inspect(
+        real_root: str, parts: list[str], max_bytes: int, *, max_chars: int | None,
+    ) -> WorkspaceDir | WorkspaceFile | None:
         """Walk to the entry with descriptors only; None means a component is missing."""
         # O_NONBLOCK: a FIFO a guest put there must not hang the open. Nothing is read from
         # anything before fstat has said what it is.
@@ -200,14 +282,14 @@ if sys.platform != "win32":
                 fd = nxt
             mode = os.fstat(fd).st_mode
             if stat.S_ISDIR(mode):
-                return _list_dir(fd, max_bytes)
+                return _list_dir(fd, max_chars)
             if stat.S_ISREG(mode):
                 return _read_file(fd, max_bytes)
             raise WorkspacePathError("path is neither a regular file nor a directory")
         finally:
             os.close(fd)
 
-    def _list_dir(fd: int, max_chars: int) -> str:
+    def _list_dir(fd: int, max_chars: int | None) -> WorkspaceDir:
         """Names only: a size is asked for, by name in this folder, only for a line shown."""
         names: list[str] = []
         over = False
@@ -218,13 +300,13 @@ if sys.platform != "win32":
                     break
                 names.append(entry.name)
 
-        def describe(name: str) -> tuple[str, int | str] | None:
+        def describe(name: str) -> tuple[str, int | None] | None:
             try:  # never follows a link
                 st = os.stat(name, dir_fd=fd, follow_symlinks=False)
             except FileNotFoundError:  # gone since the scan: left out
                 return None
             except OSError:  # there, but can't be looked up: a folder that isn't searchable
-                return "unknown", "?"
+                return "unknown", None
             if _is_symlink_or_reparse(st):
                 kind = "symlink"
             elif stat.S_ISDIR(st.st_mode):
@@ -237,7 +319,7 @@ if sys.platform != "win32":
 
         # A name that isn't valid text can't go to the model as JSON.
         entries = [(os.fsencode(name).decode("utf-8", "replace"), name) for name in names]
-        return _render(entries, describe, max_chars, over)
+        return _collect_dir(entries, describe, max_chars, over)
 
 else:
     import ctypes
@@ -342,7 +424,9 @@ else:
             raise ctypes.WinError(ctypes.get_last_error())
         return int(struct.unpack_from("<L", info, 32)[0])
 
-    def _read(real_root: str, parts: list[str], max_bytes: int) -> str | None:
+    def _inspect(
+        real_root: str, parts: list[str], max_bytes: int, *, max_chars: int | None,
+    ) -> WorkspaceDir | WorkspaceFile | None:
         """Walk to the entry with handles only; None means a component is missing."""
         handle = _k32.CreateFileW(
             real_root, _READ_ATTRIBUTES, _SHARE_ALL, None, _OPEN_EXISTING,
@@ -371,7 +455,7 @@ else:
             _k32.CloseHandle(handle)
             handle = nxt
             if directory:
-                return _list_dir(handle, max_bytes)
+                return _list_dir(handle, max_chars)
             fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
             handle = _INVALID_HANDLE  # the descriptor owns it now
             try:
@@ -382,10 +466,10 @@ else:
             if handle != _INVALID_HANDLE:
                 _k32.CloseHandle(handle)
 
-    def _known(found: tuple[str, int]) -> tuple[str, int]:
+    def _known(found: tuple[str, int]) -> tuple[str, int | None]:
         return found
 
-    def _list_dir(handle: int, max_chars: int) -> str:
+    def _list_dir(handle: int, max_chars: int | None) -> WorkspaceDir:
         """List through the handle: FILE_FULL_DIR_INFO records, one buffer at a time."""
         entries: list[tuple[str, tuple[str, int]]] = []
         buf = ctypes.create_string_buffer(64 * 1024)
@@ -396,7 +480,7 @@ else:
                 # A drive's root has no "." entry, so an empty one fails its first call.
                 first = info_class == _FILE_FULL_DIR_RESTART_INFO
                 if error == _ERROR_NO_MORE_FILES or (first and error == _ERROR_FILE_NOT_FOUND):
-                    return _render(entries, _known, max_chars, False)
+                    return _collect_dir(entries, _known, max_chars, False)
                 raise ctypes.WinError(error)
             info_class = _FILE_FULL_DIR_INFO
             data = buf.raw  # one copy per buffer, not one per entry
@@ -411,7 +495,7 @@ else:
                 name = data[offset + 68 : offset + 68 + name_bytes].decode("utf-16-le", "replace")
                 if name not in (".", ".."):
                     if len(entries) == _MAX_SCAN:
-                        return _render(entries, _known, max_chars, True)
+                        return _collect_dir(entries, _known, max_chars, True)
                     if attributes & _ATTR_REPARSE_POINT:
                         kind = "symlink"
                     elif attributes & _ATTR_DIRECTORY:

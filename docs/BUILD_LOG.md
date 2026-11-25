@@ -69,7 +69,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 5c | 0.1.1 released: PyPI's page is `PYPI.md`, cut from the README by `scripts/pypi_readme.py` (no status badge, warning, `Status` or `Documentation`); the README's "What stays" list completed; the code differs from 0.1.0 only in the version number | 2026-11-11 | `02fc3b8`, `22b5fe7` (the record, and the quick start's new order) | 1074 Linux (0 skipped); 878 + 176 POSIX/Linux-only skips on Windows |
 | M4 step 5d | 0.1.2 released: a second demo GIF, `docs/demo-2.gif` (one program run on the machine and then through Vestibule; no traceback), pinned with the first by sha256; PyPI's page gets the quick start's new order (Windows, Ubuntu, Linux, macOS); the code differs from 0.1.1 only in the version number | 2026-11-11 | `22b5fe7`, `430c1b6`, `2c51337` (the record) | 1076 Linux (0 skipped); 880 + 176 POSIX/Linux-only skips on Windows |
 | M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | `2c51337` | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
-| M4 follow-up: README | The README for a first-time user: a table and numbered steps per platform, Check it works with two real results and `vestibule-mcp audit`, the reference sections moved to `docs/REFERENCE.md` (docs only; no release) | 2026-11-20 | pending | no test change; the doc tests (`test_docs.py`, `test_pins.py`, `test_release_smoke.py`): 112 passed on Windows |
+| M4 follow-up: README | The README for a first-time user: a table and numbered steps per platform, Check it works with two real results and `vestibule-mcp audit`, the reference sections moved to `docs/REFERENCE.md` (docs only; no release) | 2026-11-20 | `8ce7236`, `d68dbd6` | no test change; the doc tests (`test_docs.py`, `test_pins.py`, `test_release_smoke.py`): 112 passed on Windows |
+| M5 step 1 | `vestibule-mcp ui`: opt-in zero-dep read-only local web inspector (`ui_cli.py` + bundled `src/vestibule/ui/`), structured `inspect_workspace_entry` in `workspace.py`, hardened HTTP/1.0 server, linearizable audit cache, updated `release_smoke.py` | 2026-11-25 | pending | 1132 Linux 3.14 (0 skipped), 1082 Linux 3.11 + 7 stdio e2e; 935 + 177 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -161,9 +162,28 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M4 follow-up — the README for a first-time user (2026-11-20)
+## M5 step 1 — `vestibule-mcp ui` local read-only inspector (2026-11-25)
 
 - **Commit:** pending.
+- **Contract & Plan:** [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) (V1–V7 signed off 2026-11-25); [`docs/plans/M5/M5-step1-ui.md`](plans/M5/M5-step1-ui.md) (v2 signed off 2026-11-25).
+- **What:** Added the `vestibule-mcp ui [--port PORT] [--no-open]` terminal subcommand (lazy-imported only when invoked; zero new runtime dependencies; zero changes to MCP server stdio behavior). Serves a hardened, strictly `GET`-only `127.0.0.1` dashboard with ephemeral port default, Windows `SO_EXCLUSIVEADDRUSE`, exact `Host` validation, `#fragment`/`X-Vestibule-Token` auth, strict CSP (zero `'unsafe-inline'`, zero `innerHTML`, zero inline `style`), 5 s total request head deadline, `BoundedSemaphore(16)`, headless-safe Linux browser launch, linearizable FIFO/TOCTOU-safe `_AuditStore`, and a safe `/workspace` browser backed by `workspace.inspect_workspace_entry` (with `read_workspace_entry` kept byte-for-byte identical). Extended `scripts/release_smoke.py` and `.gitattributes` to guard the bundled UI assets and LF line endings.
+- **Files:** `src/vestibule/ui_cli.py` (new), `src/vestibule/ui/{__init__.py,index.html,app.css,app.js}` (new), `src/vestibule/workspace.py`, `src/vestibule/server.py`, `.gitattributes`, `scripts/release_smoke.py`, `tests/test_ui.py` (new), `tests/test_rootfs.py`, `tests/test_release_smoke.py`, `docs/plans/M5/{M5-visibility-launch.md,M5-step1-ui.md}`, `docs/HISTORY.md`, `docs/BUILD_LOG.md`.
+- **Guarded by:**
+  - `tests/test_ui.py` (44 tests): HTTP security (`Host`, non-ASCII token, `urlsplit` IPv6, `405`, `204`, `HEAD`, `HTTP/0.9`/`400`, slowloris deadline, concurrency cap, `SO_EXCLUSIVEADDRUSE`, static sink/external-URL audit), `_AuditStore` (FIFO/symlink/fd parity, oversized-line draining, `NaN`/surrogates, linearizable concurrent snapshots, server-side filtering), `inspect_workspace_entry` & `/api/workspace` (bidi escaping, dangling symlink/junction root, traversal refusal), CLI/browser/SIGTERM shutdown;
+  - `tests/test_workspace.py` (unchanged: proves byte-for-byte `read_workspace_entry` parity);
+  - `tests/test_rootfs.py` (subcommand dispatch & warning string);
+  - `tests/test_release_smoke.py` (`_WHEEL_REQUIRED`, CRLF on `.html`/`.css`/`.js`, `_smoke_one` `ui` checks);
+  - Live Windows end-to-end check (`vestibule-mcp ui --no-open` + real MCP stdio `run_code` writing a file and symlink to `/workspace`).
+- **What broke & was fixed along the way:**
+  - WSL Linux gate caught Python 3.14 setting `self.headers = {}` on HTTP/0.9 requests (fixed via `_UiHandler._header_values`) and `listening on` printing before `SIGTERM` handler installation (fixed by installing `SIGTERM` first).
+  - `critic` + `verifier` caught 12 real bugs across two rounds (non-ASCII `hmac.compare_digest` `TypeError`, unguarded IPv6 `urlsplit` `ValueError`, concurrent `_AuditStore` cache poisoning/eviction fixed via local `reused` + `_scan_gen`/`_committed_gen`, and 7 `app.js` polling/auth/selection UX bugs) — all fixed with red-first tests before final green gates.
+- **Open:** User-facing docs (`README.md`, `SECURITY.md`, `docs/REFERENCE.md`, `docs/ARCHITECTURE.md`) will document `vestibule-mcp ui` and its local HTTP threat model in M5 Step 3 alongside `docs/demo-3.gif` and `0.2.0`.
+
+---
+
+## M4 follow-up — the README for a first-time user (2026-11-20)
+
+- **Commit:** `8ce7236`, `d68dbd6`.
 - **Plan:** [`docs/plans/M4/M4-followup-readme.md`](plans/M4/M4-followup-readme.md); §10 is the
   as-built.
 - **What:** docs only, no `src/` or `tests/` change, and no release. The quick start gets a
