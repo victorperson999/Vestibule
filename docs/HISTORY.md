@@ -1674,3 +1674,30 @@ it doesn't. Contract: [`docs/plans/M4/M4-adoption.md`](plans/M4/M4-adoption.md) 
     was installed with `pip`, not `uv`.
   - **Not done here:** a release (PyPI keeps 0.1.2's page until the next one), and a check of
     the page with PyPI's renderer, which the dev venv doesn't have.
+
+---
+
+## M5 — Local live inspector, static site, and public launch (Path A)
+
+Goal: make Vestibule's isolation and audit trail visible live (`vestibule-mcp ui`), add a zero-build static landing/config-wizard site (`site/`), record a split-screen demo, release `0.2.0`, and launch publicly. Contract: [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md).
+
+### Decision sign-offs
+
+- **M5 contract (V1–V7) — approved 2026-11-25** (all as recommended, v2 after `skeptic` review of 14 findings + `verifier` confirming 8/8 codebase claims):
+  - **V1:** opt-in, zero-dependency, read-only local web inspector (`vestibule-mcp ui`, stdlib `ThreadingHTTPServer` + bundled HTML/CSS/JS).
+  - **V2:** bind strictly to `127.0.0.1` on an ephemeral port (`--port 0` default, `0..65535`) with Windows `SO_EXCLUSIVEADDRUSE`, exact `Host` allowlist (`get_all`), per-session bearer token in `#fragment` / `X-Vestibule-Token`, `GET`-only (`405` + `Allow: GET`), strict CSP (zero `'unsafe-inline'`, zero `innerHTML`, zero inline `style`), `nosniff`/`no-referrer`/`no-store`, and `--no-open` documented for multi-user Linux hosts.
+  - **V3:** read-only `/workspace` browser tab backed by `inspect_workspace_entry` in `src/vestibule/workspace.py` (reusing the exact race-free, symlink-refusing jail and sanitizing `display_name` against `U+202E` bidi spoofing; `read_workspace_entry` stays byte-for-byte identical).
+  - **V4 & V5:** zero-build plain HTML/CSS/JS static site in `site/` (excluded from PyPI sdist/wheel, self-contained `site/assets/demo.gif`), hosted on GitHub Pages.
+  - **V6:** sequence is Step 1 (`vestibule-mcp ui`) → Step 2 (`site/`) → Step 3 (split-screen `docs/demo-3.gif`, docs sync, `0.2.0` release, public launch).
+  - **V7:** omit "Early development" on `site/` Hero (matching `PYPI.md`; keep "Not a VM" prominent); `0.2.0` verifies with full Windows + WSL Linux gates, `release_smoke.py` wheel smoke across Pythons, and live `vestibule-mcp ui` checks (skipping fresh Hyper-V VM OS installs).
+
+### Build steps (3 planned)
+
+- **Step 1 (`vestibule-mcp ui`) — plan signed 2026-11-25** ([plan](plans/M5/M5-step1-ui.md), v2 after `skeptic` review of 12 findings + `verifier` confirming 5/5 code/CPython claims). Covers V1–V3: zero-dependency `127.0.0.1` read-only inspector (`ui_cli.py` + `src/vestibule/ui/`), structured `inspect_workspace_entry` in `workspace.py` with byte-for-byte `read_workspace_entry` parity, hardened HTTP/1.0 server (exact `Host`, `#fragment`/`X-Vestibule-Token`, `405` on non-`GET`, strict CSP, 5 s total head-read deadline, `BoundedSemaphore(16)`, Windows `SO_EXCLUSIVEADDRUSE`), FIFO/TOCTOU-safe audit cache, headless-safe Linux browser launcher, and updated `release_smoke.py` wheel/CRLF checks.
+- **Step 1 (`vestibule-mcp ui`) — done 2026-11-25** ([plan](plans/M5/M5-step1-ui.md)).
+  - **Built as planned:** `src/vestibule/ui_cli.py`, bundled offline assets `src/vestibule/ui/{__init__.py,index.html,app.css,app.js}`, lazy `"ui"` subcommand dispatch in `src/vestibule/server.py`, structured `inspect_workspace_entry` + unified `_inspect(..., max_chars=...)` in `src/vestibule/workspace.py` (preserving byte-for-byte `read_workspace_entry` parity, plus dangling-junction detection on Windows), LF rules in `.gitattributes`, updated `scripts/release_smoke.py` wheel/CRLF/smoke checks, and 44 tests in `tests/test_ui.py` (plus updated `tests/test_rootfs.py` and `tests/test_release_smoke.py`). Zero new runtime dependencies.
+  - **Caught by the first WSL Linux gate:** (1) on Python 3.14, `BaseHTTPRequestHandler.parse_request()` sets `self.headers = {}` on HTTP/0.9 requests (no `get_all`), fixed via `_UiHandler._header_values()`; (2) `listening on ...` printed before installing the `SIGTERM` handler, causing a startup-race exit `-15`, fixed by installing `SIGTERM` before printing.
+  - **Caught by `critic` + `verifier`:**
+    - Round 1 (10/10 confirmed, all fixed): `hmac.compare_digest` `TypeError` on non-ASCII `X-Vestibule-Token`, unguarded `urlsplit` `ValueError` on malformed IPv6 URLs, concurrent `_AuditStore.snapshot()` cache poisoning, `app.js` `connect()`/`refreshMeta()` unhandled errors & premature banner hiding, out-of-order `refreshRuns()`/`loadWorkspace()` races, `callKey` dropping selection when `no_end` finishes + unhighlighted fallback row, 1 s polling wiping `.runDetail` scroll/selection, stale `statSparkNote`, `loadWorkspace` stuck on `"Disconnected"`, and two weak tests in `tests/test_ui.py`.
+    - Round 2 (2/2 confirmed, both fixed): `_AuditStore.snapshot()` made linearizable via local `reused` + monotonic `_scan_gen`/`_committed_gen` so an older thread finishing late never drops or overwrites a newer thread's cached files; `app.js` resets `state.meta = null` on re-auth and lazily fetches meta from `loadWorkspace()`.
+  - **Final gates:** Windows (Python 3.11.9) **935 passed, 177 skipped**; WSL Linux (`scripts/gate-linux.sh`) **`ALL PASS`** (**1,132 passed, 0 skipped** on Python 3.14 full suite; **1,082 passed** on Python 3.11 Docker-free; **7/7** stdio e2e); `ruff`, `mypy`, and `node --check` clean. Docs (`README.md`, `SECURITY.md`, `docs/REFERENCE.md`, `docs/ARCHITECTURE.md`) update in Step 3 alongside the demo and `0.2.0` release.

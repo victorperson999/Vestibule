@@ -27,7 +27,8 @@ GOOD_SDIST = ["PKG-INFO", ".gitignore", "LICENSE", "README.md", "PYPI.md", "pypr
               "src/vestibule/__init__.py"]
 # V13's files, spelled out here so that a name dropped from the script's own list is caught.
 REQUIRED = ["vestibule/backends/native_helper.py", "vestibule/backends/native_seccomp.py",
-            "vestibule/backends/seccomp-profile.json"]
+            "vestibule/backends/seccomp-profile.json", "vestibule/ui/__init__.py",
+            "vestibule/ui/index.html", "vestibule/ui/app.css", "vestibule/ui/app.js"]
 READY = "ready in this terminal's environment: isolation "
 
 
@@ -75,9 +76,15 @@ def test_a_wheel_without_v13s_files_is_named(tmp_path, gone):
     assert _wheel_problems(tmp_path, files) == [f"missing from the wheel: {gone}"]
 
 
-def test_crlf_in_a_wheels_source_is_named(tmp_path):
-    files = {**GOOD_WHEEL, "vestibule/__init__.py": b"x = 1\r\n"}
-    assert _wheel_problems(tmp_path, files) == ["CRLF in vestibule/__init__.py"]
+@pytest.mark.parametrize("name", [
+    "vestibule/__init__.py",
+    "vestibule/ui/index.html",
+    "vestibule/ui/app.css",
+    "vestibule/ui/app.js",
+])
+def test_crlf_in_a_wheels_source_is_named(tmp_path, name):
+    files = {**GOOD_WHEEL, name: b"x = 1\r\n"}
+    assert _wheel_problems(tmp_path, files) == [f"CRLF in {name}"]
 
 
 def test_a_stray_entry_in_a_wheel_is_named(tmp_path):
@@ -232,7 +239,8 @@ def machine(monkeypatch):
 
     state = types.SimpleNamespace(
         module=None, level="final", extra_package=None, setup=(0, "", READY + "native"),
-        audit=(0, None), pytest_code=0, skip_reason=None, stdio=None, ran=[])
+        audit=(0, None), ui=(2, "", "usage: vestibule-mcp ui"), ui_assets=(0, "", ""),
+        pytest_code=0, skip_reason=None, stdio=None, ran=[])
     pins = read_constraints(ROOT / "requirements" / "constraints.txt")
 
     def run(argv, timeout, **kw):
@@ -246,6 +254,10 @@ def machine(monkeypatch):
             state.ran.append("install")
             return done(0)
         if argv[1:2] == ["-c"]:
+            if "ui_cli" in argv[2]:
+                state.ran.append("ui-assets")
+                code, out, err = state.ui_assets
+                return done(code, out, err)
             state.ran.append("import")
             module = state.module or str(root / "tools" / "vestibule" / "__init__.py")
             return done(0, json.dumps([module, state.level, "3.11.9"]))
@@ -262,6 +274,10 @@ def machine(monkeypatch):
             state.ran.append("audit")
             code, shown = state.audit
             return done(code, shown if shown is not None else f"python {root / 'audit'}")
+        if argv[-2:] == ["ui", "--bad-flag"]:
+            state.ran.append("ui")
+            code, out, err = state.ui
+            return done(code, out, err)
         if "pytest" in argv:
             state.ran.append("pytest")
             return done(state.pytest_code, "7 passed")
@@ -283,7 +299,8 @@ def _one(expect="native", allow_drift=False):
 
 def test_a_good_install_passes_every_step(machine):
     assert _one() is None
-    assert machine.ran == ["install", "import", "setup", "stdio", "audit", "pytest"]
+    assert machine.ran == ["install", "import", "setup", "stdio", "audit", "ui", "ui-assets",
+                           "pytest"]
 
 
 def test_an_install_imported_from_elsewhere_fails(machine):
@@ -328,6 +345,17 @@ def test_a_stdio_problem_fails(machine):
 def test_an_audit_that_doesnt_show_the_run_fails(machine, audit):
     machine.audit = audit
     assert _one().startswith("audit:")
+
+
+@pytest.mark.parametrize("ui_res", [(0, "", ""), (1, "", "err"), (2, "stray stdout", "usage")])
+def test_a_failing_ui_cli_check_fails(machine, ui_res):
+    machine.ui = ui_res
+    assert _one().startswith("ui")
+
+
+def test_missing_ui_assets_fails(machine):
+    machine.ui_assets = (1, "", "FileNotFoundError: index.html")
+    assert _one().startswith("ui assets:")
 
 
 def test_skipped_end_to_end_tests_fail_and_pytest_isnt_started(machine):

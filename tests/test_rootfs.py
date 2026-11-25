@@ -96,6 +96,17 @@ def test_audit_runs_the_audit_command(monkeypatch):
     assert (e.value.code, seen) == (3, [["7"]])
 
 
+def test_ui_runs_the_ui_command(monkeypatch):
+    from vestibule import ui_cli
+
+    seen = []
+    monkeypatch.setattr(ui_cli, "main", lambda args: seen.append(args) or 5)
+    monkeypatch.setattr(sys, "argv", ["vestibule-mcp", "ui", "--no-open"])
+    with pytest.raises(SystemExit) as e:
+        server.run()
+    assert (e.value.code, seen) == (5, [["--no-open"]])
+
+
 def test_other_arguments_warn_and_still_serve(monkeypatch, capsys, caplog):
     served = []
 
@@ -106,8 +117,8 @@ def test_other_arguments_warn_and_still_serve(monkeypatch, capsys, caplog):
     monkeypatch.setattr(sys, "argv", ["vestibule-mcp", "setp"])
     server.run()
     assert served == [True]
-    assert ('ignoring unexpected arguments [\'setp\']; the subcommands are "setup" and "audit"'
-            in caplog.text)
+    assert ('ignoring unexpected arguments [\'setp\']; the subcommands are "setup", "audit" and '
+            '"ui"' in caplog.text)
     assert capsys.readouterr().out == ""  # golden rule 1
 
 

@@ -5,3 +5,5 @@
 tests/fixtures/** -text
 # The vendored seccomp profile is pinned by sha256 (M2 step 5, S5-D9): same rule.
 src/vestibule/backends/seccomp-profile.json -text
+# Bundled UI assets ship in the wheel (M5 step 1); keep LF endings on Windows checkouts.
+src/vestibule/ui/** text eol=lf

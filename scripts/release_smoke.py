@@ -37,7 +37,8 @@ _SDIST_REQUIRED = ("LICENSE", "PKG-INFO", "PYPI.md", "README.md", "pyproject.tom
 _SDIST_ALSO_ALLOWED = (".gitignore",)  # hatchling always adds it
 # V13: without these a wheel can't start. Packaged data, so nothing else would notice.
 _WHEEL_REQUIRED = ("vestibule/backends/native_helper.py", "vestibule/backends/native_seccomp.py",
-                   "vestibule/backends/seccomp-profile.json")
+                   "vestibule/backends/seccomp-profile.json", "vestibule/ui/__init__.py",
+                   "vestibule/ui/index.html", "vestibule/ui/app.css", "vestibule/ui/app.js")
 _WHEEL_METADATA = re.compile(r"vestibule_mcp-[^/]+\.dist-info/")
 _READY = "ready in this terminal's environment: isolation "
 _EXPECTED = {"linux": "native", "win32": "container"}  # anywhere else, no runtime in CI: blocked
@@ -47,6 +48,7 @@ _SETUP_S = 900  # it may really download the images or the trees
 _E2E_S = 600
 _ANSWER = 'import json, sys, vestibule, vestibule.server; ' \
           'print(json.dumps([vestibule.__file__, sys.version_info.releaselevel, sys.version.split()[0]]))'
+_UI_ASSETS_CHECK = "from vestibule import ui_cli; assert ui_cli._load_assets()"
 
 
 def sdist_problems(names: list[str]) -> list[str]:
@@ -64,7 +66,8 @@ def wheel_problems(wheel: zipfile.ZipFile) -> list[str]:
     return ([f"missing from the wheel: {n}" for n in _WHEEL_REQUIRED if n not in names]
             + [f"not allowed in the wheel: {n}" for n in names
                if not n.startswith("vestibule/") and not _WHEEL_METADATA.match(n)]
-            + [f"CRLF in {n}" for n in names if n.endswith(".py") and b"\r\n" in wheel.read(n)])
+            + [f"CRLF in {n}" for n in names
+               if n.endswith((".py", ".html", ".css", ".js")) and b"\r\n" in wheel.read(n)])
 
 
 def parse_setup(stderr: str, code: int, expect: str) -> str | None:
@@ -241,6 +244,16 @@ def _smoke_one(python: str, source: str, expect: str, uv: str, allow_drift: bool
         shown = r.stdout + r.stderr
         if r.returncode != 0 or str(root / "audit") not in shown or "python" not in r.stdout:
             return f"audit: exit {r.returncode}: {shown[-600:]}"
+
+        r = _run([str(exe), "ui", "--bad-flag"], _CHECK_S, env=env)
+        if r.stdout:
+            return f"ui wrote to stdout: {r.stdout[:300]}"
+        if r.returncode != 2:
+            return f"ui: exit {r.returncode}: {r.stderr[-600:]}"
+
+        r = _run([str(tool_python), "-c", _UI_ASSETS_CHECK], _CHECK_S, env=env)
+        if r.returncode != 0:
+            return f"ui assets: {r.stderr[-1500:]}"
 
         problem = e2e_problem(expect, docker_skip_reason())
         if problem:
