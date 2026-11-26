@@ -294,6 +294,64 @@ The second tool reads a file or lists a folder in the workspace, from outside th
 - **What it keeps:** the code of each call, cut at 4 KiB, and the sizes of its output, never the
   output itself. [`docs/plans/M3/M3-audit-usage.md`](docs/plans/M3/M3-audit-usage.md) A2
 
+### The local web inspector (`vestibule-mcp ui`)
+
+`vestibule-mcp ui [--port PORT] [--no-open]` is an opt-in, read-only local viewer for the audit
+log and `/workspace`, built on Python's standard library with no new runtime dependencies.
+
+- **Opt-in and separate from the MCP server.** Normal `vestibule-mcp` stdio sessions never import
+  `ui_cli` or `http.server` and open no listening sockets.
+  `tests/test_ui.py::test_importing_server_does_not_import_ui_cli_or_http_server`
+- **Local HTTP boundary.** Binds strictly to `127.0.0.1` on an ephemeral port (`0` by default) with
+  `allow_reuse_address = False`, and sets `SO_EXCLUSIVEADDRUSE` on Windows so another local process
+  cannot dual-bind the same port. Every HTTP method except `GET` is rejected with `405` and
+  `Allow: GET`. Every route requires an exact single `Host: 127.0.0.1:<port>` header (blocking DNS
+  rebinding and duplicate `Host` headers), and all `/api/*` endpoints require a per-session bearer
+  token (`secrets.token_urlsafe(24)`) delivered in the URL `#fragment` and sent in
+  `X-Vestibule-Token` (`hmac.compare_digest`; never accepted in a query string).
+  `tests/test_ui.py::test_port_exclusivity_blocks_hijack_bind`,
+  `tests/test_ui.py::test_non_get_methods_return_405_with_allow_get`,
+  `tests/test_ui.py::test_host_header_enforcement`,
+  `tests/test_ui.py::test_api_token_enforcement`
+- **Browser and DoS hardening.** Every response (including error and malformed/HTTP/0.9 responses)
+  omits the `Server:` banner and sends a strict `Content-Security-Policy` (`default-src 'none';
+  script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'none'; frame-ancestors 'none';
+  base-uri 'none'; form-action 'none'`), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, and `Cache-Control: no-store`. The bundled UI script uses no
+  `innerHTML`/`outerHTML`/`insertAdjacentHTML` or inline `style` sinks. Connections stay HTTP/1.0
+  with a 5 s total request-head deadline and a `BoundedSemaphore(16)` concurrency cap.
+  `tests/test_ui.py::test_malformed_and_http09_requests_emit_hardened_headers`,
+  `tests/test_ui.py::test_static_assets_security_audit`,
+  `tests/test_ui.py::test_slowloris_enforces_total_request_deadline`,
+  `tests/test_ui.py::test_concurrency_cap_and_thread_start_failure`
+- **Safe file reads.**
+  - *Audit JSONL files:* on POSIX, files are opened with
+    `O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC` and checked with `fstat` (`S_ISREG`), skipping
+    symlinks and FIFOs without blocking. On Windows, `os.stat(..., follow_symlinks=False)` checks
+    non-reparse/regular before `open()`, and `fstat` on the open handle verifies `S_ISREG` and
+    matching `(st_dev, st_ino)` before parsing (under any config the MCP server accepts, the audit
+    directory is outside the workspace and never guest-writable; if `VESTIBULE_AUDIT_DIR` overlaps
+    the workspace or rootfs, `ui` warns rather than refusing, and custom Windows folders keep their
+    own ACLs). Lines over 64 KiB are drained and counted as one skip.
+    `tests/test_ui.py::test_runs_skips_symlink_and_posix_fifo_without_blocking`,
+    `tests/test_ui.py::test_runs_oversized_line_drained_as_one_skip`
+  - *`/workspace` tab:* uses `workspace.py`'s handle/descriptor-relative jail on both Linux and
+    Windows (same local-drive scope and §3.12 caveats as `read_workspace`: refusing symlinks,
+    reparse points and traversal; never creating a missing directory) and escapes control and bidi
+    format characters (such as `U+202E`) in `display_name` and `display_path`.
+    `tests/test_ui.py::test_workspace_broken_symlink_root_and_live_symlink_inside`,
+    `tests/test_ui.py::test_workspace_bidi_and_control_escaped_in_display_name_and_path`
+- **Known residuals:**
+  - When auto-opening a browser on a multi-user Linux host without `hidepid`, the browser launcher
+    command line briefly holds `/#<token>` (visible in `/proc/<pid>/cmdline`). Pass `--no-open` on
+    shared hosts and copy the URL from your terminal. On headless Linux without `DISPLAY` or
+    `WAYLAND_DISPLAY`, auto-open is skipped automatically.
+    `tests/test_ui.py::test_linux_browser_guard_and_gui_classification`
+  - Any process running as your own user can already read `~/.vestibule/audit/` and
+    `~/.vestibule/workspace/` directly; the bearer token defends against untrusted browser tabs and
+    *other* local users on shared hosts, not same-user processes.
+  - Contract: [`docs/plans/M5/M5-visibility-launch.md`](docs/plans/M5/M5-visibility-launch.md) V2–V3.
+
 ## 6. The server's own error output
 
 The server logs to stderr through a queue and its own writer thread, so a client that stops
@@ -321,4 +379,4 @@ Include:
 - the Vestibule version (`uv tool list`, or `pip show vestibule-mcp`);
 - the code or steps that show it, and what you expected.
 
-**Supported versions:** 0.1.x.
+**Supported versions:** 0.2.x.

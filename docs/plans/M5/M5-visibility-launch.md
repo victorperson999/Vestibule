@@ -1,6 +1,6 @@
 # M5 contract — local live inspector, static site, and public launch (Path A)
 
-Status: **signed off by Victor on 2026-11-25 (v2, all V1–V7 as recommended).**
+Status: **signed off by Victor on 2026-11-25 (v2, all V1–V7 as recommended).** Amended 2026-11-25 by Step 3 S3-D4 = (1): `README.md` keeps `d68dbd6`'s reorganized headings, accepting that 6 legacy `0.1.0`–`0.1.2` PyPI fragment anchors now land at the top of `README.md`.
 
 Review record: v1 was reviewed by `skeptic` (14 findings: 5 high, 5 medium, 4 low; verdict `rework needed`). `verifier` checked all 8 checkable codebase claims: 8 of 8 `CONFIRMED`. Every finding has been accepted and folded into v2 below. Per the M1–M4 milestone pattern, this document is the **milestone contract** (scope, decisions, invariants, acceptance criteria); once Victor signs off, Step 1 gets its own short, concrete step plan (exact JSON schemas, `workspace.py` dataclass signatures, and a Windows open-append-handle stat spike) reviewed by `skeptic` before any `src/` edit.
 

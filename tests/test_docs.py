@@ -337,6 +337,7 @@ def test_security_md_cites_only_what_exists():
 _PUBLISHED_GIFS = [
     ("docs/demo.gif", "85d12697e8d591237e85363fc8b3294fc5f77fafd999e94d2868a16e54dca722"),
     ("docs/demo-2.gif", "0436af530a7de9ea8367062cbd302426d896e1a2f67880f9224f34fb76289e17"),
+    ("docs/demo-3.gif", "08828642a2475e556b47554dd0e66a789025de2b04898a577c4569cd89442432"),
 ]
 
 

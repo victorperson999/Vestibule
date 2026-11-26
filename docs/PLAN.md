@@ -108,6 +108,16 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
 **Status (2026-11-11):** accepted by the owner as amended. The acceptance sentence above is not met as written. `vestibule-mcp` 0.1.0, 0.1.1 and 0.1.2 are on PyPI. On fresh VMs the README's commands alone ended in the expected isolation on Debian (`native`), on Ubuntu with Docker and on Windows (both `container`). The first run took under two minutes on one machine of three: Ubuntu 117.7 s, Debian 150.5 s, Windows not measured. The owner made the runs, with the steps listed for him in advance; no stranger's run was made. The criterion-by-criterion record, and what stays open, are in the contract's §5.
 
+### Milestone 5 — Local live inspector, static site, and public launch
+
+- Opt-in, zero-dependency, read-only local web inspector (`vestibule-mcp ui`) solving the hidden-tool-output problem in agent clients while adding a safe `/workspace` browser backed by `workspace.py`.
+- Zero-build static landing and setup-wizard website in `site/` (excluded from PyPI sdist/wheel), hosted on GitHub Pages (`https://victorperson999.github.io/Vestibule/`).
+- Split-screen demo recording, docs sync, `0.2.0` PyPI release, GitHub Pages deploy, and public launch.
+
+**Detailed contract:** `docs/plans/M5/M5-visibility-launch.md` (signed off 2026-11-25, Path A: V1–V7).
+
+**Status (2026-11-25):** Step 1 (`vestibule-mcp ui`, `9bf1fb8`) and Step 2 (`site/` static website, `60b3eaa`) landed and passed both gates; Step 3 (`docs/plans/M5/M5-step3-release-launch.md`, `0.2.0` release & public launch) in progress.
+
 ---
 
 ## Cross-platform strategy (non-negotiable for adoption)
@@ -139,11 +149,3 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 - *Designed a layered "defense-in-depth" threat model for autonomous LLM code execution, mitigating prompt-injection-driven filesystem and network abuse; documented syscall-level guarantees in a public security spec.*
 
 Every N/X/Y must be measured and defensible — interview-proof.
-
----
-
-## Remaining manual checks before public launch
-
-- `pypi.org/project/vestibule` (and `vestibule-mcp`) → confirm 404 / availability.
-- GitHub repo/org name, or use `<your-handle>/vestibule`.
-- Domain (optional).
