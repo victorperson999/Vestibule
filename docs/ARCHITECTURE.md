@@ -97,6 +97,8 @@ Every `run_code` call that reaches the handler leaves records in `~/.vestibule/a
 
 `vestibule-mcp audit [N]` reads those files back (`audit_cli.py`, which only that command imports, since it prints to stdout). It pairs each `start` with its `end` inside the file that holds both, and prints the last N calls merged by `ts`, one line each. A record holds code an agent sent, and a hand-edited one can hold anything, so only strings and numbers are printed, each cut to a cap, and every printed value goes through one sanitizer that escapes control, format and separator characters. Output that isn't UTF-8 is pure ASCII, because a legacy 8-bit charset puts printable characters on the bytes a terminal reads as C1 controls. Build: [`M3-step3-audit-command.md`](plans/M3/M3-step3-audit-command.md).
 
+`vestibule-mcp ui [--port PORT] [--no-open]` is a second passive reader (`ui_cli.py` and bundled static assets under `src/vestibule/ui/`, lazy-imported only for the `ui` subcommand and never loaded by the MCP server). It serves a hardened, `GET`-only, token-gated `ThreadingHTTPServer` on `127.0.0.1` backed by a linearizable cached audit reader and `workspace.inspect_workspace_entry` (reusing `workspace.py`'s path jail without duplicating it). Contract: [`M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) V1–V3; build: [`M5-step1-ui.md`](plans/M5/M5-step1-ui.md).
+
 ---
 
 ## Part 2 — The warden

@@ -71,7 +71,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | `2c51337` | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
 | M4 follow-up: README | The README for a first-time user: a table and numbered steps per platform, Check it works with two real results and `vestibule-mcp audit`, the reference sections moved to `docs/REFERENCE.md` (docs only; no release) | 2026-11-20 | `8ce7236`, `d68dbd6` | no test change; the doc tests (`test_docs.py`, `test_pins.py`, `test_release_smoke.py`): 112 passed on Windows |
 | M5 step 1 | `vestibule-mcp ui`: opt-in zero-dep read-only local web inspector (`ui_cli.py` + bundled `src/vestibule/ui/`), structured `inspect_workspace_entry` in `workspace.py`, hardened HTTP/1.0 server, linearizable audit cache, updated `release_smoke.py` | 2026-11-25 | `9bf1fb8` | 1132 Linux 3.14 (0 skipped), 1082 Linux 3.11 + 7 stdio e2e; 935 + 177 POSIX/Linux-only skips on Windows |
-| M5 step 2 | Static landing & config-wizard site (`site/`), `workflow_dispatch`-only `.github/workflows/pages.yml` with 40-char pinned SHAs, `.gitattributes` LF pins, pure-Python `tests/test_site.py` (no `src/` change) | 2026-11-25 | pending | 1144 Linux 3.14 (0 skipped), 1094 Linux 3.11 + 7 stdio e2e; 947 + 177 POSIX/Linux-only skips on Windows |
+| M5 step 2 | Static landing & config-wizard site (`site/`), `workflow_dispatch`-only `.github/workflows/pages.yml` with 40-char pinned SHAs, `.gitattributes` LF pins, pure-Python `tests/test_site.py` (no `src/` change) | 2026-11-25 | `60b3eaa` | 1144 Linux 3.14 (0 skipped), 1094 Linux 3.11 + 7 stdio e2e; 947 + 177 POSIX/Linux-only skips on Windows |
+| M5 step 3 (Phase A) | `0.2.0` candidate: split-screen `docs/demo-3.gif` (+ `site/assets/demo.gif`), `README.md`/`PYPI.md`/`SECURITY.md`/`docs/*` sync for `vestibule-mcp ui` & `site/` (S3-D1–S3-D4 = (1)) | 2026-11-25 | `pending` | 1145 Linux 3.14 (0 skipped), 1095 Linux 3.11 + 7 stdio e2e; 948 + 177 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -163,9 +164,19 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
+## M5 step 3 (Phase A) — `0.2.0` candidate, `docs/demo-3.gif`, and docs sync (2026-11-25)
+
+- **Commit:** `pending` (candidate on `pcbranch`; release verification & upload follow in Phases B–D).
+- **Contract & Plan:** [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) (amended by S3-D4 = (1)); [`docs/plans/M5/M5-step3-release-launch.md`](plans/M5/M5-step3-release-launch.md) (v2 after 10-finding `skeptic` review, signed off 2026-11-25: **S3-D1 = (1)** record `docs/demo-3.gif` before `0.2.0`, **S3-D2 = (1)** link Pages in `README.md`/`PYPI.md` and deploy Pages before §10.4 + upload, **S3-D3 = (1)** add scoped `push:` to `pages.yml` + update `tests/test_site.py` post-release, **S3-D4 = (1)** keep `d68dbd6`'s `README.md` headings; supersedes Step 2's `Open:` note below).
+- **Demo (`docs/demo-3.gif`):** Real WSL2 Ubuntu split-screen recording (host `probe.py` vs Vestibule `isolation: native` on left, live `vestibule-mcp ui v0.2.0` on right; `/tmp/vestibule-demo/audit` so no OS username or `#<token>` appears; terminal tab bar and browser toolbar cropped cleanly). `1200×624`, `1,481,269` bytes, `23.4 s` (4 s final hold), `GIF89a`, SHA-256 `08828642a2475e556b47554dd0e66a789025de2b04898a577c4569cd89442432`, copied byte-identical to `site/assets/demo.gif`; `docs/demo.gif` and `docs/demo-2.gif` untouched.
+- **Files:** `pyproject.toml`, `src/vestibule/__init__.py`, `docs/demo-3.gif`, `site/assets/demo.gif`, `site/index.html`, `README.md`, `PYPI.md`, `SECURITY.md`, `docs/REFERENCE.md`, `docs/ARCHITECTURE.md`, `docs/PLAN.md`, `docs/BUILD_LOG.md`, `docs/plans/M5/M5-visibility-launch.md`, `docs/plans/M5/M5-step3-release-launch.md`, `tests/test_docs.py`.
+- **Reviews:** `critic` + `verifier` found 7 confirmed doc/record issues (1 high: missing Step 3 sign-off in `BUILD_LOG.md`; 4 med: `wall` mislabeled as cgroup counter in `README.md:9`, unconditional audit-dir parenthetical and missing local-drive/§3.12 scope in `SECURITY.md`, `VESTIBULE_MAX_OUTPUT_BYTES`/`VESTIBULE_WORKSPACE`/polling details in `docs/REFERENCE.md`; 2 low: `README.md:174` symlink wording parity with `site/index.html`, untracked plan file in §2A table) — all 7 fixed.
+
+---
+
 ## M5 step 2 — static landing & config-wizard site (`site/`, 2026-11-25)
 
-- **Commit:** pending.
+- **Commit:** `60b3eaa`.
 - **Contract & Plan:** [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) (V4, V5, V7a signed off 2026-11-25); [`docs/plans/M5/M5-step2-site.md`](plans/M5/M5-step2-site.md) (v2 signed off 2026-11-25).
 - **What:** Built the zero-build offline static site in `site/` (outside PyPI packaging): V7a Hero (omits "Early development", keeps **"Not a VM"** prominent, self-contained `site/assets/demo.gif`), 20-combo (`5 OS × 4 Client`) interactive Setup & Config Wizard driven by inert `#vestibule-data` JSON with strict numeric validation and `.copy-scratch` `file://` clipboard fallback, WAI-ARIA `tablist` 4-stage Chamber Walkthrough + `container.py` pointer, verbatim `docs/REFERENCE.md` benchmarks & caveat, and 2-column `SECURITY.md` threat model. Added `workflow_dispatch`-only `.github/workflows/pages.yml` with all 4 actions pinned by full 40-char commit SHAs, LF/binary pins in `.gitattributes`, and 12 pure-Python stdlib tests in `tests/test_site.py`.
 - **Files:** `site/{index.html,style.css,app.js,.nojekyll}`, `site/assets/demo.gif`, `.github/workflows/pages.yml`, `.gitattributes`, `tests/test_site.py`, `docs/plans/M5/M5-step2-site.md`, `docs/HISTORY.md`, `docs/BUILD_LOG.md`.

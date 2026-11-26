@@ -47,12 +47,12 @@
         <figure class="demo-figure">
           <img
             src="assets/demo.gif"
-            alt="Terminal recording. A short program runs twice. On the machine itself it reads a fake key file and connects to 1.1.1.1. Run through Vestibule, the same program reports No such file or directory for the file and Network is unreachable for the connection, and the result ends with isolation: native."
-            width="960"
-            height="540"
+            alt="Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail (No such file or directory and Network is unreachable) with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, and cgroup usage numbers."
+            width="1200"
+            height="624"
           >
           <figcaption>
-            The same script runs directly on the host (reads a fake secret and reaches <code>1.1.1.1</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2).
+            Left: the same script runs directly on the host (reads a fake secret outside <code>/workspace</code> and connects to <code>1.1.1.1:80</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2). Right: <code>vestibule-mcp ui</code> shows the run live with its logged code, isolation verdict, and cgroup usage.
           </figcaption>
         </figure>
       </div>

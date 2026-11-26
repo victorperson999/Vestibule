@@ -6,9 +6,9 @@ A local, kernel-isolated code-execution sandbox for AI agents, exposed as an MCP
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/victorperson999/Vestibule/blob/main/LICENSE) [![Python ≥ 3.11](https://img.shields.io/badge/python-%E2%89%A53.11-blue.svg)](https://www.python.org/downloads/) [![MCP Server](https://img.shields.io/badge/MCP-Server-6E56CF?logo=modelcontextprotocol&logoColor=white)](https://modelcontextprotocol.io) [![Status: Early Development](https://img.shields.io/badge/status-early%20development-orange.svg)](https://github.com/victorperson999/Vestibule#status) [![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/victorperson999/badge.svg)](https://hub.xerj.org/contributors/victorperson999)
 
-![Terminal recording. A short program runs twice. On the machine itself it reads a fake key file and connects to 1.1.1.1. Run through Vestibule, the same program reports "No such file or directory" for the file and "Network is unreachable" for the connection, and the result ends with "isolation: native".](https://raw.githubusercontent.com/victorperson999/Vestibule/main/docs/demo-2.gif)
+![Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail ("No such file or directory" and "Network is unreachable") with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, wall time, and cgroup usage (170 ms wall, 77 ms cpu, 12 MiB mem_peak, 2 pids_peak).](https://raw.githubusercontent.com/victorperson999/Vestibule/main/docs/demo-3.gif)
 
-*The same script runs directly on the host (reads a fake secret and reaches `1.1.1.1`), then inside Vestibule (blocked on both, reporting `isolation: native` under WSL2).*
+*Left: the same script runs directly on the host (reads a fake secret outside `/workspace` and connects to `1.1.1.1:80`), then inside Vestibule (blocked on both, reporting `isolation: native` under WSL2). Right: `vestibule-mcp ui` shows the run live with its logged code, isolation verdict, and cgroup usage.*
 
 > A *vestibule* is a small sealed entry chamber between outside and inside. Vestibule sits between an AI agent and your machine: code the agent sends to `run_code` executes *inside* the chamber, with `/workspace` as its only doorway.
 
@@ -48,7 +48,7 @@ Hosted sandboxes (like E2B or Daytona) solve this, but you pay per second, add a
 
 ## Quick start
 
-You need an MCP client (examples below use [Claude Code](https://claude.com/claude-code)) and [uv](https://docs.astral.sh/uv/).
+You need an MCP client (examples below use [Claude Code](https://claude.com/claude-code)) and [uv](https://docs.astral.sh/uv/). Want exact copy-paste commands for your OS, client, and limits? Use the [interactive setup wizard](https://victorperson999.github.io/Vestibule/#setup).
 
 | Platform | Prerequisite | Isolation you get |
 | --- | --- | --- |
@@ -103,11 +103,14 @@ isolation: native
 
 Under `container`, `usage:` reports `wall` time only (cgroup peaks aren't readable from outside a container) and ends with `isolation: container`.
 
-Because agents often fold or summarize tool output, you can verify directly from your terminal with the audit log:
+Because agents often fold or summarize tool output, you can verify directly from your terminal with the audit log or open the read-only local web inspector:
 
 ```bash
 vestibule-mcp audit
 # 2026-11-20T23:03:35.569Z  python  ran        isolation=native exit=0 wall=120ms cpu=37ms mem_peak=13MiB  print(1)
+
+vestibule-mcp ui
+# opens a read-only local inspector on 127.0.0.1 showing live runs, full logged code, isolation, usage, and /workspace
 ```
 
 ## Connect other clients
@@ -168,7 +171,7 @@ Four practical boundaries to keep in mind (full threat model and test citations 
 
 - **Not a VM.** On Linux, the sandbox shares your host kernel, so a kernel exploit could in principle escape it. On Windows and macOS, Docker Desktop runs containers inside its own Linux VM.
 - **The workspace is writable and uncapped.** Code can create, edit, or delete anything in `/workspace` (the rootfs is read-only and `/tmp` is capped, but workspace disk usage is not). Set `VESTIBULE_WORKSPACE_RO=1` to mount it read-only.
-- **Treat `/workspace` like an untrusted download.** Sandboxed code can create real symlinks inside `/workspace` pointing to host files like `~/.ssh/id_ed25519`. Vestibule's `read_workspace` refuses symlinks; don't point `VESTIBULE_WORKSPACE` at an existing project folder or let other tools follow links inside it blindly.
+- **Treat `/workspace` like an untrusted download.** Sandboxed code can create real symlinks inside `/workspace` pointing to host files like `~/.ssh/id_ed25519`. Vestibule's `read_workspace` and `ui` refuse symlinks; don't point `VESTIBULE_WORKSPACE` at an existing project folder or let other tools follow links inside it blindly.
 - **Run output goes back to your agent.** Anything printed to stdout/stderr is read by the agent and sent to its model provider.
 
 Every `run_code` result states honestly what protection actually applied:
@@ -193,7 +196,7 @@ Common settings (full list in [`docs/REFERENCE.md`](https://github.com/victorper
 - `VESTIBULE_MEM_MB` / `VESTIBULE_CPU_PCT` — memory and CPU caps
 - `VESTIBULE_DEFAULT_TIMEOUT_S` — default per-run timeout
 
-**Auditing:** every `run_code` call that reaches Vestibule is logged to `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), storing the code (truncated at 4 KiB), outcome, isolation, usage, and output sizes (never output contents). Inspect recent runs with `vestibule-mcp audit` (last 20) or `vestibule-mcp audit 50`; output is terminal-escaped. Details in [Usage numbers and the audit log](https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md#usage-numbers-and-the-audit-log).
+**Auditing and live inspection:** every `run_code` call that reaches Vestibule is logged to `~/.vestibule/audit/` (`VESTIBULE_AUDIT_DIR`), storing the code (truncated at 4 KiB), outcome, isolation, usage, and output sizes (never output contents). Inspect recent runs in your terminal with `vestibule-mcp audit` (last 20) or `vestibule-mcp audit 50` (output is terminal-escaped), or launch the opt-in read-only local web inspector with `vestibule-mcp ui [--port PORT] [--no-open]` (bound strictly to `127.0.0.1`, token-gated, with a safe `/workspace` browser). Details in [Usage numbers and the audit log](https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md#usage-numbers-and-the-audit-log).
 
 **About `setup`:** downloads ~123 MB of digest-pinned `python:3.12-slim` and `node:22-slim` layers/images once (unpacked to `~/.vestibule/rootfs` for `native`, or pulled into Docker for `container`). Tool calls never pull from the network, and Vestibule never needs root (it refuses to run as root on Linux/macOS). Details and custom-image rules: [What `setup` does, in detail](https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md#what-setup-does-in-detail). To pull the pinned Docker images manually:
 
@@ -235,16 +238,17 @@ Vestibule splits into two halves: a clean async **MCP server** (argument validat
 | M2 | Native Linux warden (namespaces + cgroups v2 + seccomp, unprivileged) | ✅ accepted ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M2/M2-native-warden.md)) |
 | M3 | External resource usage reporting + local audit log (`vestibule-mcp audit`) | ✅ accepted ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M3/M3-audit-usage.md)) |
 | M4 | PyPI release (`vestibule-mcp`), `setup` CLI, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md), docs | ✅ accepted ([plan](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md)) |
+| M5 | Local live inspector (`vestibule-mcp ui`), static setup-wizard site, `0.2.0` release | ✅ built ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M5/M5-visibility-launch.md)) |
 
 ## Documentation
 
 | File | What's in it |
 | --- | --- |
 | [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md) | Threat model: what Vestibule protects and doesn't, test citations, vulnerability reporting. |
-| [`docs/REFERENCE.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md) | Full config reference, `setup` internals & pinned digests, native Linux matrix, audit log spec. |
+| [`docs/REFERENCE.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md) | Full config reference, `setup` internals & pinned digests, native Linux matrix, audit log & `ui` spec. |
 | [`docs/ARCHITECTURE.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/ARCHITECTURE.md) | Deep technical design: MCP server, warden lifecycle, layered isolation. |
 | [`docs/GETTING_STARTED.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/GETTING_STARTED.md) | Developer guide: dev install, running checks, troubleshooting. |
-| [`docs/PLAN.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/PLAN.md) | Roadmap: milestones M0–M4 and acceptance criteria. |
+| [`docs/PLAN.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/PLAN.md) | Roadmap: milestones M0–M5 and acceptance criteria. |
 | [`docs/HISTORY.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/HISTORY.md) | Build story: design decisions, sign-offs, and milestone history. |
 | [`docs/BUILD_LOG.md`](https://github.com/victorperson999/Vestibule/blob/main/docs/BUILD_LOG.md) | Regression index: commits, files, guarding tests, and open issues per step. |
 | [`docs/plans/`](https://github.com/victorperson999/Vestibule/tree/main/docs/plans) & [`docs/reviews/`](https://github.com/victorperson999/Vestibule/tree/main/docs/reviews) | Per-step plans and pre-implementation adversarial design reviews. |
