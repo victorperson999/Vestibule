@@ -11,5 +11,7 @@ src/vestibule/ui/** text eol=lf
 site/*.html text eol=lf
 site/*.css text eol=lf
 site/*.js text eol=lf
+site/*.svg text eol=lf
+site/assets/*.svg text eol=lf
 site/assets/*.gif -text
 .github/workflows/pages.yml text eol=lf

@@ -116,7 +116,7 @@ The warden, in Python + ctypes. See `ARCHITECTURE.md` for the full lifecycle.
 
 **Detailed contract:** `docs/plans/M5/M5-visibility-launch.md` (signed off 2026-11-25, Path A: V1–V7).
 
-**Status (2026-11-25):** Step 1 (`vestibule-mcp ui`, `9bf1fb8`) and Step 2 (`site/` static website, `60b3eaa`) landed and passed both gates; Step 3 (`docs/plans/M5/M5-step3-release-launch.md`, `0.2.0` release & public launch) in progress.
+**Status (2026-11-25):** Step 1 (`vestibule-mcp ui`, `9bf1fb8`), Step 2 (`site/` static website, `60b3eaa`), and Step 3 Phases A–C (`docs/demo-3.gif`, docs sync, `vestibule-mcp==0.2.0` live on PyPI, and `https://victorperson999.github.io/Vestibule/` live on GitHub Pages) complete; Phase D public launch pack next.
 
 ---
 

@@ -113,12 +113,22 @@ pre code {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   color: var(--text);
   font-family: var(--mono);
   font-weight: 600;
   font-size: 15px;
   letter-spacing: -0.02em;
   border-bottom: 0;
+}
+
+.brand-mark {
+  display: block;
+  width: 24px;
+  height: 24px;
+  flex-shrink: 0;
 }
 
 .brand:hover {
