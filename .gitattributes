@@ -7,3 +7,9 @@ tests/fixtures/** -text
 src/vestibule/backends/seccomp-profile.json -text
 # Bundled UI assets ship in the wheel (M5 step 1); keep LF endings on Windows checkouts.
 src/vestibule/ui/** text eol=lf
+# Static site (M5 step 2); keep LF endings on Windows checkouts and keep demo GIF binary.
+site/*.html text eol=lf
+site/*.css text eol=lf
+site/*.js text eol=lf
+site/assets/*.gif -text
+.github/workflows/pages.yml text eol=lf

@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vestibule — Local, kernel-isolated sandbox for AI agents</title>
+  <meta name="description" content="Run untrusted AI-agent code in a kernel-isolated sandbox on your own machine. Free, local, MIT-licensed MCP server with one runtime dependency.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#hero">vestibule</a>
+      <nav class="site-nav" aria-label="Primary">
+        <a href="#setup">Setup</a>
+        <a href="#how-it-works">Architecture</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="#security">Security</a>
+        <span class="nav-sep" aria-hidden="true"></span>
+        <a class="nav-ext" href="https://github.com/victorperson999/Vestibule" rel="noopener noreferrer">GitHub</a>
+        <a class="nav-ext" href="https://pypi.org/project/vestibule-mcp/" rel="noopener noreferrer">PyPI</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section id="hero" class="hero">
+      <div class="container">
+        <p class="eyebrow">Local MCP code-execution sandbox · MIT</p>
+        <h1>Run untrusted AI-agent code in a kernel-isolated sandbox on your own machine.</h1>
+        <p class="hero-sub">Free, local, and auditable — one runtime dependency, no cloud sandbox vendor, no per-second bill.</p>
+
+        <div class="install-strip">
+          <div class="install-cmd-box">
+            <span class="cmd-prompt" aria-hidden="true">$</span>
+            <code id="hero-install-cmd">uv tool install vestibule-mcp</code>
+            <button type="button" class="btn-copy" data-copy-target="hero-install-cmd">Copy</button>
+          </div>
+          <a class="hero-link" href="#setup">Configure for your OS &amp; client &darr;</a>
+        </div>
+
+        <p class="boundary-note" role="note">
+          <strong>Not a VM</strong> — shares the host kernel on Linux; sandboxes only code sent to <code>run_code</code>.
+          <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer">Read SECURITY.md</a>
+        </p>
+
+        <figure class="demo-figure">
+          <img
+            src="assets/demo.gif"
+            alt="Terminal recording. A short program runs twice. On the machine itself it reads a fake key file and connects to 1.1.1.1. Run through Vestibule, the same program reports No such file or directory for the file and Network is unreachable for the connection, and the result ends with isolation: native."
+            width="960"
+            height="540"
+          >
+          <figcaption>
+            The same script runs directly on the host (reads a fake secret and reaches <code>1.1.1.1</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2).
+          </figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="setup" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="section-kicker">01 / Setup</p>
+          <h2>Setup &amp; Config Wizard</h2>
+          <p class="section-sub">Pick your platform, MCP client, and optional limits for exact prerequisites, install commands, and config JSON. Runs offline with zero external requests.</p>
+        </div>
+
+        <form id="wizard-form" class="wizard-controls" novalidate>
+          <fieldset class="choice-group">
+            <legend>Platform</legend>
+            <div class="seg-group">
+              <label class="seg-option">
+                <input type="radio" name="platform" value="linux" checked>
+                <span>Linux (systemd)</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="platform" value="wsl2">
+                <span>WSL2</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="platform" value="ubuntu">
+                <span>Ubuntu 23.10+</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="platform" value="windows">
+                <span>Windows</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="platform" value="macos">
+                <span>macOS</span>
+              </label>
+            </div>
+            <p id="platform-summary" class="choice-meta"></p>
+          </fieldset>
+
+          <fieldset class="choice-group">
+            <legend>MCP Client</legend>
+            <div class="seg-group">
+              <label class="seg-option">
+                <input type="radio" name="client" value="claude-code" checked>
+                <span>Claude Code</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="client" value="cursor">
+                <span>Cursor</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="client" value="claude-desktop">
+                <span>Claude Desktop</span>
+              </label>
+              <label class="seg-option">
+                <input type="radio" name="client" value="generic">
+                <span>Other MCP client</span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="choice-group choice-options">
+            <legend>Options</legend>
+            <div class="options-toggles">
+              <label class="check-row">
+                <input type="checkbox" id="opt-workspace-ro" name="workspace_ro">
+                <span>Read-only <code>/workspace</code> <span class="opt-inline-note">(<code>VESTIBULE_WORKSPACE_RO=1</code>)</span></span>
+              </label>
+
+              <label class="check-row" id="opt-lockdown-wrap">
+                <input type="checkbox" id="opt-lockdown" name="lockdown">
+                <span>Sandbox-only lockdown <span class="opt-inline-note">(disables built-in shell &amp; file tools)</span></span>
+              </label>
+            </div>
+
+            <div class="numeric-grid">
+              <div class="num-field">
+                <label for="opt-mem-mb">Memory <code>VESTIBULE_MEM_MB</code></label>
+                <div class="num-input-row">
+                  <input id="opt-mem-mb" name="mem_mb" class="input" type="text" inputmode="numeric" value="256" autocomplete="off">
+                  <span class="num-unit">MiB</span>
+                </div>
+                <p id="err-mem-mb" class="field-error is-hidden" role="alert"></p>
+              </div>
+
+              <div class="num-field">
+                <label for="opt-cpu-pct">CPU <code>VESTIBULE_CPU_PCT</code></label>
+                <div class="num-input-row">
+                  <input id="opt-cpu-pct" name="cpu_pct" class="input" type="text" inputmode="numeric" value="75" autocomplete="off">
+                  <span class="num-unit">% of 1 core</span>
+                </div>
+                <p id="err-cpu-pct" class="field-error is-hidden" role="alert"></p>
+              </div>
+
+              <div class="num-field">
+                <label for="opt-timeout-s">Timeout <code>VESTIBULE_DEFAULT_TIMEOUT_S</code></label>
+                <div class="num-input-row">
+                  <input id="opt-timeout-s" name="default_timeout_s" class="input" type="text" inputmode="numeric" value="10" autocomplete="off">
+                  <span class="num-unit">s (max 60)</span>
+                </div>
+                <p id="err-timeout-s" class="field-error is-hidden" role="alert"></p>
+              </div>
+            </div>
+            <p class="options-footnote">Default limits (256 MiB, 75%, 10 s) are omitted from config until changed. Timeout is clamped by <code>VESTIBULE_MAX_TIMEOUT_S</code> (default 60 s).</p>
+          </fieldset>
+        </form>
+
+        <div id="wizard-output" class="wizard-output">
+          <noscript>
+            <p class="step-note">Enable JavaScript to use the interactive config wizard, or follow the full platform guide in <a href="https://github.com/victorperson999/Vestibule#quick-start" rel="noopener noreferrer">README.md</a>.</p>
+          </noscript>
+        </div>
+      </div>
+    </section>
+
+    <section id="how-it-works" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="section-kicker">02 / Architecture</p>
+          <h2>Inside the Isolation Chamber</h2>
+          <p class="section-sub">
+            Native Linux isolation below (no Docker, no root). On Windows, macOS, and stock Ubuntu 23.10+, Vestibule runs a locked-down throwaway container via <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/container.py" rel="noopener noreferrer"><code>src/vestibule/backends/container.py</code></a>.
+          </p>
+        </div>
+
+        <div class="chamber-tabs" role="tablist" aria-label="Vestibule isolation stages">
+          <button
+            type="button"
+            class="chamber-tab is-active"
+            id="tab-stage-1"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-stage-1"
+            tabindex="0"
+          >
+            <span class="stage-num">01</span>
+            <span>MCP Server</span>
+          </button>
+          <button
+            type="button"
+            class="chamber-tab"
+            id="tab-stage-2"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-stage-2"
+            tabindex="-1"
+          >
+            <span class="stage-num">02</span>
+            <span>Warden Helper</span>
+          </button>
+          <button
+            type="button"
+            class="chamber-tab"
+            id="tab-stage-3"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-stage-3"
+            tabindex="-1"
+          >
+            <span class="stage-num">03</span>
+            <span>PID 1 Init</span>
+          </button>
+          <button
+            type="button"
+            class="chamber-tab"
+            id="tab-stage-4"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-stage-4"
+            tabindex="-1"
+          >
+            <span class="stage-num">04</span>
+            <span>Guest &amp; /workspace</span>
+          </button>
+        </div>
+
+        <div class="chamber-panels">
+          <div class="chamber-panel" id="panel-stage-1" role="tabpanel" aria-labelledby="tab-stage-1">
+            <h3>Clean MCP Server</h3>
+            <p>The long-lived stdio MCP server decides <em>whether</em> and <em>what</em> may run, and never executes untrusted code in its own process.</p>
+            <ul>
+              <li>Validates <code>language</code> (<code>python</code>, <code>node</code>, <code>bash</code>), caps code size (<code>256 KiB</code>), and clamps <code>timeout_seconds</code> to <code>VESTIBULE_MAX_TIMEOUT_S</code> (default <code>60</code> s) before spawning anything.</li>
+              <li>Returns errors as readable <code>Blocked: …</code> content so the agent adapts without crashing the MCP session.</li>
+              <li>Writes paired <code>start</code> / <code>end</code> JSONL records to <code>~/.vestibule/audit/</code> (code up to 4 KiB, usage, isolation verdict, output byte sizes — never output contents).</li>
+            </ul>
+            <p class="source-links">
+              Source:
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/server.py" rel="noopener noreferrer"><code>src/vestibule/server.py</code></a>,
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/audit.py" rel="noopener noreferrer"><code>src/vestibule/audit.py</code></a>
+            </p>
+          </div>
+
+          <div class="chamber-panel" id="panel-stage-2" role="tabpanel" aria-labelledby="tab-stage-2" hidden>
+            <h3>Unprivileged Warden Helper</h3>
+            <p>Each native run spawns a fresh helper process that prepares isolation from outside the sandbox, with zero root privileges.</p>
+            <ul>
+              <li>Placed from outside into a per-run systemd user cgroup v2 scope enforcing <code>memory.max</code>, <code>memory.swap.max=0</code>, <code>cpu.max</code>, and <code>pids.max</code>.</li>
+              <li>Compiles the Docker-derived <code>libseccomp</code> allowlist (refusing dangerous syscalls and <code>AF_VSOCK</code>) before <code>pivot_root</code>.</li>
+              <li>Calls <code>unshare(CLONE_NEWUSER | CLONE_NEWPID)</code>, writes an identity uid/gid map (your own user ID, never root), and forks PID 1 init.</li>
+              <li>Stays outside the PID namespace so the guest cannot see or signal it: answers seccomp user-notify with <code>EPERM</code>, kills init via pidfd on timeout, and reads final cgroup usage counters after init exits.</li>
+            </ul>
+            <p class="source-links">
+              Source:
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_helper.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_helper.py</code></a>,
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_cgroup.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_cgroup.py</code></a>,
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_seccomp.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_seccomp.py</code></a>
+            </p>
+          </div>
+
+          <div class="chamber-panel" id="panel-stage-3" role="tabpanel" aria-labelledby="tab-stage-3" hidden>
+            <h3>Sandbox PID 1 Init</h3>
+            <p>Inside the new PID namespace, the forked init process becomes PID 1, seals the remaining kernel boundaries, and supervises the guest.</p>
+            <ul>
+              <li>Calls <code>setsid()</code> and unshares <code>CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWCGROUP</code> (network namespace with <code>lo</code> only).</li>
+              <li>Mounts and enters a <code>pivot_root</code> jail over the read-only unpacked rootfs plus <code>/workspace</code>, a size-capped <code>/tmp</code>, and read-only <code>/sandbox</code>.</li>
+              <li>Drops all capabilities, sets <code>PR_SET_DUMPABLE=0</code> and <code>PR_SET_NO_NEW_PRIVS=1</code>, loads the compiled <code>libseccomp</code> filter, and runs kernel self-checks.</li>
+              <li>Forks the guest process and reaps orphan children; when the helper kills PID 1, the kernel terminates the entire PID namespace.</li>
+            </ul>
+            <p class="source-links">
+              Source:
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_helper.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_helper.py</code></a>
+            </p>
+          </div>
+
+          <div class="chamber-panel" id="panel-stage-4" role="tabpanel" aria-labelledby="tab-stage-4" hidden>
+            <h3>Guest Process &amp; <code>/workspace</code> Doorway</h3>
+            <p>The untrusted Python 3.12, Node 22, or Bash snippet sees only the pinned rootfs, a capped <code>/tmp</code>, and <code>/workspace</code>.</p>
+            <ul>
+              <li>Host files outside <code>/workspace</code> do not exist inside the mount namespace; outbound TCP, UDP, DNS, and <code>AF_VSOCK</code> fail immediately.</li>
+              <li><code>read_workspace</code> reads files from the host side through a handle/descriptor-relative path jail that refuses symlinks and traversal.</li>
+              <li><code>vestibule-mcp ui</code> provides an opt-in, strictly read-only local web inspector over your audit log and workspace using the exact same jail.</li>
+            </ul>
+            <p class="source-links">
+              Source:
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/workspace.py" rel="noopener noreferrer"><code>src/vestibule/workspace.py</code></a>,
+              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/ui_cli.py" rel="noopener noreferrer"><code>src/vestibule/ui_cli.py</code></a>
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="benchmarks" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="section-kicker">03 / Benchmarks</p>
+          <h2>Measured Cold-Start Latency</h2>
+          <p class="section-sub">Measured through the MCP server itself: 50 <code>print(1)</code> runs per backend after a warm-up on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1, recorded 2026-11-06 at commit <code>03f0fb7</code>.</p>
+        </div>
+
+        <table class="bench-table">
+          <thead>
+            <tr>
+              <th scope="col">Backend</th>
+              <th scope="col">Mechanism</th>
+              <th scope="col" class="num-col">Median</th>
+              <th scope="col" class="num-col">p95</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>native</code></td>
+              <td class="muted-cell">Linux namespaces, cgroups v2, seccomp</td>
+              <td class="num-col num-val">118 ms</td>
+              <td class="num-col num-val">141 ms</td>
+            </tr>
+            <tr>
+              <td><code>container</code></td>
+              <td class="muted-cell">Locked-down Docker throwaway container</td>
+              <td class="num-col num-val">895 ms</td>
+              <td class="num-col num-val">1002 ms</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <blockquote class="caveat-quote">
+          <p>The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (<code>docker ps</code>). So these are this host's numbers, not a speed-up factor.</p>
+          <footer>
+            Reproduce locally with <a href="https://github.com/victorperson999/Vestibule/blob/main/scripts/bench_coldstart.py" rel="noopener noreferrer"><code>scripts/bench_coldstart.py</code></a> · Full notes in <a href="https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md" rel="noopener noreferrer"><code>docs/REFERENCE.md</code></a>.
+          </footer>
+        </blockquote>
+      </div>
+    </section>
+
+    <section id="security" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="section-kicker">04 / Security</p>
+          <h2>Honest Threat Model</h2>
+          <p class="section-sub">Summary of <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> §1. Every run ends with an honest <code>isolation:</code> verdict stating what actually applied.</p>
+        </div>
+
+        <div class="threat-columns">
+          <div class="threat-col">
+            <h3>What holds</h3>
+            <p class="threat-lead">For a run reporting <code>isolation: native</code> or <code>isolation: container</code>, short of a bug in the kernel or the container runtime:</p>
+            <ul>
+              <li><strong>Host files outside <code>/workspace</code></strong> are unreachable from the sandbox.</li>
+              <li><strong>No network egress</strong> — empty network namespace (<code>lo</code> only) and <code>AF_VSOCK</code> blocked by seccomp on native.</li>
+              <li><strong>Resource caps enforced</strong> — memory (no swap), CPU, process count (<code>pids.max</code>), <code>/tmp</code> size, and wall-clock timeout.</li>
+              <li><strong>Honest isolation reporting</strong> on every run (<code>native</code>, <code>container</code>, <code>native-degraded</code>, <code>container-degraded</code>, <code>none</code>, or <code>Blocked:</code>).</li>
+            </ul>
+          </div>
+
+          <div class="threat-col">
+            <h3>What stays possible &amp; what it isn't</h3>
+            <p class="threat-lead">Clear boundaries before trusting any sandbox with real credentials or projects:</p>
+            <ul>
+              <li><strong>Not a VM.</strong> On Linux, the sandbox shares your host kernel, so a kernel bug that escapes a namespace would escape Vestibule. (On Windows/macOS, Docker Desktop's Linux VM is Docker's boundary, not Vestibule's.)</li>
+              <li><strong>Only <code>run_code</code> is sandboxed.</strong> Your agent's own shell and file tools still run on your machine unless you restrict them.</li>
+              <li><strong><code>/workspace</code> is writable and uncapped on disk</strong> (unless <code>VESTIBULE_WORKSPACE_RO=1</code>) and may contain guest-planted symlinks. <code>read_workspace</code> and <code>vestibule-mcp ui</code> refuse symlinks — don't point <code>VESTIBULE_WORKSPACE</code> at an existing project folder.</li>
+              <li><strong>Run output returns to your agent</strong> and is sent to its model provider.</li>
+              <li><strong>Untested environments:</strong> arm64 Linux hosts, Podman, and sandboxed container runs on macOS.</li>
+            </ul>
+          </div>
+        </div>
+
+        <p class="security-footer">
+          Full threat model, test citations, and known residuals: <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> · Report a vulnerability privately via <a href="https://github.com/victorperson999/Vestibule/security/advisories/new" rel="noopener noreferrer">GitHub Security Advisories</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container footer-inner">
+      <span>vestibule · local MCP code-execution sandbox</span>
+      <div class="footer-links">
+        <a href="https://github.com/victorperson999/Vestibule/blob/main/LICENSE" rel="noopener noreferrer">MIT License</a>
+        <a href="https://github.com/victorperson999/Vestibule" rel="noopener noreferrer">GitHub</a>
+        <a href="https://pypi.org/project/vestibule-mcp/" rel="noopener noreferrer">PyPI</a>
+        <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer">Security</a>
+        <a href="https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md" rel="noopener noreferrer">Reference</a>
+        <a href="https://github.com/victorperson999/Vestibule/blob/main/docs/ARCHITECTURE.md" rel="noopener noreferrer">Architecture</a>
+      </div>
+    </div>
+  </footer>
+
+  <script id="vestibule-data" type="application/json">
+{
+  "defaults": {
+    "mem_mb": 256,
+    "cpu_pct": 75,
+    "default_timeout_s": 10,
+    "max_timeout_s": 60,
+    "workspace_dir": "~/.vestibule/workspace"
+  },
+  "platforms": {
+    "linux": {
+      "label": "Linux with systemd (Debian / Fedora / Arch)",
+      "isolation": "native",
+      "badge": "isolation: native",
+      "note": "Debian 13 measured; Debian 12 / Fedora / Arch expected; arm64 untested",
+      "prereq_title": "Linux with systemd (Debian / Fedora / Arch)",
+      "prereq_items": [
+        "Ensure curl is installed.",
+        "On a minimal Debian install, run: sudo apt install ca-certificates curl dbus-user-session && sudo reboot"
+      ],
+      "uv_cmd": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+      "update_shell_comment": "",
+      "is_windows": false,
+      "is_macos": false,
+      "claude_desktop_note": "Anthropic does not ship an official Linux Claude Desktop build. Use Claude Code or another MCP client on Linux; the generic mcpServers JSON is shown below without a fabricated Linux config path."
+    },
+    "wsl2": {
+      "label": "WSL2 (Ubuntu / Debian)",
+      "isolation": "native",
+      "badge": "isolation: native",
+      "note": "measured on WSL2 Ubuntu 26.04",
+      "prereq_title": "WSL2 (Ubuntu / Debian)",
+      "prereq_items": [
+        "Ensure curl is installed and systemd is enabled in WSL2 (no Docker needed)."
+      ],
+      "uv_cmd": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+      "update_shell_comment": "",
+      "is_windows": false,
+      "is_macos": false,
+      "claude_desktop_note": "Anthropic does not ship an official Linux Claude Desktop build. For Windows Claude Desktop, switch this wizard to the Windows (Docker Desktop) setup; inside WSL2, use Claude Code or another MCP client. The generic mcpServers JSON is shown below."
+    },
+    "ubuntu": {
+      "label": "Ubuntu 23.10+ (host or VM, not WSL2)",
+      "isolation": "container",
+      "badge": "isolation: container",
+      "note": "measured on 24.04 LTS",
+      "prereq_title": "Ubuntu 23.10+ (host or VM, not WSL2)",
+      "prereq_items": [
+        "Install curl and Docker Engine from Docker's apt repo (Ubuntu restricts unprivileged user namespaces via AppArmor).",
+        "Run sudo usermod -aG docker $USER and log out/in so your shell picks up group membership.",
+        "Do not use the Docker snap — it rejects no-new-privileges, which Vestibule requires.",
+        "Security note: membership in the docker group grants root-equivalent access on Linux."
+      ],
+      "uv_cmd": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+      "update_shell_comment": "",
+      "is_windows": false,
+      "is_macos": false,
+      "claude_desktop_note": "Anthropic does not ship an official Linux Claude Desktop build. Use Claude Code or another MCP client on Ubuntu; the generic mcpServers JSON is shown below without a fabricated Linux config path."
+    },
+    "windows": {
+      "label": "Windows",
+      "isolation": "container",
+      "badge": "isolation: container",
+      "note": "measured with Docker Desktop; use WSL2 for native",
+      "prereq_title": "Windows",
+      "prereq_items": [
+        "Install and start Docker Desktop for Windows.",
+        "If Docker Desktop asks for Virtual Machine Platform, run Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All in an admin PowerShell and reboot.",
+        "Use WSL2 if you want native Linux isolation without Docker."
+      ],
+      "uv_cmd": "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"",
+      "update_shell_comment": " # Windows: if this updates PATH, open a new terminal",
+      "is_windows": true,
+      "is_macos": false,
+      "claude_desktop_path": "%APPDATA%\\Claude\\claude_desktop_config.json",
+      "claude_desktop_status": "tested on Windows"
+    },
+    "macos": {
+      "label": "macOS",
+      "isolation": "container",
+      "badge": "isolation: container",
+      "note": "expected — untested",
+      "prereq_title": "macOS (untested)",
+      "prereq_items": [
+        "Install and start Docker Desktop for Mac.",
+        "Status: expected to work via container isolation, but untested on macOS."
+      ],
+      "uv_cmd": "curl -LsSf https://astral.sh/uv/install.sh | sh",
+      "update_shell_comment": "",
+      "is_windows": false,
+      "is_macos": true,
+      "macos_bin_path": "/Users/you/.local/bin/vestibule-mcp",
+      "macos_bin_hint": "uv tool dir --bin",
+      "macos_path_env": "/usr/local/bin:/usr/bin:/bin",
+      "claude_desktop_path": "~/Library/Application Support/Claude/claude_desktop_config.json",
+      "claude_desktop_status": "untested on macOS"
+    }
+  },
+  "clients": {
+    "claude-code": {
+      "label": "Claude Code",
+      "note": ""
+    },
+    "cursor": {
+      "label": "Cursor",
+      "note": "tested on Windows",
+      "config_path": "~/.cursor/mcp.json"
+    },
+    "claude-desktop": {
+      "label": "Claude Desktop",
+      "note": "tested on Windows; macOS untested"
+    },
+    "generic": {
+      "label": "Other MCP client",
+      "note": ""
+    }
+  },
+  "lockdown": {
+    "base_args": "claude --tools \"\" --allowedTools mcp__vestibule__run_code mcp__vestibule__read_workspace",
+    "strict_args": "claude --tools \"\" --allowedTools mcp__vestibule__run_code mcp__vestibule__read_workspace --strict-mcp-config --mcp-config only-vestibule.json --permission-mode dontAsk",
+    "windows_prefix": "cmd /c --% ",
+    "caveat": "Claude Code plugin hooks still run even with --strict-mcp-config; disable plugins (/plugin) if you don't want hooks running."
+  },
+  "verify": {
+    "audit_cmd": "vestibule-mcp audit",
+    "ui_cmd": "vestibule-mcp ui"
+  },
+  "benchmarks": {
+    "date": "2026-11-06",
+    "commit": "03f0fb7",
+    "native": {
+      "median_ms": 118,
+      "p95_ms": 141
+    },
+    "container": {
+      "median_ms": 895,
+      "p95_ms": 1002
+    },
+    "caveat": "The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (docker ps). So these are this host's numbers, not a speed-up factor.",
+    "script_url": "https://github.com/victorperson999/Vestibule/blob/main/scripts/bench_coldstart.py"
+  }
+}
+  </script>
+  <script src="app.js" defer></script>
+</body>
+</html>
