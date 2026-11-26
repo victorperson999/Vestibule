@@ -70,7 +70,8 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 | M4 step 5d | 0.1.2 released: a second demo GIF, `docs/demo-2.gif` (one program run on the machine and then through Vestibule; no traceback), pinned with the first by sha256; PyPI's page gets the quick start's new order (Windows, Ubuntu, Linux, macOS); the code differs from 0.1.1 only in the version number | 2026-11-11 | `22b5fe7`, `430c1b6`, `2c51337` (the record) | 1076 Linux (0 skipped); 880 + 176 POSIX/Linux-only skips on Windows |
 | M4 accepted | Victor's look at 0.1.2's page and his acceptance, as amended; the status docs (no code, no release) | 2026-11-11 | `2c51337` | no test change; the doc tests (`test_docs.py`, `test_pins.py`): 31 passed on Windows |
 | M4 follow-up: README | The README for a first-time user: a table and numbered steps per platform, Check it works with two real results and `vestibule-mcp audit`, the reference sections moved to `docs/REFERENCE.md` (docs only; no release) | 2026-11-20 | `8ce7236`, `d68dbd6` | no test change; the doc tests (`test_docs.py`, `test_pins.py`, `test_release_smoke.py`): 112 passed on Windows |
-| M5 step 1 | `vestibule-mcp ui`: opt-in zero-dep read-only local web inspector (`ui_cli.py` + bundled `src/vestibule/ui/`), structured `inspect_workspace_entry` in `workspace.py`, hardened HTTP/1.0 server, linearizable audit cache, updated `release_smoke.py` | 2026-11-25 | pending | 1132 Linux 3.14 (0 skipped), 1082 Linux 3.11 + 7 stdio e2e; 935 + 177 POSIX/Linux-only skips on Windows |
+| M5 step 1 | `vestibule-mcp ui`: opt-in zero-dep read-only local web inspector (`ui_cli.py` + bundled `src/vestibule/ui/`), structured `inspect_workspace_entry` in `workspace.py`, hardened HTTP/1.0 server, linearizable audit cache, updated `release_smoke.py` | 2026-11-25 | `9bf1fb8` | 1132 Linux 3.14 (0 skipped), 1082 Linux 3.11 + 7 stdio e2e; 935 + 177 POSIX/Linux-only skips on Windows |
+| M5 step 2 | Static landing & config-wizard site (`site/`), `workflow_dispatch`-only `.github/workflows/pages.yml` with 40-char pinned SHAs, `.gitattributes` LF pins, pure-Python `tests/test_site.py` (no `src/` change) | 2026-11-25 | pending | 1144 Linux 3.14 (0 skipped), 1094 Linux 3.11 + 7 stdio e2e; 947 + 177 POSIX/Linux-only skips on Windows |
 
 ## Known open issues
 
@@ -162,9 +163,25 @@ add an entry. The commit hash only exists after Victor commits, so an entry star
 
 ---
 
-## M5 step 1 — `vestibule-mcp ui` local read-only inspector (2026-11-25)
+## M5 step 2 — static landing & config-wizard site (`site/`, 2026-11-25)
 
 - **Commit:** pending.
+- **Contract & Plan:** [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) (V4, V5, V7a signed off 2026-11-25); [`docs/plans/M5/M5-step2-site.md`](plans/M5/M5-step2-site.md) (v2 signed off 2026-11-25).
+- **What:** Built the zero-build offline static site in `site/` (outside PyPI packaging): V7a Hero (omits "Early development", keeps **"Not a VM"** prominent, self-contained `site/assets/demo.gif`), 20-combo (`5 OS × 4 Client`) interactive Setup & Config Wizard driven by inert `#vestibule-data` JSON with strict numeric validation and `.copy-scratch` `file://` clipboard fallback, WAI-ARIA `tablist` 4-stage Chamber Walkthrough + `container.py` pointer, verbatim `docs/REFERENCE.md` benchmarks & caveat, and 2-column `SECURITY.md` threat model. Added `workflow_dispatch`-only `.github/workflows/pages.yml` with all 4 actions pinned by full 40-char commit SHAs, LF/binary pins in `.gitattributes`, and 12 pure-Python stdlib tests in `tests/test_site.py`.
+- **Files:** `site/{index.html,style.css,app.js,.nojekyll}`, `site/assets/demo.gif`, `.github/workflows/pages.yml`, `.gitattributes`, `tests/test_site.py`, `docs/plans/M5/M5-step2-site.md`, `docs/HISTORY.md`, `docs/BUILD_LOG.md`.
+- **Guarded by:**
+  - `tests/test_site.py` (12 tests): offline/LF/zero-external-subresource `HTMLParser` audit (ignoring HTML5 void tags), zero dangerous JS sinks, exact parity with `config.Limits`, `README.md` commands/paths/caveats, verbatim `docs/REFERENCE.md` benchmark caveat & zero `[x×]` speedup claims, case-sensitive GitHub `blob/main/` file links, V7a Hero check, `pyproject.toml` + `release_smoke` exclusion of `site/`, and `.github/workflows/pages.yml` supply-chain/permissions hygiene;
+  - Dev-time Node verification (`node --check site/app.js` + 49 assertion groups across all 20 `OS × Client` combos + invalid numeric inputs).
+- **What broke & was fixed along the way:**
+  - Main-session diff review caught Stage 2 / Stage 3 architecture copy swapped against `docs/ARCHITECTURE.md` (fixed before `critic`).
+  - `critic` + `verifier` caught 8 real defects (all 8 confirmed and fixed): missing `contents: read` inside `jobs.deploy.permissions`, macOS `only-vestibule.json` overwriting `PATH`, `_SiteHTMLAudit` counting HTML5 void tags, missing `.gitattributes` LF pin for `pages.yml`, `aria-live="polite"` on whole `#wizard-output` + double render, missing `scroll-margin-top` under sticky header, `copyText()` losing keyboard focus, and `.btn-primary:hover` contrast below WCAG AA.
+- **Open:** Automated Chrome visual check couldn't attach because Chrome remote debugging wasn't enabled (preview `site/index.html` directly in browser). Pages deployment (`Source: GitHub Actions` + `workflow_dispatch`) and swapping `site/assets/demo.gif` to `docs/demo-3.gif` happen in M5 Step 3 right after uploading `0.2.0` to PyPI.
+
+---
+
+## M5 step 1 — `vestibule-mcp ui` local read-only inspector (2026-11-25)
+
+- **Commit:** `9bf1fb8`.
 - **Contract & Plan:** [`docs/plans/M5/M5-visibility-launch.md`](plans/M5/M5-visibility-launch.md) (V1–V7 signed off 2026-11-25); [`docs/plans/M5/M5-step1-ui.md`](plans/M5/M5-step1-ui.md) (v2 signed off 2026-11-25).
 - **What:** Added the `vestibule-mcp ui [--port PORT] [--no-open]` terminal subcommand (lazy-imported only when invoked; zero new runtime dependencies; zero changes to MCP server stdio behavior). Serves a hardened, strictly `GET`-only `127.0.0.1` dashboard with ephemeral port default, Windows `SO_EXCLUSIVEADDRUSE`, exact `Host` validation, `#fragment`/`X-Vestibule-Token` auth, strict CSP (zero `'unsafe-inline'`, zero `innerHTML`, zero inline `style`), 5 s total request head deadline, `BoundedSemaphore(16)`, headless-safe Linux browser launch, linearizable FIFO/TOCTOU-safe `_AuditStore`, and a safe `/workspace` browser backed by `workspace.inspect_workspace_entry` (with `read_workspace_entry` kept byte-for-byte identical). Extended `scripts/release_smoke.py` and `.gitattributes` to guard the bundled UI assets and LF line endings.
 - **Files:** `src/vestibule/ui_cli.py` (new), `src/vestibule/ui/{__init__.py,index.html,app.css,app.js}` (new), `src/vestibule/workspace.py`, `src/vestibule/server.py`, `.gitattributes`, `scripts/release_smoke.py`, `tests/test_ui.py` (new), `tests/test_rootfs.py`, `tests/test_release_smoke.py`, `docs/plans/M5/{M5-visibility-launch.md,M5-step1-ui.md}`, `docs/HISTORY.md`, `docs/BUILD_LOG.md`.
