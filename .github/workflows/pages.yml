@@ -1,8 +1,14 @@
-# M5 step 2: deploy the static site/ folder to GitHub Pages.
-# Manual trigger only in Step 2 so pushing before 0.2.0 is on PyPI never deploys early.
+# M5 step 3 (S3-D3): deploy the static site/ folder to GitHub Pages.
+# Runs on manual dispatch or pushes to main touching site/**.
+# Two-job build -> deploy layout avoids actions/deploy-pages#451 artifact-indexing race.
 name: Deploy static site
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "site/**"
   workflow_dispatch:
 
 permissions:
@@ -13,16 +19,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5.1.0
         with:
@@ -31,5 +32,17 @@ jobs:
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
           path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - id: deployment
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

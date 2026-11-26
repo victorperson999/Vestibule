@@ -25,11 +25,13 @@ INDEX_HTML = SITE / "index.html"
 STYLE_CSS = SITE / "style.css"
 APP_JS = SITE / "app.js"
 DEMO_GIF = SITE / "assets" / "demo.gif"
+LOGO_SVG = SITE / "assets" / "logo.svg"
+FAVICON_SVG = SITE / "favicon.svg"
 NOJEKYLL = SITE / ".nojekyll"
 PAGES_YML = ROOT / ".github" / "workflows" / "pages.yml"
 GITATTRIBUTES = ROOT / ".gitattributes"
 
-_REQUIRED_FILES = (INDEX_HTML, STYLE_CSS, APP_JS, DEMO_GIF, NOJEKYLL, PAGES_YML)
+_REQUIRED_FILES = (INDEX_HTML, STYLE_CSS, APP_JS, DEMO_GIF, LOGO_SVG, FAVICON_SVG, NOJEKYLL, PAGES_YML)
 _SUBRESOURCE_ATTRS = {
     "script": ("src",),
     "link": ("href",),
@@ -172,7 +174,7 @@ def test_required_site_files_exist_with_lf_line_endings():
     missing = [str(p.relative_to(ROOT)) for p in _REQUIRED_FILES if not p.is_file()]
     assert missing == [], f"missing site files: {missing}"
     assert NOJEKYLL.stat().st_size == 0
-    for text_file in (INDEX_HTML, STYLE_CSS, APP_JS, PAGES_YML):
+    for text_file in (INDEX_HTML, STYLE_CSS, APP_JS, LOGO_SVG, FAVICON_SVG, PAGES_YML):
         raw = text_file.read_bytes()
         assert b"\r\n" not in raw, f"CRLF line endings in {text_file.relative_to(ROOT)}"
 
@@ -399,16 +401,28 @@ def test_pages_workflow_supply_chain_hygiene():
 
     lines = text.splitlines()
     assert any(line.strip() == "workflow_dispatch:" for line in lines)
-    assert not any(re.match(r"^\s*push\s*:", line) for line in lines), (
-        "Step 2 pages.yml must be workflow_dispatch only (no push trigger)"
-    )
+    # Post-release S3-D3: push trigger must be strictly scoped to main and site/**
+    assert re.search(
+        r"^  push:\n    branches:\n      - main\n    paths:\n      - \"site/\*\*\"\s*$",
+        text,
+        re.M,
+    ), "pages.yml push trigger must be strictly scoped to branches: [main] and paths: ['site/**']"
 
-    # Top-level contents: read and job-scoped contents: read / pages: write / id-token: write
+    # Top-level contents: read; two-job build -> deploy layout (avoids deploy-pages#451 race)
     assert re.search(r"^permissions:\n  contents: read\b", text, re.M)
-    assert re.search(r"^    permissions:\n(?:      [^\n]+\n)*?      contents: read\b", text, re.M)
-    assert re.search(r"^    permissions:\n(?:      [^\n]+\n)*?      pages: write\b", text, re.M)
-    assert re.search(r"^    permissions:\n(?:      [^\n]+\n)*?      id-token: write\b", text, re.M)
-    assert re.search(r"^\s+timeout-minutes:\s*[1-9][0-9]*\b", text, re.M)
+    assert re.search(r"^  build:\n(?:    [^\n]+\n)*?    permissions:\n      contents: read\b", text, re.M)
+    assert re.search(r"^  deploy:\n    needs: build\b", text, re.M)
+    assert re.search(
+        r"^  deploy:\n(?:    [^\n]+\n)*?    permissions:\n(?:      [^\n]+\n)*?      pages: write\b",
+        text,
+        re.M,
+    )
+    assert re.search(
+        r"^  deploy:\n(?:    [^\n]+\n)*?    permissions:\n(?:      [^\n]+\n)*?      id-token: write\b",
+        text,
+        re.M,
+    )
+    assert len(re.findall(r"^\s+timeout-minutes:\s*[1-9][0-9]*\b", text, re.M)) == 2
     assert "persist-credentials: false" in text
     assert re.search(r"^\s+path:\s*site\s*$", text, re.M)
 
