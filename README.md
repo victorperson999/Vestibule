@@ -238,7 +238,7 @@ Vestibule splits into two halves: a clean async **MCP server** (argument validat
 | M2 | Native Linux warden (namespaces + cgroups v2 + seccomp, unprivileged) | ✅ accepted ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M2/M2-native-warden.md)) |
 | M3 | External resource usage reporting + local audit log (`vestibule-mcp audit`) | ✅ accepted ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M3/M3-audit-usage.md)) |
 | M4 | PyPI release (`vestibule-mcp`), `setup` CLI, [`SECURITY.md`](https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md), docs | ✅ accepted ([plan](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M4/M4-adoption.md)) |
-| M5 | Local live inspector (`vestibule-mcp ui`), static setup-wizard site, `0.2.0` release | ✅ built ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M5/M5-visibility-launch.md)) |
+| M5 | Local live inspector (`vestibule-mcp ui`), static setup-wizard site, `0.2.0` release | ✅ accepted ([contract](https://github.com/victorperson999/Vestibule/blob/main/docs/plans/M5/M5-visibility-launch.md)) |
 
 ## Documentation
 
