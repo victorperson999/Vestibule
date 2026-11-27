@@ -591,8 +591,273 @@
     render();
   }
 
+  function initDemoLightbox() {
+    const trigger = document.getElementById("demo-expand-btn");
+    const dialog = document.getElementById("demo-lightbox");
+    const closeBtn = document.getElementById("demo-lightbox-close");
+    if (!trigger || !dialog || !closeBtn) return;
+
+    trigger.addEventListener("click", () => {
+      if (typeof dialog.showModal === "function") {
+        dialog.showModal();
+        closeBtn.focus();
+      }
+    });
+
+    closeBtn.addEventListener("click", () => {
+      if (dialog.open) dialog.close();
+    });
+
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog && dialog.open) {
+        dialog.close();
+      }
+    });
+
+    dialog.addEventListener("close", () => {
+      trigger.focus();
+    });
+  }
+
+  function initInspectorPreview() {
+    const tabRuns = document.getElementById("insp-tab-runs");
+    const tabWs = document.getElementById("insp-tab-ws");
+    const strip = document.getElementById("insp-strip");
+    const runsView = document.getElementById("insp-runs-view");
+    const wsView = document.getElementById("insp-ws-view");
+    const runList = document.getElementById("insp-run-list");
+    const runDetail = document.getElementById("insp-run-detail");
+    const wsList = document.getElementById("insp-ws-list");
+    const wsDetail = document.getElementById("insp-ws-detail");
+    if (!tabRuns || !tabWs || !runList || !runDetail || !wsList || !wsDetail) return;
+
+    const SAMPLE_RUNS = [
+      {
+        id: "e2c8ebceaa1cae1e",
+        time: "01:10:43",
+        lang: "python",
+        outcome: "ran",
+        iso: "native",
+        wall: "170 ms",
+        cpu: "77 ms",
+        mem: "12 MiB",
+        pids: "2",
+        denied: [],
+        reason: "",
+        preview: "read fake_key.txt + connect 1.1.1.1",
+        code:
+          'import socket\nKEY = "/tmp/demo-secret/fake_key.txt"\ntry:\n    print(open(KEY).read().strip())\nexcept OSError as e:\n    print("read ->", e.strerror)  # No such file or directory\ntry:\n    socket.create_connection(("1.1.1.1", 80), timeout=3)\nexcept OSError as e:\n    print("net  ->", e.strerror)  # Network is unreachable',
+      },
+      {
+        id: "7a41f0b2c8910e3d",
+        time: "01:11:02",
+        lang: "python",
+        outcome: "ran",
+        iso: "native",
+        wall: "134 ms",
+        cpu: "41 ms",
+        mem: "11 MiB",
+        pids: "2",
+        denied: ["mount", "socket(AF_VSOCK)"],
+        reason: "",
+        preview: "seccomp probe: mount + AF_VSOCK",
+        code:
+          'import ctypes, socket\nlibc = ctypes.CDLL("libc.so.6", use_errno=True)\nlibc.mount(b"none", b"/tmp", b"tmpfs", 0, None)  # -> EPERM (logged)\nsocket.socket(40, socket.SOCK_STREAM)           # AF_VSOCK -> EPERM',
+      },
+      {
+        id: "9f03c7e1b2448a10",
+        time: "01:11:19",
+        lang: "bash",
+        outcome: "timed_out",
+        iso: "native",
+        wall: "10,004 ms",
+        cpu: "7,480 ms (throttled)",
+        mem: "6 MiB",
+        pids: "2",
+        denied: [],
+        reason: "",
+        preview: "while :; do :; done",
+        code: "while :; do :; done\n# stopped automatically from outside at the 10 s timeout",
+      },
+      {
+        id: "b120d8e44109f2cc",
+        time: "01:11:40",
+        lang: "python",
+        outcome: "blocked",
+        iso: "none (nothing ran)",
+        wall: "0 ms",
+        cpu: "—",
+        mem: "—",
+        pids: "—",
+        denied: [],
+        reason: "code exceeds maximum size cap (256 KiB)",
+        preview: "Blocked: oversized payload (310 KiB)",
+        code: "# Rejected before starting any sandbox.",
+      },
+    ];
+
+    const SAMPLE_WS = [
+      {
+        name: "report.txt",
+        kind: "file",
+        meta: "48 B · regular file",
+        body: "sandbox output ok\nrows processed: 128\nstatus: clean\n",
+      },
+      {
+        name: "evil_link",
+        kind: "refused",
+        meta: "symlink → ~/.ssh/id_ed25519",
+        body:
+          "Refused: symbolic links are never followed.\n\nBoth read_workspace and vestibule-mcp ui refuse symlinks and path escapes outside /workspace.",
+      },
+    ];
+
+    let activeTab = "runs";
+    let selectedRunId = SAMPLE_RUNS[0].id;
+    let selectedWsName = SAMPLE_WS[0].name;
+
+    function outcomeBadgeClass(outcome) {
+      if (outcome === "ran") return "insp-badge insp-badge-ok";
+      if (outcome === "timed_out") return "insp-badge insp-badge-warn";
+      return "insp-badge insp-badge-danger";
+    }
+
+    function addMetric(parent, label, value) {
+      const box = el("div", "");
+      box.appendChild(document.createTextNode(label + ": "));
+      box.appendChild(el("strong", "", value));
+      parent.appendChild(box);
+    }
+
+    function renderInspector() {
+      const isRuns = activeTab === "runs";
+      tabRuns.classList.toggle("is-active", isRuns);
+      tabRuns.setAttribute("aria-pressed", isRuns ? "true" : "false");
+      tabWs.classList.toggle("is-active", !isRuns);
+      tabWs.setAttribute("aria-pressed", !isRuns ? "true" : "false");
+
+      if (strip) strip.classList.toggle("is-hidden", !isRuns);
+      if (runsView) runsView.classList.toggle("is-hidden", !isRuns);
+      if (wsView) wsView.classList.toggle("is-hidden", isRuns);
+
+      clearNode(runList);
+      for (let i = 0; i < SAMPLE_RUNS.length; i += 1) {
+        const r = SAMPLE_RUNS[i];
+        const btn = el("button", r.id === selectedRunId ? "insp-row is-active" : "insp-row");
+        btn.type = "button";
+        const top = el("div", "insp-row-top");
+        const meta = el("span", "");
+        meta.appendChild(document.createTextNode(r.time + " · "));
+        meta.appendChild(el("span", "insp-row-lang", r.lang));
+        top.appendChild(meta);
+        top.appendChild(el("span", outcomeBadgeClass(r.outcome), r.outcome));
+        btn.appendChild(top);
+        btn.appendChild(el("div", "insp-row-preview", r.preview));
+        btn.addEventListener("click", () => {
+          selectedRunId = r.id;
+          renderInspector();
+        });
+        runList.appendChild(btn);
+      }
+
+      const curRun = SAMPLE_RUNS.find((x) => x.id === selectedRunId) || SAMPLE_RUNS[0];
+      clearNode(runDetail);
+      const head = el("div", "insp-detail-head");
+      head.appendChild(el("span", "insp-detail-id", curRun.id));
+      head.appendChild(el("span", outcomeBadgeClass(curRun.outcome), curRun.outcome));
+      head.appendChild(
+        el(
+          "span",
+          curRun.iso === "native" ? "insp-badge insp-badge-ok" : "insp-badge",
+          "isolation: " + curRun.iso
+        )
+      );
+      runDetail.appendChild(head);
+      runDetail.appendChild(el("pre", "insp-code", curRun.code));
+
+      if (curRun.denied.length > 0) {
+        runDetail.appendChild(
+          el("p", "insp-note-warn", "blocked syscalls: " + curRun.denied.join(", "))
+        );
+      }
+      if (curRun.reason) {
+        runDetail.appendChild(el("p", "insp-note-danger", "reason: " + curRun.reason));
+      }
+
+      const metrics = el("div", "insp-metrics");
+      addMetric(metrics, "wall_ms", curRun.wall);
+      addMetric(metrics, "cpu_ms", curRun.cpu);
+      addMetric(metrics, "mem_peak", curRun.mem);
+      addMetric(metrics, "pids_peak", curRun.pids);
+      runDetail.appendChild(metrics);
+      runDetail.appendChild(
+        el(
+          "p",
+          "insp-caveat",
+          "Note: kernel usage counts the whole sandbox, including its setup and file cache."
+        )
+      );
+
+      clearNode(wsList);
+      for (let i = 0; i < SAMPLE_WS.length; i += 1) {
+        const f = SAMPLE_WS[i];
+        const btn = el("button", f.name === selectedWsName ? "insp-row is-active" : "insp-row");
+        btn.type = "button";
+        const top = el("div", "insp-row-top");
+        top.appendChild(el("span", "insp-row-lang", "/workspace/" + f.name));
+        top.appendChild(
+          el(
+            "span",
+            f.kind === "refused" ? "insp-badge insp-badge-danger" : "insp-badge",
+            f.kind
+          )
+        );
+        btn.appendChild(top);
+        btn.appendChild(el("div", "insp-row-sub", f.meta));
+        btn.addEventListener("click", () => {
+          selectedWsName = f.name;
+          renderInspector();
+        });
+        wsList.appendChild(btn);
+      }
+
+      const curWs = SAMPLE_WS.find((x) => x.name === selectedWsName) || SAMPLE_WS[0];
+      clearNode(wsDetail);
+      const wsHead = el("div", "insp-detail-head");
+      wsHead.appendChild(el("span", "insp-detail-id", "/workspace/" + curWs.name));
+      wsHead.appendChild(
+        el(
+          "span",
+          curWs.kind === "refused" ? "insp-badge insp-badge-danger" : "insp-badge",
+          curWs.meta
+        )
+      );
+      wsDetail.appendChild(wsHead);
+      wsDetail.appendChild(
+        el(
+          "pre",
+          curWs.kind === "refused" ? "insp-code insp-code-refused" : "insp-code",
+          curWs.body
+        )
+      );
+    }
+
+    tabRuns.addEventListener("click", () => {
+      activeTab = "runs";
+      renderInspector();
+    });
+    tabWs.addEventListener("click", () => {
+      activeTab = "ws";
+      renderInspector();
+    });
+
+    renderInspector();
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     initHeroCopy();
+    initDemoLightbox();
+    initInspectorPreview();
     initChamberTabs();
     initWizard();
   });
