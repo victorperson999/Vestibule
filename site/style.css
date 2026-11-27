@@ -91,13 +91,6 @@ pre code {
   padding: 0 24px;
 }
 
-.container-wide {
-  width: 100%;
-  max-width: 1060px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
-
 /* Header */
 .site-header {
   position: sticky;
@@ -1247,8 +1240,7 @@ pre code {
 }
 
 @media (max-width: 480px) {
-  .container,
-  .container-wide {
+  .container {
     padding: 0 16px;
   }
 

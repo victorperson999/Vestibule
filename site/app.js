@@ -677,7 +677,7 @@
         denied: [],
         reason: "",
         preview: "while :; do :; done",
-        code: "while :; do :; done\n# stopped externally via pidfd SIGKILL at 10 s timeout",
+        code: "while :; do :; done\n# stopped automatically from outside at the 10 s timeout",
       },
       {
         id: "b120d8e44109f2cc",
@@ -690,9 +690,9 @@
         mem: "—",
         pids: "—",
         denied: [],
-        reason: "code exceeds VESTIBULE_MAX_CODE_BYTES (262,144 B)",
+        reason: "code exceeds maximum size cap (256 KiB)",
         preview: "Blocked: oversized payload (310 KiB)",
-        code: "# Rejected in the clean MCP server before spawning any sandbox.",
+        code: "# Rejected before starting any sandbox.",
       },
     ];
 
@@ -708,7 +708,7 @@
         kind: "refused",
         meta: "symlink → ~/.ssh/id_ed25519",
         body:
-          "Refused: symbolic links are not followed.\n\nBoth read_workspace and vestibule-mcp ui walk /workspace descriptor-by-descriptor with O_NOFOLLOW (Linux/macOS) or FILE_OPEN_REPARSE_POINT (Windows).",
+          "Refused: symbolic links are never followed.\n\nBoth read_workspace and vestibule-mcp ui refuse symlinks and path escapes outside /workspace.",
       },
     ];
 

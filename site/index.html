@@ -49,21 +49,19 @@
           <strong>Not a VM</strong> — shares the host kernel on Linux; sandboxes only code sent to <code>run_code</code>.
           <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer">Read SECURITY.md</a>
         </p>
-      </div>
 
-      <div class="container-wide">
         <figure class="demo-figure">
           <button type="button" id="demo-expand-btn" class="demo-trigger" aria-label="Expand demo recording to full size">
             <img
               src="assets/demo.gif"
-              alt="Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail (No such file or directory and Network is unreachable) with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, wall time, and cgroup usage."
+              alt="Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail (No such file or directory and Network is unreachable) with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, wall time, and resource usage."
               width="1200"
               height="624"
             >
             <span class="demo-expand-pill" aria-hidden="true">Click to expand &#x2922;</span>
           </button>
           <figcaption>
-            Left: the same script runs directly on the host (reads a fake secret outside <code>/workspace</code> and connects to <code>1.1.1.1:80</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2). Right: <code>vestibule-mcp ui</code> shows the run live with its logged code, isolation verdict, wall time, and cgroup usage. Click the recording to view full size.
+            Left: the same script runs directly on the host (reads a fake secret outside <code>/workspace</code> and connects to <code>1.1.1.1:80</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2). Right: <code>vestibule-mcp ui</code> shows the run live.
           </figcaption>
         </figure>
       </div>
@@ -242,7 +240,7 @@
           <p class="section-kicker">03 / Architecture</p>
           <h2>Inside the Isolation Chamber</h2>
           <p class="section-sub">
-            Native Linux isolation below (no Docker, no root). On Windows, macOS, and stock Ubuntu 23.10+, Vestibule runs a locked-down throwaway container via <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/container.py" rel="noopener noreferrer"><code>src/vestibule/backends/container.py</code></a>.
+            Native Linux isolation below (no Docker, no root). On Windows, macOS, and stock Ubuntu 23.10+, Vestibule runs a locked-down <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/container.py" rel="noopener noreferrer">throwaway container</a> instead.
           </p>
         </div>
 
@@ -269,7 +267,7 @@
             tabindex="-1"
           >
             <span class="stage-num">02</span>
-            <span>Warden Helper</span>
+            <span>Supervisor</span>
           </button>
           <button
             type="button"
@@ -281,7 +279,7 @@
             tabindex="-1"
           >
             <span class="stage-num">03</span>
-            <span>PID 1 Init</span>
+            <span>Inner Chamber</span>
           </button>
           <button
             type="button"
@@ -300,64 +298,41 @@
         <div class="chamber-panels">
           <div class="chamber-panel" id="panel-stage-1" role="tabpanel" aria-labelledby="tab-stage-1">
             <h3>Clean MCP Server</h3>
-            <p>The long-lived stdio MCP server decides <em>whether</em> and <em>what</em> may run, and never executes untrusted code in its own process.</p>
+            <p>Receives tool calls from your AI agent and never runs untrusted code in its own process.</p>
             <ul>
-              <li>Validates <code>language</code> (<code>python</code>, <code>node</code>, <code>bash</code>), caps code size (<code>256 KiB</code>), and clamps <code>timeout_seconds</code> to <code>VESTIBULE_MAX_TIMEOUT_S</code> (default <code>60</code> s) before spawning anything.</li>
-              <li>Returns errors as readable <code>Blocked: …</code> content so the agent adapts without crashing the MCP session.</li>
-              <li>Writes paired <code>start</code> / <code>end</code> JSONL records to <code>~/.vestibule/audit/</code> (code up to 4 KiB, usage, isolation verdict, output byte sizes — never output contents).</li>
+              <li>Validates the language (Python, Node, or Bash), code size, and timeout before starting any sandbox.</li>
+              <li>Returns readable <code>Blocked:</code> replies instead of crashing your agent session.</li>
+              <li>Writes every call to a local audit log (code, isolation status, and usage — never output contents).</li>
             </ul>
-            <p class="source-links">
-              Source:
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/server.py" rel="noopener noreferrer"><code>src/vestibule/server.py</code></a>,
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/audit.py" rel="noopener noreferrer"><code>src/vestibule/audit.py</code></a>
-            </p>
           </div>
 
           <div class="chamber-panel" id="panel-stage-2" role="tabpanel" aria-labelledby="tab-stage-2" hidden>
-            <h3>Unprivileged Warden Helper</h3>
-            <p>Each native run spawns a fresh helper process that prepares isolation from outside the sandbox, with zero root privileges.</p>
+            <h3>Unprivileged Sandbox Supervisor</h3>
+            <p>Starts a fresh, non-root supervisor process outside the sandbox for every run.</p>
             <ul>
-              <li>Placed from outside into a per-run systemd user cgroup v2 scope enforcing <code>memory.max</code>, <code>memory.swap.max=0</code>, <code>cpu.max</code>, and <code>pids.max</code>.</li>
-              <li>Compiles the Docker-derived <code>libseccomp</code> allowlist (refusing dangerous syscalls and <code>AF_VSOCK</code>) before <code>pivot_root</code>.</li>
-              <li>Calls <code>unshare(CLONE_NEWUSER | CLONE_NEWPID)</code>, writes an identity uid/gid map (your own user ID, never root), and forks PID 1 init.</li>
-              <li>Stays outside the PID namespace so the guest cannot see or signal it: answers seccomp user-notify with <code>EPERM</code>, kills init via pidfd on timeout, and reads final cgroup usage counters after init exits.</li>
+              <li>Applies per-run memory (no swap), CPU, and process limits before any untrusted code starts.</li>
+              <li>Builds the syscall allowlist and isolates user and process views without root privileges.</li>
+              <li>Enforces timeouts from outside so runaway code cannot block cleanup, then records final usage.</li>
             </ul>
-            <p class="source-links">
-              Source:
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_helper.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_helper.py</code></a>,
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_cgroup.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_cgroup.py</code></a>,
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_seccomp.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_seccomp.py</code></a>
-            </p>
           </div>
 
           <div class="chamber-panel" id="panel-stage-3" role="tabpanel" aria-labelledby="tab-stage-3" hidden>
-            <h3>Sandbox PID 1 Init</h3>
-            <p>Inside the new PID namespace, the forked init process becomes PID 1, seals the remaining kernel boundaries, and supervises the guest.</p>
+            <h3>Sealed Inner Chamber</h3>
+            <p>Locks down the sandbox from the inside right before launching the agent's code.</p>
             <ul>
-              <li>Calls <code>setsid()</code> and unshares <code>CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC | CLONE_NEWCGROUP</code> (network namespace with <code>lo</code> only).</li>
-              <li>Mounts and enters a <code>pivot_root</code> jail over the read-only unpacked rootfs plus <code>/workspace</code>, a size-capped <code>/tmp</code>, and read-only <code>/sandbox</code>.</li>
-              <li>Drops all capabilities, sets <code>PR_SET_DUMPABLE=0</code> and <code>PR_SET_NO_NEW_PRIVS=1</code>, loads the compiled <code>libseccomp</code> filter, and runs kernel self-checks.</li>
-              <li>Forks the guest process and reaps orphan children; when the helper kills PID 1, the kernel terminates the entire PID namespace.</li>
+              <li>Replaces the filesystem view so only pinned runtimes, a capped <code>/tmp</code>, and <code>/workspace</code> exist inside.</li>
+              <li>Cuts off all network access and permanently drops every Linux privilege.</li>
+              <li>Loads the syscall filter, runs self-checks, and cleans up every child process on exit.</li>
             </ul>
-            <p class="source-links">
-              Source:
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/native_helper.py" rel="noopener noreferrer"><code>src/vestibule/backends/native_helper.py</code></a>
-            </p>
           </div>
 
           <div class="chamber-panel" id="panel-stage-4" role="tabpanel" aria-labelledby="tab-stage-4" hidden>
-            <h3>Guest Process &amp; <code>/workspace</code> Doorway</h3>
-            <p>The untrusted Python 3.12, Node 22, or Bash snippet sees only the pinned rootfs, a capped <code>/tmp</code>, and <code>/workspace</code>.</p>
+            <h3>Isolated Code &amp; One Doorway</h3>
+            <p>Untrusted Python, Node, or Bash runs inside the sealed chamber with <code>/workspace</code> as its only shared folder.</p>
             <ul>
-              <li>Host files outside <code>/workspace</code> do not exist inside the mount namespace; outbound TCP, UDP, DNS, and <code>AF_VSOCK</code> fail immediately.</li>
-              <li><code>read_workspace</code> reads files from the host side through a handle/descriptor-relative path jail that refuses symlinks and traversal.</li>
-              <li><code>vestibule-mcp ui</code> provides an opt-in, strictly read-only local web inspector over your audit log and workspace using the exact same jail.</li>
+              <li>Host files outside <code>/workspace</code> do not exist inside the sandbox, and all outbound network calls fail immediately.</li>
+              <li><code>read_workspace</code> and <code>vestibule-mcp ui</code> inspect <code>/workspace</code> safely while refusing symlinks and path escapes.</li>
             </ul>
-            <p class="source-links">
-              Source:
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/workspace.py" rel="noopener noreferrer"><code>src/vestibule/workspace.py</code></a>,
-              <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/ui_cli.py" rel="noopener noreferrer"><code>src/vestibule/ui_cli.py</code></a>
-            </p>
           </div>
         </div>
       </div>
@@ -368,14 +343,14 @@
         <div class="section-head">
           <p class="section-kicker">04 / Benchmarks</p>
           <h2>Measured Cold-Start Latency</h2>
-          <p class="section-sub">Measured through the MCP server itself: 50 <code>print(1)</code> runs per backend after a warm-up on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1, recorded 2026-11-06 at commit <code>03f0fb7</code>.</p>
+          <p class="section-sub">Measured end-to-end through the MCP server (50 runs per backend on WSL2 Ubuntu with Docker Desktop).</p>
         </div>
 
         <table class="bench-table">
           <thead>
             <tr>
               <th scope="col">Backend</th>
-              <th scope="col">Mechanism</th>
+              <th scope="col">How it runs</th>
               <th scope="col" class="num-col">Median</th>
               <th scope="col" class="num-col">p95</th>
             </tr>
@@ -383,13 +358,13 @@
           <tbody>
             <tr>
               <td><code>native</code></td>
-              <td class="muted-cell">Linux namespaces, cgroups v2, seccomp</td>
+              <td class="muted-cell">Linux kernel isolation (no Docker)</td>
               <td class="num-col num-val">118 ms</td>
               <td class="num-col num-val">141 ms</td>
             </tr>
             <tr>
               <td><code>container</code></td>
-              <td class="muted-cell">Locked-down Docker throwaway container</td>
+              <td class="muted-cell">Throwaway Docker container</td>
               <td class="num-col num-val">895 ms</td>
               <td class="num-col num-val">1002 ms</td>
             </tr>
@@ -399,7 +374,7 @@
         <blockquote class="caveat-quote">
           <p>The container path here goes through Docker Desktop's VM, a hop a Docker Engine user on Linux doesn't pay, and each container run also starts one cleanup check (<code>docker ps</code>). So these are this host's numbers, not a speed-up factor.</p>
           <footer>
-            Reproduce locally with <a href="https://github.com/victorperson999/Vestibule/blob/main/scripts/bench_coldstart.py" rel="noopener noreferrer"><code>scripts/bench_coldstart.py</code></a> · Full notes in <a href="https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md" rel="noopener noreferrer"><code>docs/REFERENCE.md</code></a>.
+            <a href="https://github.com/victorperson999/Vestibule/blob/main/scripts/bench_coldstart.py" rel="noopener noreferrer">Reproduce locally</a> · <a href="https://github.com/victorperson999/Vestibule/blob/main/docs/REFERENCE.md" rel="noopener noreferrer">Full benchmark notes</a>
           </footer>
         </blockquote>
       </div>
@@ -410,18 +385,18 @@
         <div class="section-head">
           <p class="section-kicker">05 / Security</p>
           <h2>Honest Threat Model</h2>
-          <p class="section-sub">Summary of <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> §1. Every run ends with an honest <code>isolation:</code> verdict stating what actually applied.</p>
+          <p class="section-sub">Clear boundaries on what Vestibule protects — and what it doesn't. Every run ends with an honest <code>isolation:</code> verdict.</p>
         </div>
 
         <div class="threat-columns">
           <div class="threat-col">
             <h3>What holds</h3>
-            <p class="threat-lead">For a run reporting <code>isolation: native</code> or <code>isolation: container</code>, short of a bug in the kernel or the container runtime:</p>
+            <p class="threat-lead">For a run reporting <code>native</code> or <code>container</code> isolation, short of a kernel or container-runtime bug:</p>
             <ul>
-              <li><strong>Host files outside <code>/workspace</code></strong> are unreachable from the sandbox.</li>
-              <li><strong>No network egress</strong> — empty network namespace (<code>lo</code> only) and <code>AF_VSOCK</code> blocked by seccomp on native.</li>
-              <li><strong>Resource caps enforced</strong> — memory (no swap), CPU, process count (<code>pids.max</code>), <code>/tmp</code> size, and wall-clock timeout.</li>
-              <li><strong>Honest isolation reporting</strong> on every run (<code>native</code>, <code>container</code>, <code>native-degraded</code>, <code>container-degraded</code>, <code>none</code>, or <code>Blocked:</code>).</li>
+              <li><strong>Host files stay private</strong> — files outside <code>/workspace</code> don't exist inside the sandbox.</li>
+              <li><strong>No internet or network access</strong> — outbound connections are blocked at the kernel level.</li>
+              <li><strong>Resource caps enforced</strong> — memory (no swap), CPU, process count, <code>/tmp</code> size, and timeout.</li>
+              <li><strong>Honest status every run</strong> — clearly reports full isolation, degraded limits, or <code>Blocked:</code>.</li>
             </ul>
           </div>
 
@@ -429,17 +404,17 @@
             <h3>What stays possible &amp; what it isn't</h3>
             <p class="threat-lead">Clear boundaries before trusting any sandbox with real credentials or projects:</p>
             <ul>
-              <li><strong>Not a VM.</strong> On Linux, the sandbox shares your host kernel, so a kernel bug that escapes a namespace would escape Vestibule. (On Windows/macOS, Docker Desktop's Linux VM is Docker's boundary, not Vestibule's.)</li>
+              <li><strong>Not a VM.</strong> On Linux, the sandbox shares your host kernel, so a kernel bug could in principle escape it.</li>
               <li><strong>Only <code>run_code</code> is sandboxed.</strong> Your agent's own shell and file tools still run on your machine unless you restrict them.</li>
-              <li><strong><code>/workspace</code> is writable and uncapped on disk</strong> (unless <code>VESTIBULE_WORKSPACE_RO=1</code>) and may contain guest-planted symlinks. <code>read_workspace</code> and <code>vestibule-mcp ui</code> refuse symlinks — don't point <code>VESTIBULE_WORKSPACE</code> at an existing project folder.</li>
-              <li><strong>Run output returns to your agent</strong> and is sent to its model provider.</li>
-              <li><strong>Untested environments:</strong> arm64 Linux hosts, Podman, and sandboxed container runs on macOS.</li>
+              <li><strong><code>/workspace</code> is writable</strong> (unless mounted read-only) and may contain symlinks created by code — Vestibule refuses symlinks, so keep it separate from real projects.</li>
+              <li><strong>Output returns to your agent</strong> and is sent to its model provider.</li>
+              <li><strong>Untested environments:</strong> arm64 Linux, Podman, and container runs on macOS.</li>
             </ul>
           </div>
         </div>
 
         <p class="security-footer">
-          Full threat model, test citations, and known residuals: <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> · Report a vulnerability privately via <a href="https://github.com/victorperson999/Vestibule/security/advisories/new" rel="noopener noreferrer">GitHub Security Advisories</a>.
+          Full threat model and test citations in <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> · Report a vulnerability privately via <a href="https://github.com/victorperson999/Vestibule/security/advisories/new" rel="noopener noreferrer">GitHub Security Advisories</a>.
         </p>
       </div>
     </section>
