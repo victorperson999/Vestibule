@@ -10,13 +10,14 @@
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://victorperson999.github.io/Vestibule/">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="style.css?v=2">
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body>
   <header class="site-header">
     <div class="container header-inner">
       <a class="brand" href="#hero"><img class="brand-mark" src="assets/logo.svg" alt="" width="30" height="30" aria-hidden="true"><span>vestibule</span></a>
       <nav class="site-nav" aria-label="Primary">
+        <a href="#inspector">Inspector</a>
         <a href="#setup">Setup</a>
         <a href="#how-it-works">Architecture</a>
         <a href="#benchmarks">Benchmarks</a>
@@ -48,25 +49,85 @@
           <strong>Not a VM</strong> — shares the host kernel on Linux; sandboxes only code sent to <code>run_code</code>.
           <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer">Read SECURITY.md</a>
         </p>
+      </div>
 
+      <div class="container-wide">
         <figure class="demo-figure">
-          <img
-            src="assets/demo.gif"
-            alt="Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail (No such file or directory and Network is unreachable) with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, and cgroup usage numbers."
-            width="1200"
-            height="624"
-          >
+          <button type="button" id="demo-expand-btn" class="demo-trigger" aria-label="Expand demo recording to full size">
+            <img
+              src="assets/demo.gif"
+              alt="Split-screen recording. Left terminal runs a Python script on the host (reading a fake key file outside /workspace and connecting to 1.1.1.1:80), then runs the same script inside Vestibule where both fail (No such file or directory and Network is unreachable) with exit_code: 0 and isolation: native. Right pane shows vestibule-mcp ui updating live with the run, full logged code, isolation: native, wall time, and cgroup usage."
+              width="1200"
+              height="624"
+            >
+            <span class="demo-expand-pill" aria-hidden="true">Click to expand &#x2922;</span>
+          </button>
           <figcaption>
-            Left: the same script runs directly on the host (reads a fake secret outside <code>/workspace</code> and connects to <code>1.1.1.1:80</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2). Right: <code>vestibule-mcp ui</code> shows the run live with its logged code, isolation verdict, and cgroup usage.
+            Left: the same script runs directly on the host (reads a fake secret outside <code>/workspace</code> and connects to <code>1.1.1.1:80</code>), then inside Vestibule (blocked on both, reporting <code>isolation: native</code> under WSL2). Right: <code>vestibule-mcp ui</code> shows the run live with its logged code, isolation verdict, wall time, and cgroup usage. Click the recording to view full size.
           </figcaption>
         </figure>
+      </div>
+    </section>
+
+    <section id="inspector" class="section">
+      <div class="container">
+        <div class="section-head">
+          <p class="section-kicker">01 / Live Inspector</p>
+          <h2>Local Inspector Preview (<code>vestibule-mcp ui</code>)</h2>
+          <p class="section-sub">
+            Interactive preview populated with sample audit records so you can explore the read-only local dashboard without installing anything. Run <code>vestibule-mcp ui</code> on your own machine to inspect live runs and <code>/workspace</code> on <code>127.0.0.1</code>.
+          </p>
+        </div>
+
+        <div class="inspector-shell" aria-label="Sample vestibule-mcp ui preview">
+          <div class="inspector-bar">
+            <div class="inspector-brand">
+              <span class="inspector-title">vestibule-mcp ui</span>
+              <span class="inspector-pill">read-only</span>
+              <span class="inspector-pill inspector-pill-sample">sample data</span>
+            </div>
+            <div class="inspector-tabs">
+              <button type="button" id="insp-tab-runs" class="insp-tab is-active" aria-pressed="true">Runs (4)</button>
+              <button type="button" id="insp-tab-ws" class="insp-tab" aria-pressed="false">/workspace (2)</button>
+            </div>
+          </div>
+
+          <div id="insp-strip" class="inspector-strip">
+            <div class="insp-stat">
+              <span class="insp-stat-label">ISOLATION</span>
+              <span class="insp-stat-val is-ok">3 native · 1 blocked</span>
+            </div>
+            <div class="insp-stat">
+              <span class="insp-stat-label">MEDIAN WALL</span>
+              <span class="insp-stat-val">170 ms</span>
+            </div>
+            <div class="insp-stat">
+              <span class="insp-stat-label">MEDIAN PEAK MEM</span>
+              <span class="insp-stat-val">12 MiB</span>
+            </div>
+            <div class="insp-stat">
+              <span class="insp-stat-label">DENIED SYSCALLS</span>
+              <span class="insp-stat-val is-warn">2 blocked</span>
+            </div>
+          </div>
+
+          <div id="insp-runs-view" class="inspector-grid">
+            <div id="insp-run-list" class="inspector-list"></div>
+            <div id="insp-run-detail" class="inspector-detail"></div>
+          </div>
+
+          <div id="insp-ws-view" class="inspector-grid is-hidden">
+            <div id="insp-ws-list" class="inspector-list"></div>
+            <div id="insp-ws-detail" class="inspector-detail"></div>
+          </div>
+        </div>
       </div>
     </section>
 
     <section id="setup" class="section">
       <div class="container">
         <div class="section-head">
-          <p class="section-kicker">01 / Setup</p>
+          <p class="section-kicker">02 / Setup</p>
           <h2>Setup &amp; Config Wizard</h2>
           <p class="section-sub">Pick your platform, MCP client, and optional limits for exact prerequisites, install commands, and config JSON. Runs offline with zero external requests.</p>
         </div>
@@ -178,7 +239,7 @@
     <section id="how-it-works" class="section">
       <div class="container">
         <div class="section-head">
-          <p class="section-kicker">02 / Architecture</p>
+          <p class="section-kicker">03 / Architecture</p>
           <h2>Inside the Isolation Chamber</h2>
           <p class="section-sub">
             Native Linux isolation below (no Docker, no root). On Windows, macOS, and stock Ubuntu 23.10+, Vestibule runs a locked-down throwaway container via <a href="https://github.com/victorperson999/Vestibule/blob/main/src/vestibule/backends/container.py" rel="noopener noreferrer"><code>src/vestibule/backends/container.py</code></a>.
@@ -305,7 +366,7 @@
     <section id="benchmarks" class="section">
       <div class="container">
         <div class="section-head">
-          <p class="section-kicker">03 / Benchmarks</p>
+          <p class="section-kicker">04 / Benchmarks</p>
           <h2>Measured Cold-Start Latency</h2>
           <p class="section-sub">Measured through the MCP server itself: 50 <code>print(1)</code> runs per backend after a warm-up on WSL2 Ubuntu 26.04 (12 CPUs) with Docker Desktop 28.5.1, recorded 2026-11-06 at commit <code>03f0fb7</code>.</p>
         </div>
@@ -347,7 +408,7 @@
     <section id="security" class="section">
       <div class="container">
         <div class="section-head">
-          <p class="section-kicker">04 / Security</p>
+          <p class="section-kicker">05 / Security</p>
           <h2>Honest Threat Model</h2>
           <p class="section-sub">Summary of <a href="https://github.com/victorperson999/Vestibule/blob/main/SECURITY.md" rel="noopener noreferrer"><code>SECURITY.md</code></a> §1. Every run ends with an honest <code>isolation:</code> verdict stating what actually applied.</p>
         </div>
@@ -382,6 +443,21 @@
         </p>
       </div>
     </section>
+    <dialog id="demo-lightbox" class="demo-lightbox" aria-label="Expanded demo recording">
+      <div class="demo-lightbox-inner">
+        <div class="demo-lightbox-bar">
+          <span class="demo-lightbox-title">Host vs Vestibule (<code>isolation: native</code>) + live <code>vestibule-mcp ui</code></span>
+          <button type="button" id="demo-lightbox-close" class="demo-lightbox-close">Close (Esc)</button>
+        </div>
+        <img
+          src="assets/demo.gif"
+          alt="Expanded split-screen recording showing host probe vs Vestibule isolation: native and live vestibule-mcp ui."
+          width="1200"
+          height="624"
+          class="demo-lightbox-img"
+        >
+      </div>
+    </dialog>
   </main>
 
   <footer class="site-footer">
@@ -541,6 +617,6 @@
   }
 }
   </script>
-  <script src="app.js" defer></script>
+  <script src="app.js?v=2" defer></script>
 </body>
 </html>
